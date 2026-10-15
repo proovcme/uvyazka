@@ -11,12 +11,16 @@ from http.server import ThreadingHTTPServer
 from uvyazka.core import Workspace
 from uvyazka.demo import create_demo
 from uvyazka.dashboard import make_handler
+from uvyazka.construction.demo import create_engineering_demo
+from uvyazka.construction.planning import Planning
+from uvyazka.coordination import Coordination
 
 
 class DashboardTests(unittest.TestCase):
     def test_concurrent_scope_readonly_and_host(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Workspace(Path(td) / "state"); create_demo(workspace)
+            create_engineering_demo(workspace)
             server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(workspace))
             thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
             base = "http://127.0.0.1:" + str(server.server_port)
@@ -40,6 +44,23 @@ class DashboardTests(unittest.TestCase):
                 self.assertEqual(error.exception.code, 403)
                 with urlopen(base + "/") as response:
                     self.assertIn("Увязка", response.read().decode())
+                run=Planning(workspace).list_runs("demo-a")["items"][0]
+                with urlopen(base + "/api/construction/run?project_id=demo-a&run_id="+run["run_id"]) as response:
+                    self.assertEqual(json.load(response)["duration"],600)
+                with self.assertRaises(HTTPError):
+                    urlopen(base + "/api/construction/run?project_id=demo-b&run_id="+run["run_id"])
+                with urlopen(base + "/api/construction/schedule.csv?project_id=demo-a&run_id="+run["run_id"]) as response:
+                    self.assertTrue(response.read().startswith(b"\xef\xbb\xbf"))
+                audit=Coordination(workspace).audits("demo-a")["items"][0]
+                with urlopen(base + "/api/coordination/issues?project_id=demo-a&audit_id="+audit["audit_id"]+"&limit=2") as response:
+                    self.assertEqual(len(json.load(response)["items"]),2)
+                with urlopen(base + "/simulation/") as response:
+                    self.assertIn("Увязка",response.read().decode())
+                # A read-only request must not migrate the untouched second project's DB.
+                before=workspace.db_path("demo-b").read_bytes()
+                with urlopen(base + "/api/coordination/audits?project_id=demo-b") as response:
+                    self.assertEqual(json.load(response),{"items":[]})
+                self.assertEqual(before,workspace.db_path("demo-b").read_bytes())
             finally:
                 server.shutdown(); server.server_close(); thread.join()
 

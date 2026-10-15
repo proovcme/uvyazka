@@ -28,7 +28,7 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    self.assertEqual(len(listed.tools), 11)
+                    self.assertEqual(len(listed.tools), 30)
                     by_name = {tool.name: tool for tool in listed.tools}
                     self.assertTrue(by_name["read_evidence"].annotations.readOnlyHint)
                     self.assertFalse(by_name["record_observations"].annotations.readOnlyHint)
@@ -43,6 +43,15 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(result.isError, result)
                     self.assertFalse((await session.call_tool("record_observations", args)).isError)
                     self.assertEqual(workspace.get_evidence_chain("demo-a", "mcp-recorded")["fact"]["value"], "12")
+                    scenario = {"id":"stdio-schedule","name":"Stdio schedule","resources":[],"operations":[{"id":"work","name":"Work","duration":10,"evidence":{"kind":"assumed","reason":"Protocol test"}}]}
+                    for name, arguments in [
+                        ("construction_schema", {}), ("list_project_checks", {}),
+                        ("save_construction_scenario", {"project_id":"demo-a","scenario":scenario,"request_id":"stdio-save"}),
+                        ("run_construction_scenario", {"project_id":"demo-a","scenario_id":"stdio-schedule"}),
+                        ("save_project_graph", {"project_id":"demo-a","request_id":"stdio-graph","graph":{"entities":[{"id":"room","kind":"room","name":"Room"}]}}),
+                        ("audit_project_graph", {"project_id":"demo-a"})]:
+                        result = await session.call_tool(name, arguments)
+                        self.assertFalse(result.isError, (name,result))
                     error = await session.call_tool("project_status", {"project_id": "nonexistent"})
                     self.assertTrue(error.isError)
 

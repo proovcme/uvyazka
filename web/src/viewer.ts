@@ -1,0 +1,265 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import type { BimElement, ModelPackage } from './model';
+import { validatePackage } from './model';
+
+type ElementMesh = THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial[]>;
+export type ConstructionState = 'future' | 'active' | 'complete';
+
+/** Owns presentation only. No scheduling, resources, or simulation clocks. */
+export class Viewer {
+  readonly renderer: THREE.WebGLRenderer;
+  readonly scene = new THREE.Scene();
+  readonly camera = new THREE.PerspectiveCamera(40, 1, 0.01, 10000);
+  readonly controls: OrbitControls;
+  readonly root = new THREE.Group();
+  readonly meshes = new Map<string, ElementMesh>();
+  readonly raycaster = new THREE.Raycaster();
+  readonly bounds = new THREE.Box3();
+  private grid?: THREE.GridHelper;
+  private ground?: THREE.Mesh;
+  private selected?: string;
+  private highlight?: THREE.Box3Helper;
+  private xray = false;
+  private construction: Map<string, ConstructionState> | null = null;
+  private showFuture = false;
+  private currentElements: BimElement[] = [];
+  private observer: ResizeObserver;
+  private frame = 0;
+  private pointerStart = { x: 0, y: 0 };
+  private onPick: (id: string | null) => void;
+
+  constructor(readonly host: HTMLElement, onPick: (id: string | null) => void) {
+    this.onPick = onPick;
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setClearColor(0xe9edeb, 0);
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.3;
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    const canvas = this.renderer.domElement;
+    canvas.setAttribute('aria-label', '3D-модель. Мышь: вращение, правая кнопка: перемещение, колесо: масштаб. Стрелки: перемещение. F: вся модель. Escape: снять выделение.');
+    canvas.tabIndex = 0;
+    this.host.append(canvas);
+    this.controls = new OrbitControls(this.camera, canvas);
+    this.controls.enableDamping = false;
+    this.controls.screenSpacePanning = true;
+    this.controls.listenToKeyEvents(canvas);
+    this.controls.addEventListener('change', this.invalidate);
+    this.root.rotation.x = -Math.PI / 2; // IFC Z-up -> Three.js Y-up, once.
+    this.scene.add(this.root);
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x879389, 2.1));
+    const sun = new THREE.DirectionalLight(0xfff5df, 3);
+    sun.position.set(18, 28, 18);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.bias = -0.0002;
+    sun.shadow.normalBias = 0.035;
+    this.scene.add(sun);
+    const fill = new THREE.DirectionalLight(0xd9e7f7, 1.3);
+    fill.position.set(-15, 10, -10);
+    this.scene.add(fill);
+    this.observer = new ResizeObserver(() => {
+      const { width, height } = this.host.getBoundingClientRect();
+      this.renderer.setSize(width, height);
+      this.camera.aspect = width / Math.max(height, 1);
+      this.camera.updateProjectionMatrix();
+      this.invalidate();
+    });
+    this.observer.observe(host);
+    canvas.addEventListener('pointerdown', (event) => { this.pointerStart = { x: event.clientX, y: event.clientY }; });
+    canvas.addEventListener('pointerup', (event) => {
+      if (event.button !== 0 || Math.hypot(event.clientX - this.pointerStart.x, event.clientY - this.pointerStart.y) > 4) return;
+      const rect = canvas.getBoundingClientRect();
+      this.raycaster.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), this.camera);
+      const targets = [...this.meshes.values()].filter((mesh) => mesh.visible);
+      const hit = this.raycaster.intersectObjects(targets, false)[0];
+      this.onPick(hit ? String(hit.object.userData.elementId) : null);
+    });
+    canvas.addEventListener('keydown', (event) => {
+      if (event.key.toLowerCase() === 'f') { event.preventDefault(); this.fit(); }
+      if (event.key === 'Escape') this.onPick(null);
+    });
+    canvas.addEventListener('webglcontextlost', (event) => {
+      event.preventDefault();
+      host.dispatchEvent(new CustomEvent('viewer-error', { detail: 'Графический контекст потерян. Перезагрузите страницу, чтобы восстановить 3D-просмотр.' }));
+    });
+  }
+
+  readonly invalidate = () => {
+    if (this.frame) return;
+    this.frame = requestAnimationFrame(() => {
+      this.frame = 0;
+      this.renderer.render(this.scene, this.camera);
+    });
+  };
+
+  load(pkg: ModelPackage, binary: ArrayBuffer) {
+    validatePackage(pkg, binary);
+    this.clearModel();
+    this.currentElements = pkg.elements;
+    for (const element of pkg.elements) {
+      const data = element.mesh;
+      if (!data) continue;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(binary, data.position_byte_offset, data.vertex_count * 3), 3));
+      geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(binary, data.index_byte_offset, data.index_count), 1));
+      geometry.computeVertexNormals();
+      geometry.computeBoundingSphere();
+      for (const group of data.groups) geometry.addGroup(group.start, group.count, group.material_index);
+      const materials = data.styles.map((style) => {
+        const isFeature = element.role === 'feature' || element.role === 'space';
+        const color = isFeature ? new THREE.Color(element.role === 'space' ? 0x60a5b8 : 0xe5a44c) : new THREE.Color().setRGB(...style.color, THREE.SRGBColorSpace);
+        return new THREE.MeshStandardMaterial({ color, side: THREE.DoubleSide,
+          roughness: 0.85, metalness: 0.02, flatShading: true, transparent: isFeature || style.opacity < 1,
+          opacity: isFeature ? 0.16 : style.opacity, depthWrite: !isFeature && style.opacity >= 1 });
+      });
+      const mesh = new THREE.Mesh(geometry, materials);
+      mesh.userData.elementId = element.id;
+      mesh.userData.role = element.role;
+      mesh.userData.filterVisible = element.role === 'element';
+      mesh.userData.baseColors = materials.map((material) => material.color.clone());
+      mesh.castShadow = element.role === 'element';
+      mesh.receiveShadow = true;
+      mesh.visible = element.role === 'element';
+      this.root.add(mesh);
+      this.meshes.set(element.id, mesh);
+    }
+    this.root.updateMatrixWorld(true);
+    const origin = pkg.coordinate_system.render_origin_m;
+    const convert = (point: number[]) => new THREE.Vector3(point[0] - origin[0], point[2] - origin[2], -(point[1] - origin[1]));
+    this.bounds.setFromPoints([convert(pkg.coordinate_system.bounds_min_m), convert(pkg.coordinate_system.bounds_max_m)]);
+    const size = this.bounds.getSize(new THREE.Vector3());
+    const span = Math.max(size.x, size.z, 5);
+    this.grid = new THREE.GridHelper(Math.ceil(span * 2.4), 28, 0xb8c2bd, 0xd2dad4);
+    this.grid.position.y = -0.04;
+    this.scene.add(this.grid);
+    this.ground = new THREE.Mesh(new THREE.PlaneGeometry(span * 5, span * 5), new THREE.ShadowMaterial({ color: 0x576852, opacity: 0.17 }));
+    this.ground.rotation.x = -Math.PI / 2;
+    this.ground.position.y = -0.025;
+    this.ground.receiveShadow = true;
+    this.scene.add(this.ground);
+    const sun = this.scene.children.find((item) => item instanceof THREE.DirectionalLight && item.castShadow) as THREE.DirectionalLight;
+    Object.assign(sun.shadow.camera, { left: -span, right: span, top: span, bottom: -span, far: span * 8 });
+    sun.position.set(span, span * 1.8, span);
+    sun.shadow.camera.updateProjectionMatrix();
+    this.camera.near = Math.max(span / 10000, 0.001);
+    this.camera.far = span * 1000;
+    this.controls.minDistance = span * 0.015;
+    this.controls.maxDistance = span * 50;
+    this.fit();
+    this.host.dataset.renderReady = 'true';
+    this.host.dataset.meshCount = String(this.meshes.size);
+  }
+
+  fit(direction: 'iso' | 'top' | 'front' = 'iso', selectedOnly = false) {
+    if (this.bounds.isEmpty()) return;
+    let bounds = this.bounds;
+    const mesh = this.selected ? this.meshes.get(this.selected) : null;
+    if (selectedOnly && mesh) bounds = new THREE.Box3().setFromObject(mesh);
+    const center = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    const halfFov = THREE.MathUtils.degToRad(this.camera.fov / 2);
+    const distance = Math.max(size.length(), 1) / (2 * Math.tan(halfFov)) * Math.max(1, 1 / this.camera.aspect) * 1.12;
+    const axis = direction === 'top' ? new THREE.Vector3(0, 1, 0.0001) : direction === 'front' ? new THREE.Vector3(0, 0.14, 1) : new THREE.Vector3(1, 0.82, 1.2);
+    this.controls.target.copy(center);
+    this.camera.position.copy(center).addScaledVector(axis.normalize(), distance);
+    this.camera.lookAt(center);
+    this.camera.updateProjectionMatrix();
+    this.controls.update();
+    this.invalidate();
+  }
+
+  show(ids: Set<string>) {
+    let count = 0;
+    for (const [id, mesh] of this.meshes) {
+      mesh.userData.filterVisible = ids.has(id);
+      mesh.visible = ids.has(id);
+      if (mesh.visible) count++;
+    }
+    this.host.dataset.visibleMeshes = String(count);
+    this.refreshPresentation();
+    this.invalidate();
+  }
+
+  select(id: string | null) {
+    this.selected = id ?? undefined;
+    if (this.highlight) { this.scene.remove(this.highlight); this.highlight.dispose(); this.highlight = undefined; }
+    for (const [key, mesh] of this.meshes) {
+      for (const material of mesh.material) {
+        material.emissive.set(key === id ? 0x805b16 : 0x000000);
+        material.emissiveIntensity = key === id ? 0.34 : 0;
+      }
+    }
+    const mesh = id ? this.meshes.get(id) : undefined;
+    if (mesh) {
+      this.highlight = new THREE.Box3Helper(new THREE.Box3().setFromObject(mesh), new THREE.Color(0xc78012));
+      this.scene.add(this.highlight);
+    }
+    this.invalidate();
+  }
+
+  setXray(active: boolean, elements: BimElement[]) {
+    this.xray = active;
+    this.currentElements = elements;
+    this.refreshPresentation();
+  }
+
+  setConstruction(states: Map<string, ConstructionState> | null, showFuture = false) {
+    this.construction = states;
+    this.showFuture = showFuture;
+    this.refreshPresentation();
+  }
+
+  private refreshPresentation() {
+    for (const element of this.currentElements) {
+      const mesh = this.meshes.get(element.id);
+      if (!mesh || !element.mesh) continue;
+      const state = this.construction?.get(element.id);
+      mesh.visible = Boolean(mesh.userData.filterVisible) && (!this.construction || this.showFuture || state === 'active' || state === 'complete');
+      mesh.material.forEach((material, index) => {
+        const opacity = element.role === 'space' || element.role === 'feature' ? 0.16 : element.mesh!.styles[index].opacity;
+        material.color.copy((mesh.userData.baseColors as THREE.Color[])[index]);
+        if (state === 'active') material.color.set(0xd7a44a);
+        const alpha = state === 'active' ? 0.8 : state === 'future' && this.showFuture ? 0.15 : this.xray && element.role === 'element' ? Math.min(opacity, 0.25) : opacity;
+        material.transparent = alpha < 1;
+        material.opacity = alpha;
+        material.depthWrite = alpha >= 1;
+        material.needsUpdate = true;
+      });
+    }
+    this.invalidate();
+  }
+
+  private clearModel() {
+    this.select(null);
+    for (const mesh of this.meshes.values()) {
+      mesh.geometry.dispose();
+      for (const material of mesh.material) material.dispose();
+    }
+    this.meshes.clear();
+    this.root.clear();
+    this.xray = false;
+    this.construction = null;
+    this.currentElements = [];
+    for (const helper of [this.grid, this.ground]) {
+      if (!helper) continue;
+      this.scene.remove(helper);
+      helper.geometry.dispose();
+      const materials = Array.isArray(helper.material) ? helper.material : [helper.material];
+      materials.forEach((material) => material.dispose());
+    }
+    this.grid = undefined;
+    this.ground = undefined;
+  }
+
+  dispose() {
+    this.clearModel();
+    this.observer.disconnect();
+    this.controls.dispose();
+    cancelAnimationFrame(this.frame);
+    this.renderer.dispose();
+  }
+}

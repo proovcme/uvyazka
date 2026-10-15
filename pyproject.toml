@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "uvyazka"
-version = "0.1.0a1"
+version = "0.2.0a1"
 description = "Local project memory, evidence and MCP tools for construction project teams"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,6 +13,7 @@ dependencies = []
 [project.optional-dependencies]
 mcp = ["mcp>=1.12,<2"]
 readers = ["PyMuPDF>=1.26,<2", "python-docx>=1.1,<2", "openpyxl>=3.1,<4"]
+ifc = ["ifcopenshell>=0.8.3,<1", "numpy>=2,<3"]
 all = ["mcp>=1.12,<2", "PyMuPDF>=1.26,<2", "python-docx>=1.1,<2", "openpyxl>=3.1,<4"]
 
 [project.scripts]
@@ -26,7 +27,7 @@ Repository = "https://github.com/proovcme/uvyazka"
 where = ["src"]
 
 [tool.setuptools.package-data]
-uvyazka = ["ui/*", "resources/*.json"]
+uvyazka = ["ui/*", "resources/*.json", "viewer/*", "viewer/assets/*"]
 
 [tool.setuptools.data-files]
 "share/uvyazka/skills/aec-construction-schedule" = ["skills/aec-construction-schedule/SKILL.md"]

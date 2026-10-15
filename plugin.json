@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "uvyazka",
-  "version": "0.1.0-alpha.1",
+  "version": "0.2.0-alpha.1",
   "description": "Локальная память строительного проекта, проверяемые источники и навыки для РП и ГИПов.",
   "repository": "https://github.com/proovcme/uvyazka",
   "keywords": ["mcp", "aec", "project-memory", "construction"],
@@ -11,7 +11,7 @@
       "interface": {
         "displayName": "Увязка",
         "shortDescription": "Память и сверка проекта",
-        "longDescription": "Локальные проекты, источники, наблюдения и сопоставление количеств. Подготовка графика, ПОС и ППР описана навыками; автоматический выпуск этих документов ещё не реализован.",
+        "longDescription": "Локальная память проекта, сверка количеств, графы работ, расчёт ресурсов и 3D-воспроизведение. Агент создаёт сценарии по PDF, DWG, таблицам или IFC. ПОС/ППР и инженерные решения требуют проверенных исходных данных.",
         "capabilities": []
       }
     }

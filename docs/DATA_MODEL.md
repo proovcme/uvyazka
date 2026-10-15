@@ -18,7 +18,7 @@
 | `compare_facts` | Десятичное сравнение двух наблюдений |
 | `list_technology_sources` | Поиск метаданных трёх карточек ТТК |
 
-`record_observations` и `compare_facts` изменяют базу. Остальные инструменты
+`record_observations` и `compare_facts` изменяют базу. Остальные инструменты из этой таблицы
 читают её. Ни один инструмент не изменяет исходные проектные документы.
 Приём файлов и регистрация папок выполняются явно через CLI.
 
@@ -96,3 +96,38 @@
 `historical_snapshot`, `stale_version`, `needs_refresh`, `source_unavailable`
 требуют внимания. Ни один статус не утверждает действующую ревизию.
 Повторный `scan` обновляет активный поисковый индекс.
+
+## Планирование: ещё 13 инструментов
+
+| Инструмент | Назначение |
+|---|---|
+| construction_schema | Контракт графа работ, геометрии, времени и оснований |
+| calculate_work_duration | Объём / эффективная выработка, округление минут вверх |
+| save_spatial_model | Сохранение условных коробок с основаниями |
+| list_spatial_models, get_spatial_elements | Модели и постраничное чтение объектов |
+| import_ifc_model | Опциональный импорт зарегистрированного IFC |
+| save_construction_scenario | Версия графа работ, пакетное дополнение и контроль ревизии |
+| list_construction_scenarios, get_construction_scenario | Реестр и постраничное чтение работ |
+| suggest_ifc_scenario | Условные IFCCS-шаблоны по модели, требуют переработки |
+| run_construction_scenario | Ресурсный расчёт и CPM по связям, сохранение запуска |
+| list_construction_runs, get_construction_run | Результаты, строки графика или события |
+
+Записывают состояние save_*, import_ifc_model, suggest_ifc_scenario и
+run_construction_scenario. Подробный процесс — [здесь](CONSTRUCTION.md).
+
+## Увязка проекта: ещё 6 инструментов
+
+| Инструмент | Назначение |
+|---|---|
+| list_project_checks | Реализованные семейства проверок и явные ограничения |
+| project_graph_schema | Общие объекты, утверждения разделов, порты, требования, состав |
+| save_project_graph | Сохранение версии, пакетное дополнение по id |
+| get_project_graph | Постраничное чтение сущностей или связей |
+| audit_project_graph | Проверка переданного графа, сохранение неизменяемого отчёта |
+| get_project_issues | Вопросы и покрытие с продолжением |
+
+Граф, отчёты и повторяемые запросы — в coordination_graphs,
+coordination_audits, coordination_requests той же базы объекта.
+Изменяют базу save_project_graph и audit_project_graph.
+Состав и факторы описаны в [методике](PROJECT_COORDINATION.md).
+Всего 30 инструментов; никакой из них не изменяет исходный DWG/RVT.

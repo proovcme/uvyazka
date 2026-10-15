@@ -76,6 +76,10 @@ def build_server(workspace: Workspace | None = None):
         """
         return memory.compare_facts(project_id, first_id, second_id, tolerance)
 
+    from .construction.tools import register_tools
+    register_tools(mcp, memory)
+    from .coordination import register_tools as register_coordination
+    register_coordination(mcp, memory)
     return mcp
 
 

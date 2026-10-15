@@ -17,7 +17,7 @@ def make_handler(workspace: Workspace):
             elif isinstance(data, str):
                 data = data.encode("utf-8")
             self.send_response(status)
-            for key, value in {"Content-Type": content_type, "Content-Length": str(len(data)), "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; object-src 'self'; frame-ancestors 'none'"}.items():
+            for key, value in {"Content-Type": content_type, "Content-Length": str(len(data)), "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'self'; frame-ancestors 'none'"}.items():
                 self.send_header(key, value)
             self.end_headers(); self.wfile.write(data)
 
@@ -26,6 +26,9 @@ def make_handler(workspace: Workspace):
                 return self.send({"error": "Loopback host required"}, status=403)
             request = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(request.query).items()}
             try:
+                from .construction.http import serve_route
+                if serve_route(self, workspace, request.path, q):
+                    return
                 static = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"), "/style.css": ("style.css", "text/css")}
                 if request.path in static:
                     name, mime = static[request.path]
@@ -33,6 +36,14 @@ def make_handler(workspace: Workspace):
                 if request.path == "/api/projects":
                     return self.send(workspace.list_projects())
                 project_id = q.get("project_id", ""); workspace.project(project_id)
+                if request.path.startswith("/api/coordination/"):
+                    from .coordination import Coordination
+                    coordination = Coordination(workspace)
+                    if request.path.endswith("/audits"):
+                        return self.send(coordination.audits(project_id))
+                    if request.path.endswith("/issues"):
+                        return self.send(coordination.findings(project_id, q["audit_id"], int(q.get("offset", "0")), int(q.get("limit", "40"))))
+                    return self.send({"error": "Not found"}, status=404)
                 if request.path == "/api/status":
                     return self.send(workspace.project_status(project_id))
                 if request.path == "/api/facts":

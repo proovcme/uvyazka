@@ -26,7 +26,7 @@ function locatorName(l) {
   return 'Строка: ' + (l.line || l.row || '—');
 }
 let current = '', projects = [], facts = [], checks = [], status = {}, view = 'overview', offset = 0, timer, generation = 0, resultGeneration = 0;
-const routes = {overview:'Обзор проекта',facts:'Все показатели',rooms:'Помещения',capacity:'ТУ и мощности',quantities:'Объёмы и материалы',finance:'Финансы',checks:'Сопоставления',documents:'Документы',search:'Поиск по тексту',portfolio:'Все проекты'};
+const routes = {overview:'Обзор проекта',facts:'Все показатели',rooms:'Помещения',capacity:'ТУ и мощности',quantities:'Объёмы и материалы',finance:'Финансы',checks:'Сопоставления',coordination:'Увязка разделов',simulation:'График и модель',documents:'Документы',search:'Поиск по тексту',portfolio:'Все проекты'};
 function url(path) { const u = new URL(path, location.origin); u.searchParams.set('project_id', current); return u.pathname + u.search; }
 async function api(path) { const r = await fetch(path === '/api/projects' ? path : url(path)); const d = await r.json(); if (!r.ok) throw Error(d.error); return d; }
 function badge(s) { return `<span class="badge ${esc(s)}">${esc(statusNames[s] || s)}</span>`; }
@@ -57,6 +57,15 @@ async function route() {
   if (view === 'overview') {
     const count = status.counts;
     $('#view').innerHTML = `<div class="kpis">${[[count.documents,'Документов'],[count.pages,'Страниц / блоков'],[facts.length,'Наблюдений'],[checks.filter(c => c.status !== 'matches').length,'Вопросов']].map(([n,t]) => `<div class="kpi"><span class="kpi-label">${t}</span><strong class="kpi-value">${n}</strong></div>`).join('')}</div>` + panel(status.project.name, `<div class="identity"><p>${esc(status.project.location)}</p></div>`) + panel('Основные показатели', factTable(facts.filter(f => f.group === 'tep').slice(0,6))) + panel('Есть вопросы к данным', issueList(checks.filter(c => c.status !== 'matches'))) + panel('Покрытие извлечения', `<div class="detail-info">${Object.entries(status.coverage).map(([key,n]) => `<p>${esc(processingNames[key] || key)}: ${n}</p>`).join('')}<p>Статус обработки документа не подтверждает полноту или правильность инженерных показателей.</p></div>`); return;
+  }
+  if (view === 'simulation') {
+    $('#view').innerHTML = panel('График и пространственная модель', `<div class="detail-info"><p>Расчёт работ с ресурсными ограничениями, воспроизведение и основания длительностей. Геометрия может быть условной.</p><a class="source-button" href="/simulation/?project=${encodeURIComponent(current)}">Открыть график и модель →</a></div>`); return;
+  }
+  if (view === 'coordination') {
+    const key = current; const data = await api('/api/coordination/audits'); if (key !== current || view !== 'coordination') return;
+    if (!data.items.length) { $('#view').innerHTML = panel('Общая согласованность проекта', '<div class="empty">Нет сохранённых проверок. Агенту нужно собрать объекты и требования проекта и вызвать audit_project_graph.</div>'); return; }
+    const audit = data.items.at(-1); $('#view').innerHTML = panel('Покрытие проверки', `<div class="detail-info"><p>Ревизия графа: ${audit.revision}. Объектов: ${audit.entity_count}. Вопросов: ${audit.issue_count}.</p><p>Рассмотрено документов из заданного состава: ${audit.coverage.reviewed_expected_documents} / ${audit.coverage.expected_documents}.</p><p>Разделы, ожидающие разбора: ${esc(audit.coverage.missing_disciplines.join(', ') || 'В заданном составе отсутствуют')}.</p><p>${esc(audit.interpretation)}</p><p>Проверка относится к переданным данным. Полнота проекта не подтверждена.</p></div>`) + panel('Вопросы по связям и требованиям', '<div id="coordination-issues"></div>');
+    $('#coordination-issues').dataset.audit = audit.audit_id; await loadCoordinationIssues(); return;
   }
   if (view === 'checks') { $('#view').innerHTML = panel('Сохранённые сопоставления', issueList(checks)); return; }
   if (view === 'documents' || view === 'search') {
@@ -97,6 +106,13 @@ async function openSource(s, nextOffset = 0) {
     target.innerHTML = `<div class="detail-info"><strong>${esc(data.source_path)}</strong><p>${esc(locatorName(data.locator))}</p><p>Свежесть: ${esc(freshnessNames[data.freshness.status] || data.freshness.status)}</p></div><pre class="source-text">${esc(data.text)}</pre>${data.next_offset ? `<button class="source-button" data-next-source="${esc(JSON.stringify({...s,offset:data.next_offset}))}">Следующий фрагмент →</button>` : ''}${data.locator.kind === 'pdf_page' ? `<details><summary>Изображение страницы</summary><img class="source-image" loading="lazy" src="${imageUrl}" alt="Страница ${data.locator.pdf_page} исходного PDF"></details>` : ''}`;
   } catch (e) { target.textContent = e.message; }
 }
+async function loadCoordinationIssues() {
+  const target = $('#coordination-issues'); if (!target) return; const key = current;
+  const data = await api('/api/coordination/issues?audit_id=' + encodeURIComponent(target.dataset.audit) + '&offset=' + offset);
+  if (key !== current || !target.isConnected) return;
+  target.innerHTML = (data.graph_changed ? '<div class="empty">Граф изменён: проверку нужно повторить.</div>' : '') + (data.changed_documents?.length ? '<div class="empty">Источники изменились; отчёт исторический: '+esc(data.changed_documents.join(', '))+'</div>' : '') + data.items.map(i=>`<article class="issue-card"><span class="badge question">Вопрос</span><h3>${esc(i.message)}</h3><p>${esc(i.entity_id || 'Проект')} ${esc(i.port_id || '')} ${esc(i.mode || '')}</p><small>${esc(i.code)}</small>${i.sources?.length ? `<details><summary>Основания</summary><pre>${esc(JSON.stringify(i.sources,null,2))}</pre></details>`:''}</article>`).join('') + `<div class="table-meta">Всего вопросов: ${data.total}<div class="pagination"><button data-coord-page="prev" ${offset ? '' : 'disabled'}>Назад</button><button data-coord-page="next" ${data.next_offset === null ? 'disabled' : ''}>Далее</button></div></div>`;
+}
+document.addEventListener('click', e => { const b=e.target.closest('[data-coord-page]'); if(b){offset=Math.max(0,offset+(b.dataset.coordPage==='next'?40:-40));loadCoordinationIssues().catch(showError);} });
 document.addEventListener('click', e => { const b = e.target.closest('[data-fact],[data-source],[data-next-source],[data-project],[data-page]'); if (!b) return; if (b.dataset.fact) openFact(b.dataset.fact); else if (b.dataset.source) openSource(JSON.parse(b.dataset.source)); else if (b.dataset.nextSource) {const s=JSON.parse(b.dataset.nextSource);openSource(s,s.offset);} else if (b.dataset.project) {location.hash='overview';loadProject(b.dataset.project).catch(showError);} else {offset=Math.max(0,offset+(b.dataset.page==='next'?30:-30));loadResults();} });
 function showError(e) { $('#view').innerHTML = `<div class="error">${esc(e.message)}</div>`; }
 $('#project-select').addEventListener('change', e => loadProject(e.target.value).catch(showError));

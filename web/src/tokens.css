@@ -1,0 +1,17 @@
+:root {
+  --font: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --mono: 'Cascadia Code', Consolas, monospace;
+  --nav: #17282c;
+  --nav-text: #f8faf5;
+  --paper: #fcfcf9;
+  --surface: #f4f6f1;
+  --ink: #25362e;
+  --muted: #617064;
+  --sage: #48634f;
+  --sage-light: #eaf0e5;
+  --green: #8db78b;
+  --amber-light: #ecc588;
+  --border: #e1e6dc;
+  --border-strong: #c5cfc2;
+  --focus: #9b6719;
+}

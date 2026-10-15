@@ -60,6 +60,8 @@ def main(argv: list[str] | None = None):
         elif args.action == "demo":
             from .demo import create_demo
             result = create_demo(workspace)
+            from .construction.demo import create_engineering_demo
+            create_engineering_demo(workspace)
         elif args.action == "dashboard":
             from .dashboard import serve
             serve(workspace, args.port); return

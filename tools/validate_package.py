@@ -17,8 +17,8 @@ def validate():
     plugin = json.loads((ROOT / "plugin.json").read_text(encoding="utf-8"))
     mcp = json.loads((ROOT / "mcp.json").read_text(encoding="utf-8"))
     assert package["project"]["name"] == plugin["name"] == "uvyazka"
-    assert package["project"]["version"] == "0.1.0a1"
-    assert plugin["version"] == "0.1.0-alpha.1"
+    assert package["project"]["version"] == "0.2.0a1"
+    assert plugin["version"] == "0.2.0-alpha.1"
     assert '"' + package["project"]["version"] + '"' in (ROOT / "src/uvyazka/__init__.py").read_text(encoding="utf-8")
     assert plugin["extensions"]["com.openai"]["requires_local_executor"] is True
     assert len(plugin["extensions"]["com.openai"]["interface"]["shortDescription"]) <= 30
@@ -54,7 +54,7 @@ def validate():
     assert cover.attrib["viewBox"] == "0 0 1280 440"
     assert not any(node.tag.endswith(("script", "foreignObject")) for node in cover.iter())
     screenshots = list(ROOT.joinpath("docs/assets").glob("*.jpg"))
-    assert len(screenshots) == 5
+    assert len(screenshots) == 7
     assert all(path.read_bytes().startswith(b"\xff\xd8\xff") for path in screenshots)
     resources = json.loads((ROOT / "src/uvyazka/resources/technology-sources.json").read_text(encoding="utf-8"))
     assert len(resources["items"]) == 3

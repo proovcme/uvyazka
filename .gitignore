@@ -2,6 +2,15 @@
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+projects.local.json
+settings.local.json
+.codex/config.toml
+.claude/settings.local.json
+.gemini/settings.json
 secrets/
 data/
 cache/

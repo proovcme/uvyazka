@@ -1,0 +1,35 @@
+{
+  "schema": "uvyazka.technology-library.v1",
+  "catalog_url": "https://files.stroyinf.ru/list2/64155-1.htm",
+  "catalog_updated_as_reported": "2021-01-01",
+  "metadata_checked_on": "2026-10-15",
+  "coverage": "Three manually inspected catalogue cards, not the complete catalogue or full TTK texts",
+  "role": "Reference candidates for selecting a construction method; not automatic regulatory approval",
+  "items": [
+    {
+      "id": "ttk-04-02",
+      "designation": "ТТК 04.02",
+      "title": "Устройство фундаментов под колонны",
+      "url": "https://files.stroyinf.ru/Index2/1/4293793/4293793986.htm",
+      "applicability": "not_assessed",
+      "note": "Catalogue card links several different formwork, reinforcement and concreting methods. Select a process for the actual project conditions."
+    },
+    {
+      "id": "ttk-4-02-01-03",
+      "designation": "ТТК 4.02.01.03",
+      "title": "Установка и монтаж анкерных болтов в фундаментах под металлические колонны",
+      "url": "https://files.stroyinf.ru/Index2/1/4293793/4293793960.htm",
+      "applicability": "not_assessed",
+      "edition_date_as_reported": "1973-09-11",
+      "note": "The card describes installation with or without templates and references historical safety documents. Full text and current applicable requirements require separate checking."
+    },
+    {
+      "id": "ttk-k-1-40-4",
+      "designation": "ТТК К-1-40-4",
+      "title": "Обратная засыпка фундаментов с уплотнением грунта в общем котловане",
+      "url": "https://files.stroyinf.ru/Index2/1/4293771/4293771888.htm",
+      "applicability": "not_assessed",
+      "note": "The card limits its scope to unified foundations for overhead-line supports in a shared 4.9 m excavation. A matching title alone does not make it suitable for a building."
+    }
+  ]
+}

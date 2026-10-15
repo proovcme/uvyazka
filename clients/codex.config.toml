@@ -1,0 +1,7 @@
+# Example only. Generate absolute paths with: uvyazka client-config codex
+[mcp_servers.uvyazka]
+command = 'C:\path\uvyazka\.venv\Scripts\python.exe'
+args = ['-m', 'uvyazka.server']
+
+[mcp_servers.uvyazka.env]
+UVYAZKA_HOME = 'C:\path\uvyazka-state'

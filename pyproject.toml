@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uvyazka"
+version = "0.1.0a1"
+description = "Local project memory, evidence and MCP tools for construction project teams"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.12,<2"]
+readers = ["PyMuPDF>=1.26,<2", "python-docx>=1.1,<2", "openpyxl>=3.1,<4"]
+all = ["mcp>=1.12,<2", "PyMuPDF>=1.26,<2", "python-docx>=1.1,<2", "openpyxl>=3.1,<4"]
+
+[project.scripts]
+uvyazka = "uvyazka.cli:main"
+uvyazka-mcp = "uvyazka.server:main"
+
+[project.urls]
+Repository = "https://github.com/proovcme/uvyazka"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+uvyazka = ["ui/*", "resources/*.json"]
+
+[tool.setuptools.data-files]
+"share/uvyazka/skills/aec-construction-schedule" = ["skills/aec-construction-schedule/SKILL.md"]
+"share/uvyazka/skills/aec-develop-pos" = ["skills/aec-develop-pos/SKILL.md"]
+"share/uvyazka/skills/aec-develop-ppr" = ["skills/aec-develop-ppr/SKILL.md"]
+"share/uvyazka/skills/aec-develop-ppr/references" = ["skills/aec-develop-ppr/references/technology-cards.md"]
+"share/uvyazka/skills/aec-project-change-impact" = ["skills/aec-project-change-impact/SKILL.md"]
+"share/uvyazka/skills/aec-project-reader" = ["skills/aec-project-reader/SKILL.md"]
+"share/uvyazka/skills/aec-project-reader/references" = ["skills/aec-project-reader/references/data-model.md", "skills/aec-project-reader/references/reading-order.md"]
+"share/uvyazka/skills/aec-project-reconcile" = ["skills/aec-project-reconcile/SKILL.md"]
+"share/uvyazka/skills/aec-project-reconcile/references" = ["skills/aec-project-reconcile/references/reconciliation-rules.md"]

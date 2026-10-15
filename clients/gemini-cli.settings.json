@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "uvyazka": {
+      "command": "C:\\path\\uvyazka\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "uvyazka.server"],
+      "env": {"UVYAZKA_HOME": "C:\\path\\uvyazka-state"}
+    }
+  }
+}

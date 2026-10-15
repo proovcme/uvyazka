@@ -54,3 +54,5 @@ dist/
 build/
 .DS_Store
 Thumbs.db
+.uvyazka*/
+*.egg-info/

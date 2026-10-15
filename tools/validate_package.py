@@ -7,6 +7,7 @@ import json
 import re
 import sys
 import tomllib
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -42,11 +43,19 @@ def validate():
         assert fields["name"].strip() == skill.parent.name
         assert 1 <= len(fields["description"].strip()) <= 1024
         assert len(text.splitlines()) < 500
+    markdown = [ROOT / "README.md"]
     for directory in (ROOT / "skills", ROOT / "docs"):
-        for file in directory.rglob("*.md"):
-            for link in re.findall(r"\]\(([^)]+)\)", file.read_text(encoding="utf-8")):
-                if "://" not in link and not link.startswith("#"):
-                    assert (file.parent / link.split("#")[0]).is_file(), (file, link)
+        markdown.extend(directory.rglob("*.md"))
+    for file in markdown:
+        for link in re.findall(r"\]\(([^)]+)\)", file.read_text(encoding="utf-8")):
+            if "://" not in link and not link.startswith("#"):
+                assert (file.parent / link.split("#")[0]).is_file(), (file, link)
+    cover = ET.parse(ROOT / "docs/assets/cover.svg").getroot()
+    assert cover.attrib["viewBox"] == "0 0 1280 440"
+    assert not any(node.tag.endswith(("script", "foreignObject")) for node in cover.iter())
+    screenshots = list(ROOT.joinpath("docs/assets").glob("*.jpg"))
+    assert len(screenshots) == 5
+    assert all(path.read_bytes().startswith(b"\xff\xd8\xff") for path in screenshots)
     resources = json.loads((ROOT / "src/uvyazka/resources/technology-sources.json").read_text(encoding="utf-8"))
     assert len(resources["items"]) == 3
     assert all(item["applicability"] == "not_assessed" for item in resources["items"])

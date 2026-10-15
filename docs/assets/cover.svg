@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="440" viewBox="0 0 1280 440" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Увязка — каждое число со своим источником</title>
+  <desc id="desc">Локальная память и сверка строительного проекта. Исходные документы связаны с показателями и результатами сопоставления.</desc>
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" stroke="#D5E2E1" stroke-width=".65"/></pattern>
+    <linearGradient id="paper" x1="0" y1="0" x2="1280" y2="440" gradientUnits="userSpaceOnUse"><stop stop-color="#F8F7F1"/><stop offset="1" stop-color="#EDF4F2"/></linearGradient>
+  </defs>
+  <rect width="1280" height="440" rx="24" fill="url(#paper)"/>
+  <rect x="772" y="0" width="508" height="440" rx="24" fill="url(#grid)"/>
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <rect x="56" y="52" width="60" height="60" rx="17" fill="#19323D"/>
+    <path d="M72 68L84 88M99 68L79 99" stroke="#F9FAF7" stroke-width="7" stroke-linecap="round"/>
+    <text x="134" y="92" font-size="44" font-weight="700" letter-spacing="-1.3" fill="#19323D">Увязка</text>
+    <text x="58" y="180" font-size="38" font-weight="600" letter-spacing="-.8" fill="#19323D">Каждое число —</text>
+    <text x="58" y="230" font-size="38" font-weight="600" letter-spacing="-.8" fill="#19323D">со своим источником.</text>
+    <text x="59" y="278" font-size="20" fill="#536971">Память и сверка строительного проекта</text>
+    <text x="59" y="308" font-size="20" fill="#536971">для РП, ГИПов и настольных ИИ-клиентов</text>
+    <path d="M59 348H639" stroke="#C9D7D5"/>
+    <text x="59" y="382" font-size="14" font-weight="600" letter-spacing="1.3" fill="#33767B">ЛОКАЛЬНАЯ БАЗА</text>
+    <circle cx="246" cy="377" r="3" fill="#94AAA9"/>
+    <text x="266" y="382" font-size="14" font-weight="600" letter-spacing="1.3" fill="#33767B">MCP + НАВЫКИ</text>
+    <circle cx="420" cy="377" r="3" fill="#94AAA9"/>
+    <text x="440" y="382" font-size="14" font-weight="600" letter-spacing="1.3" fill="#33767B">ПРОЕКТЫ И ИСТОЧНИКИ</text>
+    <path d="M825 104H785V314H825M785 208H825" stroke="#64A6A5" stroke-width="2"/>
+    <circle cx="785" cy="208" r="6" fill="#337E83" stroke="#EDF4F2" stroke-width="5"/>
+    <rect x="825" y="55" width="392" height="98" rx="16" fill="#FFFFFF" stroke="#D5E0DC"/>
+    <rect x="847" y="79" width="46" height="48" rx="10" fill="#EEF4F2"/>
+    <path d="M860 91H880M860 99H880M860 107H875M860 115H879" stroke="#508283" stroke-width="2" stroke-linecap="round"/>
+    <text x="912" y="91" font-size="12" font-weight="700" letter-spacing="1.5" fill="#608184">ИСТОЧНИКИ</text>
+    <text x="912" y="119" font-size="21" font-weight="600" fill="#19323D">Проектные документы</text>
+    <rect x="825" y="159" width="392" height="98" rx="16" fill="#FFFFFF" stroke="#D5E0DC"/>
+    <rect x="847" y="183" width="46" height="48" rx="10" fill="#EEF4F2"/>
+    <path d="M859 196H881V218H859ZM859 203H881M867 196V218" stroke="#508283" stroke-width="2" stroke-linejoin="round"/>
+    <text x="912" y="195" font-size="12" font-weight="700" letter-spacing="1.5" fill="#608184">ПАМЯТЬ ПРОЕКТА</text>
+    <text x="912" y="223" font-size="21" font-weight="600" fill="#19323D">Показатели и объёмы</text>
+    <rect x="825" y="263" width="392" height="102" rx="16" fill="#19323D"/>
+    <rect x="847" y="289" width="46" height="48" rx="10" fill="#2F505A"/>
+    <path d="M859 312L866 319L881 304" stroke="#A5D2C9" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="912" y="301" font-size="12" font-weight="700" letter-spacing="1.5" fill="#A6CBC5">СОПОСТАВЛЕНИЕ</text>
+    <text x="912" y="329" font-size="21" font-weight="600" fill="#F6F8F5">Совпадения и вопросы</text>
+    <text x="825" y="401" font-size="12" letter-spacing="1.4" fill="#648184">UVYAZKA / DESKTOP AI TOOLKIT</text>
+  </g>
+</svg>

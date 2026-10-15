@@ -1,3 +1,4 @@
+import asyncio
 import os
 from pathlib import Path
 import sys
@@ -17,6 +18,9 @@ except ImportError:
 @unittest.skipIf(ClientSession is None, "MCP extra not installed")
 class ProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def test_official_stdio_client_and_observation(self):
+        await asyncio.wait_for(self.check_protocol(), timeout=60)
+
+    async def check_protocol(self):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td) / "state"; workspace = Workspace(home); create_demo(workspace)
             parameters = StdioServerParameters(command=sys.executable, args=["-m", "uvyazka.server"], env={**os.environ, "UVYAZKA_HOME": str(home), "PYTHONUTF8": "1"})

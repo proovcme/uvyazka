@@ -2,6 +2,7 @@ import asyncio
 import os
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 
@@ -17,6 +18,25 @@ except ImportError:
 
 @unittest.skipIf(ClientSession is None, "MCP extra not installed")
 class ProtocolTests(unittest.IsolatedAsyncioTestCase):
+    def test_server_without_optional_bim_libraries(self):
+        code = '''
+import asyncio, importlib.abc, sys, tempfile
+from pathlib import Path
+class BlockBIM(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {'numpy','ifcopenshell','ezdxf','PIL'}:
+            raise ModuleNotFoundError(fullname)
+sys.meta_path.insert(0, BlockBIM())
+from uvyazka.core import Workspace
+from uvyazka.server import build_server
+with tempfile.TemporaryDirectory() as directory:
+    server = build_server(Workspace(Path(directory)/'state'))
+    assert len(asyncio.run(server.list_tools())) == 41
+    asyncio.run(server.call_tool('construction_schema', {}))
+'''
+        result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     async def test_official_stdio_client_and_observation(self):
         await asyncio.wait_for(self.check_protocol(), timeout=60)
 

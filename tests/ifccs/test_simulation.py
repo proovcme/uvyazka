@@ -64,5 +64,3 @@ def test_cycles_and_impossible_resources_fail_explicitly():
     impossible["operations"][0]["demands"]["crew"] = 2
     with pytest.raises(ValueError, match="Неисполнимый"):
         SimulationEngine(impossible)
-
-

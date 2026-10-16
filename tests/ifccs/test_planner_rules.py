@@ -127,5 +127,3 @@ def test_concrete_hold_is_a_scenario_parameter_not_changed_by_resource_count():
     for invalid in (0, -1, True, 1.5, '28', 366):
         with pytest.raises(ValueError, match='календарных суток'):
             build_scenario(source, concrete_curing_days=invalid)
-
-

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import math
-import numpy as np
 
 
 def quantity(value, unit, kind, method, **evidence):
@@ -48,6 +47,7 @@ def mesh_quantities(vertices, faces):
     later by the technology package. These are geometric estimates, not a takeoff
     approved for temporary works.
     """
+    import numpy as np
     v = np.asarray(vertices, dtype=float)
     f = np.asarray(faces, dtype=int)
     triangles = v[f] - v.mean(axis=0)

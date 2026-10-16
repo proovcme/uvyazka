@@ -38,7 +38,7 @@ class RuntimeTests(unittest.TestCase):
             with patch.dict(os.environ,{'UVYAZKA_RVT_IFC':str(converter),'UVYAZKA_RVT_METADATA':str(metadata)},clear=True):
                 status=converter_status(root)
                 self.assertTrue(status['available'])
-                self.assertEqual(binary_path('ifccs-rvt-metadata',root),metadata)
+                self.assertEqual(binary_path('ifccs-rvt-metadata',root),metadata.resolve())
                 self.assertIsNone(status['binaries']['rvt-ifc']['source_revision'])
                 self.assertEqual(status['binaries']['rvt-ifc']['integrity'],'unverified')
 

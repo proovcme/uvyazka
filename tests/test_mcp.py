@@ -31,7 +31,7 @@ from uvyazka.core import Workspace
 from uvyazka.server import build_server
 with tempfile.TemporaryDirectory() as directory:
     server = build_server(Workspace(Path(directory)/'state'))
-    assert len(asyncio.run(server.list_tools())) == 47
+    assert len(asyncio.run(server.list_tools())) == 48
     asyncio.run(server.call_tool('construction_schema', {}))
     asyncio.run(server.call_tool('rvt_converter_status', {}))
 '''
@@ -49,7 +49,7 @@ with tempfile.TemporaryDirectory() as directory:
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    self.assertEqual(len(listed.tools), 47)
+                    self.assertEqual(len(listed.tools), 48)
                     by_name = {tool.name: tool for tool in listed.tools}
                     self.assertTrue(by_name["read_evidence"].annotations.readOnlyHint)
                     self.assertFalse(by_name["record_observations"].annotations.readOnlyHint)

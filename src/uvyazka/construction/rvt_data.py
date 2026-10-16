@@ -196,7 +196,11 @@ class RvtData:
             cached=db.execute('select payload from rvt_extractions where extraction_id=?',(fingerprint,)).fetchone()
         if cached:
             result=json.loads(cached[0])
-            with connection(path) as db:db.execute('insert into rvt_data_requests values (?,?,?)',(request_id,fingerprint,encode(result)))
+            with connection(path) as db:
+                db.execute('begin immediate')
+                old=db.execute('select fingerprint from rvt_data_requests where request_id=?',(request_id,)).fetchone()
+                if old and old[0]!=fingerprint:raise ValueError('request_id already used for different RVT data')
+                db.execute('insert or ignore into rvt_data_requests values (?,?,?)',(request_id,fingerprint,encode(result)))
             return result
         folder=path.parent/'rvt-data'/uuid4().hex;folder.mkdir(parents=True)
         copied=folder/'source.rvt';shutil.copyfile(source,copied)
@@ -235,6 +239,16 @@ class RvtData:
             'view_render_status':'Native view settings are extracted; formatted drawing rendering is not implemented'}
         with connection(path) as db:
             db.execute('begin immediate')
+            # MCP clients may issue overlapping requests. Recheck under the
+            # writer lock so one snapshot wins without duplicate records.
+            previous=db.execute('select fingerprint,payload from rvt_data_requests where request_id=?',(request_id,)).fetchone()
+            if previous:
+                if previous['fingerprint']!=fingerprint:raise ValueError('request_id already used for different RVT data')
+                return json.loads(previous['payload'])
+            existing=db.execute('select payload from rvt_extractions where extraction_id=?',(fingerprint,)).fetchone()
+            if existing:
+                db.execute('insert into rvt_data_requests values (?,?,?)',(request_id,fingerprint,existing[0]))
+                return json.loads(existing[0])
             db.execute('insert into rvt_extractions values (?,?)',(fingerprint,encode(result)))
             db.executemany('insert into rvt_native_records values (?,?,?,?,?,?,?,?)',records)
             db.execute('insert into rvt_data_requests values (?,?,?)',(request_id,fingerprint,encode(result)))

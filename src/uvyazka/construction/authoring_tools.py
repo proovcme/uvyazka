@@ -39,6 +39,24 @@ def adopt(workspace, project_id, model_id, sources, request_id, fingerprint=None
     return p._save(project_id,"construction_models",model,request_id,fingerprint or canonical_hash([model_id,sources]))
 
 
+def import_rvt_document(workspace,project_id,doc_id,request_id):
+    """Shared registered-document operation for direct import and RVT preparation."""
+    doc,path=workspace.source_record(project_id,doc_id)
+    if path.suffix.lower()!='.rvt':raise ValueError('Choose a registered RVT')
+    if not path.is_file() or not 0<path.stat().st_size<=512*1024*1024:raise ValueError('RVT source must be a file <=512 MiB')
+    pointer={'doc_id':doc_id,'sha256':doc['sha256'] or digest(path),'locator':'Native RVT model'}
+    p=Planning(workspace);p.validate_sources(project_id,[pointer])
+    store=store_for(workspace,project_id)
+    from .rvt import import_identity
+    identity=import_identity(path,path.name)
+    fingerprint=canonical_hash(['rvt',doc_id,pointer['sha256'],identity])
+    if old:=p._retry(project_id,request_id,fingerprint):return old
+    result=store.import_rvt(path.name,path=str(path))
+    p.validate_sources(project_id,[pointer])
+    if result['model_id']!=identity:raise ValueError('RVT or converter changed during import; retry after checking versions')
+    return adopt(workspace,project_id,result['model_id'],[pointer],request_id,fingerprint)
+
+
 def register_tools(mcp,workspace):
     from mcp.server.fastmcp import Image
     read={"readOnlyHint":True,"idempotentHint":True}
@@ -155,18 +173,4 @@ def register_tools(mcp,workspace):
     @mcp.tool(annotations=write)
     def import_rvt_model(project_id:str,doc_id:str,request_id:str) -> dict:
         """Convert a registered RVT locally using the included rvt-rs source (build with tools/setup_rvt.py), reopen/validate IFC and publish the model. Check rvt_converter_status first; use get_rvt_conversion for derived IFC and diagnostics. No Revit or cloud. Unknown/box geometry cannot supply work volumes."""
-        doc,path=workspace.source_record(project_id,doc_id)
-        if path.suffix.lower()!=".rvt": raise ValueError("Choose a registered RVT")
-        if not path.is_file() or not 0 < path.stat().st_size <= 512*1024*1024:
-            raise ValueError("RVT source must be a file <=512 MiB")
-        pointer={"doc_id":doc_id,"sha256":doc["sha256"] or digest(path),"locator":"Native RVT model"}
-        p=Planning(workspace);p.validate_sources(project_id,[pointer])
-        store=store_for(workspace,project_id)
-        from .rvt import import_identity
-        identity=import_identity(path,path.name)
-        fingerprint=canonical_hash(['rvt',doc_id,pointer['sha256'],identity])
-        if old:=p._retry(project_id,request_id,fingerprint): return old
-        result=store.import_rvt(path.name,path=str(path))
-        p.validate_sources(project_id,[pointer])
-        if result['model_id']!=identity: raise ValueError('RVT or converter changed during import; retry after checking versions')
-        return adopt(workspace,project_id,result["model_id"],[pointer],request_id,fingerprint)
+        return import_rvt_document(workspace,project_id,doc_id,request_id)

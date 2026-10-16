@@ -129,7 +129,7 @@ def import_source(source_path, output_path, source_name=None):
     version = metadata.get("version") or metadata.get("document", {}).get("revit_version")
     # Only an explicit, known-old release can be rejected before conversion.
     if version and str(version).isdigit() and int(version) < 2023:
-        raise ValueError(f"RVT Revit {version}: rvt-rs читает метаданные, но не поддерживает геометрию этой версии. Нужен IFC-экспорт либо копия RVT, пересохранённая в поддерживаемой версии (лучше 2024/2025).")
+        raise ValueError(f"RVT Revit {version}: rvt-rs читает метаданные, но геометрия этой версии пока не поддерживается. Нативное извлечение данных доступно отдельно; для геометрии можно передать готовый IFC.")
     converted = output / "converted.ifc"
     diagnostics_path = output / "conversion-diagnostics.json"
     command = [str(binary), str(source.resolve()), "-o", str(converted.resolve()),
@@ -137,7 +137,7 @@ def import_source(source_path, output_path, source_name=None):
     try:
         result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
     except subprocess.TimeoutExpired as error:
-        raise ValueError("Чтение RVT превысило 15 минут. Исходный файл сохранён; попробуйте IFC-экспорт из Revit.") from error
+        raise ValueError("Чтение геометрии RVT превысило 15 минут. Исходный файл сохранён; параметры, виды и спецификации можно извлекать отдельным нативным этапом.") from error
     except OSError as error:
         raise ValueError(f"Не удалось запустить локальный конвертер RVT: {error}") from error
     (output / "conversion.log").write_text(result.stdout + "\n" + result.stderr, encoding="utf-8")

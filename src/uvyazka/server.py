@@ -82,6 +82,8 @@ def build_server(workspace: Workspace | None = None):
     register_coordination(mcp, memory)
     from .construction.authoring_tools import register_tools as register_authoring
     register_authoring(mcp,memory)
+    from .construction.rvt_data_tools import register_tools as register_rvt_data
+    register_rvt_data(mcp,memory)
     return mcp
 
 

@@ -112,3 +112,14 @@ uv run uvyazka export-skills C:\AgentSkills\uvyazka
 Для создания IFC по описанию агента, чтения DXF и рендера:
 `uv sync --extra all --extra authoring`. Порядок действий и границы
 экспериментального RVT описаны в [CONSTRUCTION.md](CONSTRUCTION.md).
+
+Для RVT из checkout Увязки: `uv run python tools/setup_rvt.py`, затем
+`uv run uvyazka rvt-status`. Скрипт использует включённые исходники и
+Cargo.lock; Rust >=1.87 и системные C/C++ build tools должны быть установлены.
+Если для MCP задан UVYAZKA_HOME, используйте его и при сборке (или --home).
+Бинарники устанавливаются в состояние пользователя, исходный RVT сохраняется.
+
+Для внешней установки можно явно задать UVYAZKA_RVT_BIN_DIR или отдельные
+UVYAZKA_RVT_IFC / UVYAZKA_RVT_INFO / UVYAZKA_RVT_METADATA. Старое
+IFCCS_RVT_IFC также поддерживается. Для таких overrides происхождение
+бинарников не считается проверенным по включённому снимку исходников.

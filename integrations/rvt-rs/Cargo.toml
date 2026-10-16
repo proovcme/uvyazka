@@ -1,0 +1,260 @@
+[package]
+name = "rvt"
+version = "0.4.0"
+edition = "2024"
+rust-version = "1.87"
+license = "Apache-2.0"
+description = "Apache-2.0 clean-room reader for Autodesk Revit files (.rvt, .rfa, .rte, .rft) without Revit: metadata, previews and the embedded schema of 2016-2026 files, and typed elements with measured geometry from Revit 2024 and 2025 projects, exported as IFC4, glTF and plan SVG."
+authors = ["Griffin Long <151978260+DrunkOnJava@users.noreply.github.com>"]
+repository = "https://github.com/DrunkOnJava/rvt-rs"
+homepage = "https://github.com/DrunkOnJava/rvt-rs"
+documentation = "https://docs.rs/rvt"
+readme = "README.md"
+keywords = ["revit", "bim", "autodesk", "ifc", "rfa"]
+categories = ["parser-implementations", "compression", "command-line-utilities"]
+exclude = [
+    ".github/*",
+    ".gitignore",
+    "tools/bench.sh",
+    "docs/outreach/*",
+    "docs/announcement-draft.md",
+    "docs/demo/*",
+    # docs/data/*.csv must ship: src/class_tag_map.rs `include_str!`s
+    # docs/data/tag-drift-2016-2026.csv, and excluding it made the packaged
+    # crate fail `cargo publish --dry-run` verification.
+]
+# Every tests/*.rs file is a module of tests/integration/main.rs, one test
+# binary rather than one per file (C6).
+autotests = false
+
+# The SPDX identifier `Apache-2.0` is set above. The full license text
+# is in LICENSE at the crate root.
+
+[workspace]
+# SEC-12 + SEC-13: pyo3 bindings moved to their own member crate
+# (`rvt-py/`) so this core library can `#![forbid(unsafe_code)]`
+# unconditionally — no feature-gated escape hatch. The wheel on
+# PyPI still ships as a single `rvt` distribution; it's built via
+# `maturin build --manifest-path rvt-py/Cargo.toml`.
+members = [".", "rvt-py", "rvt-wasm", "tools/stream_evidence"]
+
+[features]
+# Heap-profiling mode (Q-08). When enabled, binaries built from
+# `examples/dhat_*.rs` install the `dhat` global allocator and
+# emit a `dhat-heap.json` trace that `dhat-viewer` (web viewer at
+# https://nnethercote.github.io/dh_view/dh_view.html) renders as
+# a flamegraph of allocations by call-site.
+#
+# Build:
+#   cargo run --release --features dhat-heap --example dhat_schema -- \
+#     tests/fixtures/sample.rfa
+#
+# Then open the produced `dhat-heap.json` in dhat-viewer.
+dhat-heap = ["dep:dhat"]
+
+[dependencies]
+# Microsoft Compound File Binary (OLE) container — reads the outer
+# wrapper Revit uses for every on-disk file.
+cfb = "0.15"
+# DEFLATE / raw inflate — for the truncated-gzip streams Revit ships.
+flate2 = "1.0"
+# UTF-16LE decoder — robust enough to recover from Revit's malformed
+# surrogate pairs (encoding_rs doesn't panic where stdlib does).
+encoding_rs = "0.8"
+# Vectorised substring search. The partition element-record sweep scans
+# every inflated `Partitions/*` byte once per BuiltInCategory — ~1 GiB
+# per project-file export — and the hand-rolled first-byte loop it
+# replaces was the second-largest cost in a geometry export. Adds no
+# crate to the build graph: `memchr` is already a normal (non-dev)
+# transitive dependency through both quick-xml and serde_json.
+memchr = "2"
+# SIMD Adler-32 for the data-object scan (RE-153, B80): a partition stream
+# holds headers that look like objects claiming megabytes, and each is
+# summed before it is rejected (8.4 GB per scan of Autodesk's 2025 MEP
+# sample). Adds no crate to the build graph: miniz_oxide, under flate2,
+# already depends on it.
+simd-adler32 = "0.3.9"
+# Triangulates the planar faces of saved family graphics (#255, rosejn).
+# MIT OR Apache-2.0. From 0.4.10 it calls `is_multiple_of`, which needs Rust
+# 1.87, and it declares no rust-version, so the MSRV-aware resolver cannot
+# tell: keep `rust-version` at 1.87 or above while this allows 0.4.10+.
+earcut = "0.4.5"
+# PartAtom XML parser. 0.42 needs Rust 1.86.
+quick-xml = { version = "0.42", features = ["serialize"] }
+# Serialisation for JSON output + test fixtures.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Witness mode (docs/verification-protocol.md): `rvt-ifc --observation`
+# records the SHA-256 of the input it observed so a replay can prove the
+# same bytes were read. Also used by tests/corpus_health for sidecars.
+sha2 = "0.11"
+# CLI argument parsing for every shipped binary.
+clap = { version = "4", features = ["derive"] }
+# Error ergonomics.
+anyhow = "1"
+thiserror = "2"
+# Optional heap profiler (Q-08). Only pulled in when the `dhat-heap`
+# feature is enabled — default builds have zero cost. Pinned to 0.3
+# (current stable API).
+dhat = { version = "0.3", optional = true }
+md-5 = "0.11"
+
+# The browser's clock for the IFC header's timestamp: `std::time::SystemTime`
+# panics on wasm32-unknown-unknown, which the viewer (rvt-wasm) builds for.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+js-sys = "0.3"
+
+[dev-dependencies]
+# Discussion #112 / #151 stream-evidence harness. Only
+# `examples/stream_evidence.rs` uses it, so it is a dev-dependency, and it is
+# path-only on purpose: Cargo strips path-only dev-dependencies at
+# `cargo publish`, which keeps `rvt` publishable while `tools/stream_evidence`
+# stays `publish = false` (a regular dependency made `cargo publish -p rvt`
+# fail with "no matching package named `stream-evidence`").
+stream-evidence = { path = "tools/stream_evidence" }
+# Statistical benchmarking harness — drives `benches/*` and
+# powers the criterion-based cells in `docs/benchmarks.md` (Q-05).
+# `html_reports` renders per-run HTML + SVG so CI artefacts are
+# browsable. Version 0.7 builds on the MSRV.
+criterion ={ version = "0.8", features = ["html_reports"] }
+# Property-based never-panic / round-trip suites in tests/proptest_parsers.rs.
+proptest = "1"
+# Tier-one corpus health: hex-encode license-sidecar SHA256 checks of
+# committed synthetic fixtures under corpus/tier1/ (`sha2` itself is a
+# regular dependency — `rvt-ifc --observation` hashes its input).
+hex = "0.4"
+# Shipped binaries. All depend on the `rvt` library crate; tests/binary_inventory.rs
+# pins this list against the README's CLI sentence so the two cannot drift.
+
+[[bin]]
+name = "rvt-analyze"
+path = "src/bin/rvt_analyze.rs"
+
+[[bin]]
+name = "rvt-info"
+path = "src/bin/rvt_info.rs"
+
+[[bin]]
+name = "rvt-inspect"
+path = "src/bin/rvt_inspect.rs"
+
+[[bin]]
+name = "rvt-schema"
+path = "src/bin/rvt_schema.rs"
+
+[[bin]]
+name = "rvt-history"
+path = "src/bin/rvt_history.rs"
+
+[[bin]]
+name = "rvt-diff"
+path = "src/bin/rvt_diff.rs"
+
+[[bin]]
+name = "rvt-corpus"
+path = "src/bin/rvt_corpus.rs"
+
+[[bin]]
+name = "rvt-dump"
+path = "src/bin/rvt_dump.rs"
+
+[[bin]]
+name = "rvt-doc"
+path = "src/bin/rvt_doc.rs"
+
+[[bin]]
+name = "rvt-ifc"
+path = "src/bin/rvt_ifc.rs"
+
+[[bin]]
+name = "rvt-ifc-compare"
+path = "src/bin/rvt_ifc_compare.rs"
+
+[[bin]]
+name = "gen-fixture"
+path = "src/bin/gen_fixture.rs"
+
+[[bin]]
+name = "rvt-write"
+path = "src/bin/rvt_write.rs"
+
+[[bin]]
+name = "rvt-gltf"
+path = "src/bin/rvt_gltf.rs"
+
+[[bin]]
+name = "rvt-sheet"
+path = "src/bin/rvt_sheet.rs"
+
+[[bin]]
+name = "rvt-elem-table"
+path = "src/bin/rvt_elem_table.rs"
+
+[[bin]]
+name = "rvt-elements"
+path = "src/bin/rvt_elements.rs"
+
+[[bin]]
+name = "rvt-capabilities"
+path = "src/bin/rvt_capabilities.rs"
+
+[[bin]]
+name = "rvt-schedule"
+path = "src/bin/rvt_schedule.rs"
+
+# Criterion benchmark suite (Q-05). Run with `cargo bench` or
+# `cargo bench --bench compression`. See `docs/benchmarks.md`.
+[[bench]]
+name = "compression"
+harness = false
+
+[[bench]]
+name = "basic_file_info"
+harness = false
+
+[[bench]]
+name = "schema"
+harness = false
+
+# Q-07: multi-megabyte project-file benchmarks. Skips gracefully
+# when the magnetar-io/revit-test-datasets corpus isn't present.
+# Override path via `RVT_PROJECT_CORPUS_DIR`.
+[[bench]]
+name = "project_file"
+harness = false
+
+[lib]
+name = "rvt"
+path = "src/lib.rs"
+# A plain `rlib`. The wasm bindings are their own `cdylib` crate,
+# `rvt-wasm` (C6), as the pyo3 bindings are `rvt-py` (SEC-12/13): a
+# `cdylib` crate type here linked a shared library on every native
+# build, test run and `cargo install`.
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+# CI-only profile: release optimisation without the parts sccache cannot
+# cache. `cargo build --release --all-targets` links 57 targets (18 bins,
+# 35 test binaries, 4 benches) through fat LTO at codegen-units = 1, which
+# was 781 s of the 848 s Windows test job on 2026-08-30 while every rustc
+# invocation was already a cache hit. Tests do not need LTO; shipped
+# binaries (publish.yml) keep `release`.
+[profile.ci]
+inherits = "release"
+lto = "off"
+codegen-units = 16
+strip = false
+debug = 0
+incremental = false
+
+# Docs.rs build configuration — see https://docs.rs/about/metadata
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

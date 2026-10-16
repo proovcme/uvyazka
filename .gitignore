@@ -13,6 +13,8 @@ settings.local.json
 .gemini/settings.json
 secrets/
 data/
+!integrations/rvt-rs/docs/data/
+!integrations/rvt-rs/docs/data/tag-drift-2016-2026.csv
 cache/
 models/
 projects/
@@ -56,3 +58,7 @@ build/
 Thumbs.db
 .uvyazka*/
 *.egg-info/
+**/target/
+*.exe
+*.dll
+*.pdb

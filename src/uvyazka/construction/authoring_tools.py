@@ -32,17 +32,48 @@ def scoped(result, project_id, drawing_id):
     return result
 
 
-def adopt(workspace, project_id, model_id, sources, request_id):
+def adopt(workspace, project_id, model_id, sources, request_id, fingerprint=None):
     p=Planning(workspace); folder=workspace.db_path(project_id).parent/"construction/models"/model_id
     model=json.loads((folder/"manifest.json").read_text(encoding="utf-8"))
     model["project_id"]=project_id; model["source"]["sources"]=sources
-    return p._save(project_id,"construction_models",model,request_id,canonical_hash([model_id,sources]))
+    return p._save(project_id,"construction_models",model,request_id,fingerprint or canonical_hash([model_id,sources]))
 
 
 def register_tools(mcp,workspace):
     from mcp.server.fastmcp import Image
     read={"readOnlyHint":True,"idempotentHint":True}
     write={"readOnlyHint":False,"destructiveHint":False,"idempotentHint":False}
+
+    @mcp.tool(annotations=read)
+    def rvt_converter_status() -> dict:
+        """Check local RVT converter, metadata reader, installation paths and managed binary integrity. No model is opened; no Revit, cloud service or BIM Python libraries are required for this check."""
+        from .rvt_runtime import converter_status
+        return converter_status()
+
+    @mcp.tool(annotations=read)
+    def get_rvt_conversion(project_id:str,model_id:str,section:str="summary",offset:int=0,limit:int=40) -> dict:
+        """Read conversion provenance and local derived IFC paths, or a bounded diagnostics page. Sections: summary, warnings, skipped, unsupported_features, validation, repairs. These are working copies; original RVT remains untouched."""
+        from .planning import bounded
+        p=Planning(workspace); model=p.model(project_id,model_id)
+        conversion=model['source'].get('conversion')
+        if model['source'].get('format')!='rvt' or not conversion:
+            raise ValueError('Choose a converted RVT model from this project')
+        root=p.model_path(project_id,model_id)
+        scope={'project_id':project_id,'model_id':model_id}
+        if section=='summary':
+            return {**scope,'source_sha256':model['source']['sha256'],
+                'conversion':{k:v for k,v in conversion.items() if k not in {'warnings','skipped','unsupported_features','normalization'}},
+                'phase_status':model.get('revit',{}).get('status','unavailable'),
+                'artifacts':{name:str(root/name) for name in ['converted.ifc','raw-converted.ifc','conversion-diagnostics.json','ifc-validation.json','conversion-repairs.json'] if (root/name).is_file()},
+                'diagnostic_counts':{key:len(conversion.get(key,[])) for key in ['warnings','skipped','unsupported_features']}}
+        if section in {'warnings','skipped','unsupported_features'}:
+            rows=conversion.get(section,[])
+        elif section in {'validation','repairs'}:
+            path=root/('ifc-validation.json' if section=='validation' else 'conversion-repairs.json')
+            if not path.is_file() or path.stat().st_size>16*1024*1024: raise ValueError('Diagnostics unavailable or exceed 16 MiB')
+            rows=json.loads(path.read_text(encoding='utf-8'))
+        else: raise ValueError('Unknown RVT diagnostic section')
+        return {**scope,'section':section,**bounded(rows,offset,limit)}
 
     @mcp.tool(annotations=read)
     def ifc_authoring_schema() -> dict:
@@ -123,12 +154,19 @@ def register_tools(mcp,workspace):
 
     @mcp.tool(annotations=write)
     def import_rvt_model(project_id:str,doc_id:str,request_id:str) -> dict:
-        """Experimental local RVT import using an externally installed rvt-rs converter, never Revit or a cloud service. Set IFCCS_RVT_IFC to the converter executable. Unknown/box geometry cannot supply work volumes."""
+        """Convert a registered RVT locally using the included rvt-rs source (build with tools/setup_rvt.py), reopen/validate IFC and publish the model. Check rvt_converter_status first; use get_rvt_conversion for derived IFC and diagnostics. No Revit or cloud. Unknown/box geometry cannot supply work volumes."""
         doc,path=workspace.source_record(project_id,doc_id)
         if path.suffix.lower()!=".rvt": raise ValueError("Choose a registered RVT")
         if not path.is_file() or not 0 < path.stat().st_size <= 512*1024*1024:
             raise ValueError("RVT source must be a file <=512 MiB")
         pointer={"doc_id":doc_id,"sha256":doc["sha256"] or digest(path),"locator":"Native RVT model"}
-        Planning(workspace).validate_sources(project_id,[pointer])
-        result=store_for(workspace,project_id).import_rvt(path.name,path=str(path))
-        return adopt(workspace,project_id,result["model_id"],[pointer],request_id)
+        p=Planning(workspace);p.validate_sources(project_id,[pointer])
+        store=store_for(workspace,project_id)
+        from .rvt import import_identity
+        identity=import_identity(path,path.name)
+        fingerprint=canonical_hash(['rvt',doc_id,pointer['sha256'],identity])
+        if old:=p._retry(project_id,request_id,fingerprint): return old
+        result=store.import_rvt(path.name,path=str(path))
+        p.validate_sources(project_id,[pointer])
+        if result['model_id']!=identity: raise ValueError('RVT or converter changed during import; retry after checking versions')
+        return adopt(workspace,project_id,result["model_id"],[pointer],request_id,fingerprint)

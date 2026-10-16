@@ -9,10 +9,9 @@ import subprocess
 import uuid
 
 from .importer import IMPORTER_VERSION, import_model, write_json
+from .rvt_runtime import UPSTREAM_REVISION, binary_path, converter_status as runtime_status
 
-ROOT = Path(__file__).resolve().parents[1]
 ADAPTER_VERSION = "0.3.0"
-UPSTREAM_REVISION = "120e2f9ffa8422ba437102c8d300b7e902cdde80"
 RVT_MAX_BYTES = 512 * 1024 * 1024
 IFC_MAX_BYTES = 100 * 1024 * 1024
 OLE_SIGNATURE = bytes.fromhex("D0CF11E0A1B11AE1")
@@ -24,24 +23,22 @@ def file_hash(path):
 
 
 def converter_path():
-    override = os.environ.get("IFCCS_RVT_IFC")
-    return Path(override).resolve() if override else ROOT / "integrations/rvt-rs/target/release" / ("rvt-ifc.exe" if os.name == "nt" else "rvt-ifc")
+    return binary_path("rvt-ifc")
 
 
 def converter_status():
-    binary = converter_path()
-    return {"engine": "rvt-rs", "available": binary.is_file(), "path": str(binary),
-            "adapter_version": ADAPTER_VERSION, "source_revision": UPSTREAM_REVISION if not os.environ.get("IFCCS_RVT_IFC") else None,
-            "local_only": True, "max_bytes": RVT_MAX_BYTES,
-            "limitations": "Experimental reader; version/category coverage is partial. Box bodies cannot supply work volumes."}
+    status = runtime_status()
+    converter = status["binaries"]["rvt-ifc"]
+    return {**status, "path": converter.get("path"), "adapter_version": ADAPTER_VERSION,
+            "source_revision": converter.get("source_revision")}
 
 
 def inspect_rvt(path):
     source = Path(path)
     validate_input(source, source.name)
-    binary = converter_path().with_name("rvt-info.exe" if os.name == "nt" else "rvt-info")
+    binary = binary_path("rvt-info")
     if not binary.is_file():
-        raise ValueError("RVT-инспектор не установлен; запустите scripts/setup_rvt.ps1")
+        raise ValueError("RVT-инспектор не установлен; запустите uv run python tools/setup_rvt.py")
     try:
         result = subprocess.run([str(binary), str(source.resolve()), "--json"], capture_output=True,
             text=True, encoding="utf-8", errors="replace", timeout=60)
@@ -74,7 +71,7 @@ def import_identity(path, name):
         return digest
     binary = converter_path()
     if not binary.is_file():
-        raise ValueError("Конвертер RVT не установлен. Запустите scripts/setup_rvt.ps1 и повторите загрузку.")
+        raise ValueError("Конвертер RVT не установлен. Запустите uv run python tools/setup_rvt.py и повторите загрузку.")
     # Separate models produced by different converter builds and quantity policies.
     return hashlib.sha256(f"{digest}:{file_hash(binary)}:{ADAPTER_VERSION}:{IMPORTER_VERSION}".encode()).hexdigest()
 

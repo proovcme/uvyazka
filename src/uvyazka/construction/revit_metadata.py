@@ -4,14 +4,13 @@ import os
 from pathlib import Path
 import subprocess
 
-from .importer import write_json
+from .rvt_runtime import binary_path
 
-ROOT = Path(__file__).resolve().parents[1]
 METADATA_VERSION = '0.1.0'
 
 
 def reader_path():
-    return ROOT / 'integrations/rvt-metadata-reader/target/release' / ('ifccs-rvt-metadata.exe' if os.name == 'nt' else 'ifccs-rvt-metadata')
+    return binary_path('ifccs-rvt-metadata')
 
 
 def native_id(value):
@@ -53,10 +52,11 @@ def phase_projection(native):
 
 
 def read_revit_metadata(source, package, model):
+    from .importer import write_json
     binary = reader_path()
     if not binary.is_file():
         return {'status': 'unavailable', 'phases': [], 'phase_order_known': False,
-            'note': 'Установите локальный reader стадий: scripts/setup_rvt.ps1'}
+            'note': 'Установите локальный reader стадий: uv run python tools/setup_rvt.py'}
     ids = sorted({int(e['revit']['element_id']) for e in model['elements'] if e.get('revit', {}).get('element_id')})
     ids_path, output = Path(package) / 'native-request-ids.json', Path(package) / 'revit-native.json'
     write_json(ids_path, ids)

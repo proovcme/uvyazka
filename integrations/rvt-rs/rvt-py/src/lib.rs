@@ -1,0 +1,826 @@
+//! Python bindings via pyo3. Gated behind the `python` Cargo feature
+//! so the default Rust build is unaffected.
+//!
+//! Usage from Python (after installing the wheel that `maturin build
+//! --features python` produces):
+//!
+//! ```python
+//! import rvt
+//!
+//! f = rvt.RevitFile("sample.rfa")
+//! print(f.version)              # 2024
+//! print(f.part_atom_title)      # "Kitchen Cabinet — Base"
+//! print(f.stream_names())       # ["BasicFileInfo", "Contents", ...]
+//!
+//! doc = f.read_adocument()      # dict | None
+//! if doc is not None:
+//!     for field in doc["fields"]:
+//!         print(field["name"], field["kind"], field.get("id"))
+//!
+//! ifc_text = f.write_ifc()      # spec-valid IFC4 STEP as str
+//! ```
+//!
+//! Design principle: expose only the stable high-level surface —
+//! metadata, walker-read ADocument, IFC export. The low-level
+//! byte-pattern / FieldType machinery stays in Rust; Python callers
+//! get dicts and strings, no wrapper types to learn.
+
+#![allow(non_local_definitions)]
+// pyo3's #[pyclass]/#[pymethods]/#[pyfunction] macros expand into code
+// that calls the pyo3 runtime's unsafe helpers inside otherwise-safe
+// user function signatures. The Rust 2024 `unsafe_op_in_unsafe_fn` lint
+// flags every one of those calls; pyo3 0.22 does not yet wrap them in
+// explicit `unsafe {}` blocks. Similarly the macros generate `.into()`
+// calls on already-PyErr values (clippy::useless_conversion). Both are
+// tracked upstream (pyo3#4382, pyo3#4448) — silence them at the module
+// level so the main Rust build stays clean with `-D warnings`.
+#![allow(unsafe_op_in_unsafe_fn)]
+#![allow(clippy::useless_conversion)]
+
+use pyo3::exceptions::{PyFileNotFoundError, PyIOError, PyValueError};
+use pyo3::prelude::*;
+use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
+
+use rvt::{RevitFile as RustRevitFile, elem_table, elements, ifc, walker};
+
+fn to_py_io<E: std::fmt::Display>(e: E) -> PyErr {
+    PyIOError::new_err(e.to_string())
+}
+fn to_py_val<E: std::fmt::Display>(e: E) -> PyErr {
+    PyValueError::new_err(e.to_string())
+}
+
+/// `FileNotFoundError` / `IOError` for I/O failures, `ValueError` for input
+/// that is not a readable Revit file.
+fn to_py_metadata_err(e: rvt::Error) -> PyErr {
+    match &e {
+        rvt::Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
+            PyFileNotFoundError::new_err(e.to_string())
+        }
+        rvt::Error::Io(_) => PyIOError::new_err(e.to_string()),
+        _ => PyValueError::new_err(e.to_string()),
+    }
+}
+
+fn metadata_to_py<'py>(
+    py: Python<'py>,
+    metadata: &rvt::metadata::FileMetadata,
+) -> PyResult<Bound<'py, PyAny>> {
+    let json = serde_json::to_string(metadata).map_err(to_py_val)?;
+    py.import("json")?.call_method1("loads", (json,))
+}
+
+fn parse_export_quality_mode(mode: &str) -> PyResult<ifc::ExportQualityMode> {
+    ifc::ExportQualityMode::parse(mode).map_err(to_py_val)
+}
+
+fn write_ifc_with_quality_mode(
+    rf: &mut RustRevitFile,
+    mode: ifc::ExportQualityMode,
+) -> PyResult<String> {
+    write_ifc_with_quality_mode_and_limits(rf, mode, walker::WalkerLimits::default())
+}
+
+fn write_ifc_with_quality_mode_and_limits(
+    rf: &mut RustRevitFile,
+    mode: ifc::ExportQualityMode,
+    walker_limits: walker::WalkerLimits,
+) -> PyResult<String> {
+    let result = ifc::RvtDocExporter
+        .export_with_diagnostics_mode_and_limits(rf, mode, walker_limits)
+        .map_err(to_py_val)?;
+    mode.validate(&result.diagnostics).map_err(to_py_val)?;
+    Ok(ifc::write_step(&result.model))
+}
+
+/// Shared serialiser: ADocumentInstance → Python dict. Used by the
+/// three ADocument accessors (plain / strict / lossy) so they all
+/// return the same shape.
+fn instance_to_dict<'py>(
+    py: Python<'py>,
+    inst: &walker::ADocumentInstance,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("entry_offset", inst.entry_offset)?;
+    d.set_item("version", inst.version)?;
+
+    let fields = PyList::empty(py);
+    for (name, value) in &inst.fields {
+        let fd = PyDict::new(py);
+        fd.set_item("name", name)?;
+        set_instance_field_items(&fd, value)?;
+        fields.append(fd)?;
+    }
+    d.set_item("fields", fields)?;
+    Ok(d)
+}
+
+fn set_instance_field_items(
+    out: &Bound<'_, PyDict>,
+    value: &walker::InstanceField,
+) -> PyResult<()> {
+    match value {
+        walker::InstanceField::Pointer { raw } => {
+            out.set_item("kind", "pointer")?;
+            out.set_item("slot_a", raw[0])?;
+            out.set_item("slot_b", raw[1])?;
+        }
+        walker::InstanceField::ElementId { tag, id } => {
+            out.set_item("kind", "element_id")?;
+            out.set_item("tag", *tag)?;
+            out.set_item("id", *id)?;
+        }
+        walker::InstanceField::RefContainer { col_a, col_b } => {
+            out.set_item("kind", "ref_container")?;
+            out.set_item("count", col_a.len())?;
+            out.set_item("col_a", col_a.clone())?;
+            out.set_item("col_b", col_b.clone())?;
+        }
+        walker::InstanceField::Integer {
+            value,
+            signed,
+            size,
+        } => {
+            out.set_item("kind", "integer")?;
+            out.set_item("value", *value)?;
+            out.set_item("signed", *signed)?;
+            out.set_item("size", *size)?;
+        }
+        walker::InstanceField::Float { value, size } => {
+            out.set_item("kind", "float")?;
+            out.set_item("value", *value)?;
+            out.set_item("size", *size)?;
+        }
+        walker::InstanceField::Bool(v) => {
+            out.set_item("kind", "bool")?;
+            out.set_item("value", *v)?;
+        }
+        walker::InstanceField::Guid(bytes) => {
+            out.set_item("kind", "guid")?;
+            out.set_item("bytes", bytes.to_vec())?;
+        }
+        walker::InstanceField::String(s) => {
+            out.set_item("kind", "string")?;
+            out.set_item("value", s.as_str())?;
+        }
+        walker::InstanceField::Vector(items) => {
+            out.set_item("kind", "vector")?;
+            out.set_item("len", items.len())?;
+        }
+        walker::InstanceField::Bytes(b) => {
+            out.set_item("kind", "bytes")?;
+            out.set_item("len", b.len())?;
+        }
+    }
+    Ok(())
+}
+
+fn decoded_element_to_dict<'py>(
+    py: Python<'py>,
+    element: &walker::DecodedElement,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    match element.id {
+        Some(id) => d.set_item("id", id)?,
+        None => d.set_item("id", py.None())?,
+    }
+    d.set_item("class_name", element.class.as_str())?;
+
+    let range = PyDict::new(py);
+    range.set_item("start", element.byte_range.start)?;
+    range.set_item("end", element.byte_range.end)?;
+    d.set_item("byte_range", range)?;
+
+    let fields = PyList::empty(py);
+    for (name, value) in &element.fields {
+        let fd = PyDict::new(py);
+        fd.set_item("name", name)?;
+        set_instance_field_items(&fd, value)?;
+        fields.append(fd)?;
+    }
+    d.set_item("fields", fields)?;
+
+    // #35 — AProperty* values when this row is a value carrier; empty
+    // for host elements until host↔parameter joins recover.
+    let params = PyList::empty(py);
+    for entry in elements::parameters::parameter_entries_from_decoded(element) {
+        let json_module = py.import("json")?;
+        let entry_json = serde_json::to_string(&entry.to_json_value()).map_err(to_py_val)?;
+        let entry_obj = json_module.call_method1("loads", (entry_json,))?;
+        params.append(entry_obj)?;
+    }
+    d.set_item("parameters", params)?;
+
+    // M3-07 — decode confidence + provenance.
+    let prov_json =
+        serde_json::to_string(&element.provenance.to_json_value()).map_err(to_py_val)?;
+    let json_module = py.import("json")?;
+    let provenance = json_module.call_method1("loads", (prov_json,))?;
+    d.set_item("provenance", provenance)?;
+
+    // Lane Five MVP typed projection (null when class is not in the
+    // schema-driven MVP set — ArcWall stays on the partition path).
+    match elements::typed_json::mvp_typed_view(element) {
+        Some(typed) => {
+            let json_module = py.import("json")?;
+            let typed_json = serde_json::to_string(&typed).map_err(to_py_val)?;
+            let typed_obj = json_module.call_method1("loads", (typed_json,))?;
+            d.set_item("typed", typed_obj)?;
+        }
+        None => d.set_item("typed", py.None())?,
+    }
+    Ok(d)
+}
+
+/// Opened Revit file — the primary Python entry point.
+///
+/// Constructed with a filesystem path. Raises `IOError` on missing
+/// files, non-CFB input, or read errors.
+#[pyclass(name = "RevitFile", module = "rvt")]
+struct PyRevitFile {
+    inner: RustRevitFile,
+    walker_limits: walker::WalkerLimits,
+}
+
+#[pymethods]
+impl PyRevitFile {
+    /// Open a Revit file with optional size limits.
+    ///
+    /// `max_file_bytes`, `max_stream_bytes`, `max_inflate_bytes`, and
+    /// the walker scan limits cap the resources the reader will use.
+    /// Hostile input that would otherwise force multi-GB allocations is
+    /// rejected up-front or reported through lossy diagnostics.
+    ///
+    /// `max_file_bytes`, `max_stream_bytes`, and `max_inflate_bytes`
+    /// cap the resources the reader will use. Each defaults to the
+    /// Rust-side `OpenLimits::default()` values (2 GiB file, 256 MiB
+    /// stream, 256 MiB inflate). Hostile input that would otherwise
+    /// force multi-GB allocations is rejected up-front.
+    #[new]
+    #[pyo3(signature = (path, max_file_bytes=None, max_stream_bytes=None, max_inflate_bytes=None, max_walker_scan_bytes=None, max_walker_candidates=None, max_walker_trial_offsets=None, max_walker_record_decode_bytes=None, max_walker_container_records=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        path: &str,
+        max_file_bytes: Option<u64>,
+        max_stream_bytes: Option<u64>,
+        max_inflate_bytes: Option<usize>,
+        max_walker_scan_bytes: Option<usize>,
+        max_walker_candidates: Option<usize>,
+        max_walker_trial_offsets: Option<usize>,
+        max_walker_record_decode_bytes: Option<usize>,
+        max_walker_container_records: Option<usize>,
+    ) -> PyResult<Self> {
+        let default = rvt::reader::OpenLimits::default();
+        let limits = rvt::reader::OpenLimits {
+            max_file_bytes: max_file_bytes.unwrap_or(default.max_file_bytes),
+            max_stream_bytes: max_stream_bytes.unwrap_or(default.max_stream_bytes),
+            inflate_limits: rvt::compression::InflateLimits {
+                max_output_bytes: max_inflate_bytes
+                    .unwrap_or(default.inflate_limits.max_output_bytes),
+            },
+        };
+        let walker_default = walker::WalkerLimits::default();
+        let walker_limits = walker::WalkerLimits {
+            max_scan_bytes: max_walker_scan_bytes.unwrap_or(walker_default.max_scan_bytes),
+            max_candidates: max_walker_candidates.unwrap_or(walker_default.max_candidates),
+            max_trial_offsets: max_walker_trial_offsets.unwrap_or(walker_default.max_trial_offsets),
+            max_per_record_decode_bytes: max_walker_record_decode_bytes
+                .unwrap_or(walker_default.max_per_record_decode_bytes),
+            max_container_records: max_walker_container_records
+                .unwrap_or(walker_default.max_container_records),
+        };
+        let inner = RustRevitFile::open_with_limits(path, limits).map_err(to_py_io)?;
+        Ok(Self {
+            inner,
+            walker_limits,
+        })
+    }
+
+    /// Revit release year (e.g. 2024), or `None` if `BasicFileInfo`
+    /// can't be parsed.
+    #[getter]
+    fn version(&mut self) -> Option<u32> {
+        self.inner.basic_file_info().ok().map(|b| b.version)
+    }
+
+    /// Original file path recorded at save time on the creator's
+    /// machine. Often contains Windows-style paths; use `--redact`
+    /// in the CLI equivalent if you're surfacing to end users.
+    #[getter]
+    fn original_path(&mut self) -> Option<String> {
+        self.inner
+            .basic_file_info()
+            .ok()
+            .and_then(|b| b.original_path)
+    }
+
+    /// Revit build tag (e.g. "20230308_1635(x64)"), if present.
+    #[getter]
+    fn build(&mut self) -> Option<String> {
+        self.inner.basic_file_info().ok().and_then(|b| b.build)
+    }
+
+    /// Document GUID from `BasicFileInfo`, if present.
+    #[getter]
+    fn guid(&mut self) -> Option<String> {
+        self.inner.basic_file_info().ok().and_then(|b| b.guid)
+    }
+
+    /// PartAtom document title, if the file carries one.
+    #[getter]
+    fn part_atom_title(&mut self) -> Option<String> {
+        self.inner.part_atom().ok().and_then(|p| p.title)
+    }
+
+    /// All OLE stream paths (sorted, `/`-separated on every OS).
+    fn stream_names(&self) -> Vec<String> {
+        self.inner.stream_names()
+    }
+
+    /// Raw bytes of the named OLE stream. Accepts either a
+    /// leading-slash path (`"/Formats/Latest"`) or the bare name
+    /// (`"Formats/Latest"`) — both resolve the same way. Returns the
+    /// raw, *compressed* bytes on streams that use truncated-gzip
+    /// framing (most of them); callers wanting decompressed content
+    /// should pipe through the Rust `compression::inflate_at`
+    /// equivalent (pending its own Python binding).
+    ///
+    /// Raises `IOError` when the stream name doesn't exist. Use
+    /// `stream_names()` first to enumerate what's readable.
+    fn read_stream<'py>(&mut self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = self.inner.read_stream(name).map_err(to_py_io)?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Required streams that are absent — empty list means the file
+    /// looks like a Revit file. Useful for validation in scripts.
+    fn missing_required_streams(&self) -> Vec<String> {
+        self.inner
+            .missing_required_streams()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// Decode the schema from `Formats/Latest` and return a count of
+    /// classes + fields. The full schema is large; callers that want
+    /// it should use `schema_json()`.
+    fn schema_summary<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let schema = self.inner.schema().map_err(to_py_val)?;
+        let d = PyDict::new(py);
+        let total_fields: usize = schema.classes.iter().map(|c| c.fields.len()).sum();
+        d.set_item("classes", schema.classes.len())?;
+        d.set_item("fields", total_fields)?;
+        d.set_item("cpp_types", schema.cpp_types.len())?;
+        Ok(d)
+    }
+
+    /// Full `BasicFileInfo` as a JSON string. Single-call equivalent
+    /// of the four individual getters (`version`, `original_path`,
+    /// `build`, `guid`) plus any future fields added to the Rust
+    /// `BasicFileInfo` struct. Parse with `json.loads()` in Python.
+    ///
+    /// Returns `None` if the `BasicFileInfo` stream can't be parsed.
+    fn basic_file_info_json(&mut self) -> PyResult<Option<String>> {
+        let Some(bfi) = self.inner.basic_file_info().ok() else {
+            return Ok(None);
+        };
+        Ok(Some(serde_json::to_string(&bfi).map_err(to_py_val)?))
+    }
+
+    /// Strict variant of [`basic_file_info_json`] (API-14). Raises
+    /// `ValueError` if the stream is missing or parse fails, instead
+    /// of returning `None`. Use when downstream Python code needs
+    /// to fail loud on malformed input.
+    ///
+    /// Python:
+    /// ```python
+    /// try:
+    ///     bfi = json.loads(rf.basic_file_info_json_strict())
+    /// except ValueError as e:
+    ///     # stream missing or parse failure
+    ///     ...
+    /// ```
+    fn basic_file_info_json_strict(&mut self) -> PyResult<String> {
+        let bfi = self.inner.basic_file_info().map_err(to_py_val)?;
+        serde_json::to_string(&bfi).map_err(to_py_val)
+    }
+
+    /// Full `PartAtom` as a JSON string. Superset of the
+    /// `part_atom_title` getter — also includes `id`, `updated`,
+    /// `taxonomies`, `categories`, `omniclass`, and `raw_xml` (the
+    /// original XML bytes for lossless downstream reuse). Parse with
+    /// `json.loads()` in Python.
+    ///
+    /// Returns `None` if the file has no PartAtom stream (common on
+    /// project `.rvt` files; family `.rfa` files almost always carry
+    /// one).
+    fn part_atom_json(&mut self) -> PyResult<Option<String>> {
+        let Some(pa) = self.inner.part_atom().ok() else {
+            return Ok(None);
+        };
+        Ok(Some(serde_json::to_string(&pa).map_err(to_py_val)?))
+    }
+
+    /// Strict [`part_atom_json`]: the same JSON, or `ValueError` naming
+    /// the cause, `Stream not found: PartAtom` or `Malformed PartAtom
+    /// XML: ...`, where `part_atom_json` returns `None` for both (#502).
+    fn part_atom_json_strict(&mut self) -> PyResult<String> {
+        let pa = self.inner.part_atom().map_err(to_py_val)?;
+        serde_json::to_string(&pa).map_err(to_py_val)
+    }
+
+    /// Full schema as a JSON string. The Rust-side `SchemaTable` type
+    /// already derives `Serialize`, so this is zero-copy relative to
+    /// the in-memory schema. Parse with `json.loads()` in Python to
+    /// get a structured dict equivalent to `rvt::formats::SchemaTable`.
+    ///
+    /// Return shape (after `json.loads`):
+    ///
+    /// ```python
+    /// {
+    ///     "classes": [
+    ///         {
+    ///             "name": "ADocument",
+    ///             "offset": 123,
+    ///             "fields": [
+    ///                 {"name": "m_elemTable", "cpp_type": "...",
+    ///                  "field_type": {"ElementId": null}},
+    ///                 ...
+    ///             ],
+    ///             "tag": 4,
+    ///             "parent": null,
+    ///             "declared_field_count": 13,
+    ///             "was_parent_only": false,
+    ///             "ancestor_tag": null,
+    ///         },
+    ///         ...
+    ///     ],
+    ///     "cpp_types": ["ElementId", "std::pair< ElementId, double >", ...],
+    ///     "skipped_records": 0,
+    /// }
+    /// ```
+    ///
+    /// Typical 11-release corpus schema is ~395 classes / 13,570
+    /// fields — the JSON string is on the order of 1-2 MB. For just
+    /// counts, prefer `schema_summary()`.
+    fn schema_json(&mut self) -> PyResult<String> {
+        let schema = self.inner.schema().map_err(to_py_val)?;
+        serde_json::to_string(&schema).map_err(to_py_val)
+    }
+
+    /// Run the Layer-5a walker and return ADocument's instance fields
+    /// as a Python dict, or `None` if the entry-point detector can't
+    /// confidently locate an ADocument record in this file.
+    ///
+    /// Return shape when present:
+    ///
+    /// ```python
+    /// {
+    ///     "entry_offset": int,     # byte offset in decompressed Global/Latest
+    ///     "version": int,          # Revit release year
+    ///     "fields": [
+    ///         {"name": "m_elemTable", "kind": "pointer", "slot_a": 0, "slot_b": 0},
+    ///         {"name": "m_appInfoArr", "kind": "ref_container", "count": 12, ...},
+    ///         {"name": "m_ownerFamilyId", "kind": "element_id", "tag": 0, "id": 27},
+    ///         ...
+    ///     ],
+    /// }
+    /// ```
+    fn read_adocument<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(inst) = walker::read_adocument_with_limits(&mut self.inner, self.walker_limits)
+            .map_err(to_py_io)?
+        else {
+            return Ok(None);
+        };
+        instance_to_dict(py, &inst).map(Some)
+    }
+
+    /// Strict variant of [`read_adocument`] (API-15). Raises
+    /// `ValueError` if the entry-point detector couldn't confidently
+    /// locate the record, OR if any field fell back to raw bytes.
+    /// Contract: success means every field decoded cleanly — mirrors
+    /// the Rust `walker::read_adocument_strict` bar.
+    fn read_adocument_strict<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let Some(inst) = walker::read_adocument_with_limits(&mut self.inner, self.walker_limits)
+            .map_err(to_py_val)?
+        else {
+            return Err(to_py_val("ADocument record not located"));
+        };
+        let c = inst.completeness();
+        if !c.is_fully_typed() {
+            return Err(to_py_val(format!(
+                "ADocument decode incomplete: {} of {} fields fell back to raw bytes",
+                c.raw_bytes_fallback, c.total
+            )));
+        }
+        instance_to_dict(py, &inst)
+    }
+
+    /// Lossy variant of [`read_adocument`] with a diagnostics
+    /// accumulator exposed to Python (API-16). Returns a dict with
+    /// `value` (the ADocument dict), `complete` (bool),
+    /// `partial_fields` (list of field names that fell back to raw
+    /// bytes), `failed_streams` (list), and `confidence` (float or
+    /// None — ratio of typed fields).
+    ///
+    /// Raises `OSError` for stream-level failures (BFI unreadable,
+    /// Global/Latest inflate failure, schema parse failure) — same
+    /// hard-error cases as the Rust equivalent.
+    ///
+    /// Python:
+    /// ```python
+    /// d = rf.read_adocument_lossy()
+    /// if d["complete"]:
+    ///     print("clean decode", d["value"])
+    /// else:
+    ///     print(f"partial: {d['confidence']:.0%} typed")
+    ///     print(d["partial_fields"])
+    /// ```
+    fn read_adocument_lossy<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let decoded = walker::read_adocument_lossy_with_limits(&mut self.inner, self.walker_limits)
+            .map_err(to_py_io)?;
+        let out = PyDict::new(py);
+        let value = instance_to_dict(py, &decoded.value)?;
+        out.set_item("value", value)?;
+        out.set_item("complete", decoded.complete)?;
+        out.set_item("partial_fields", decoded.diagnostics.partial_fields.clone())?;
+        out.set_item("failed_streams", decoded.diagnostics.failed_streams.clone())?;
+        let warnings: Vec<String> = decoded
+            .diagnostics
+            .warnings
+            .iter()
+            .map(|w| format!("{}: {}", w.code, w.message))
+            .collect();
+        out.set_item("warnings", warnings)?;
+        match decoded.diagnostics.confidence {
+            Some(c) => out.set_item("confidence", c as f64)?,
+            None => out.set_item("confidence", py.None())?,
+        }
+        Ok(out)
+    }
+
+    /// Schema diagnostics as a dict (API-13 Python surface for
+    /// `SchemaTable::diagnostics`). Returns class_count,
+    /// parsed_field_count, declared_field_count_sum,
+    /// field_count_mismatches, tagged_class_count,
+    /// parent_only_class_count, ancestor_tag_count, skipped_records,
+    /// cpp_type_count — one dict, all integers.
+    ///
+    /// Raises `ValueError` if the schema can't be parsed (strict).
+    fn schema_diagnostics<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let schema = self.inner.schema().map_err(to_py_val)?;
+        let d = schema.diagnostics();
+        let out = PyDict::new(py);
+        out.set_item("class_count", d.class_count)?;
+        out.set_item("parsed_field_count", d.parsed_field_count)?;
+        out.set_item("declared_field_count_sum", d.declared_field_count_sum)?;
+        out.set_item("field_count_mismatches", d.field_count_mismatches)?;
+        out.set_item("tagged_class_count", d.tagged_class_count)?;
+        out.set_item("parent_only_class_count", d.parent_only_class_count)?;
+        out.set_item("ancestor_tag_count", d.ancestor_tag_count)?;
+        out.set_item("skipped_records", d.skipped_records)?;
+        out.set_item("cpp_type_count", d.cpp_type_count)?;
+        Ok(out)
+    }
+
+    /// Conservative production decoded elements as Python dicts.
+    ///
+    /// Each element has `id`, `class_name`, `byte_range`, `fields`,
+    /// and `typed`. The fields use the same `name` / `kind` shape as
+    /// `read_adocument()`. `typed` is a Lane Five MVP projection
+    /// (`Level` / `Wall` / `Floor` / `Door` / `Window` / `Room` /
+    /// `Material`) or `None` for other classes.
+    fn decoded_elements<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let elements: Vec<_> = walker::iter_elements_with_limits(
+            &mut self.inner,
+            walker::PRODUCTION_ELEMENT_MIN_SCORE,
+            self.walker_limits,
+        )
+        .map_err(to_py_val)?
+        .collect();
+
+        let out = PyList::empty(py);
+        for element in &elements {
+            out.append(decoded_element_to_dict(py, element)?)?;
+        }
+        Ok(out)
+    }
+
+    /// Count conservative production decoded elements.
+    ///
+    /// Returns `{ "total": int, "by_class": dict[str, int] }`.
+    /// The `total` value matches
+    /// `export_diagnostics()["decoded"]["production_walker_elements"]`.
+    fn element_counts<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let mut by_class = std::collections::BTreeMap::<String, usize>::new();
+        let mut total = 0usize;
+        for element in walker::iter_elements_with_limits(
+            &mut self.inner,
+            walker::PRODUCTION_ELEMENT_MIN_SCORE,
+            self.walker_limits,
+        )
+        .map_err(to_py_val)?
+        {
+            total += 1;
+            *by_class.entry(element.class).or_insert(0) += 1;
+        }
+
+        let out = PyDict::new(py);
+        out.set_item("total", total)?;
+        out.set_item("by_class", by_class)?;
+        Ok(out)
+    }
+
+    /// Produce an IFC4 STEP string for this Revit file via
+    /// `ifc::RvtDocExporter`. Document-level export — project name,
+    /// description, units, classifications. Raises `ValueError` if
+    /// the file can't be parsed far enough to produce a model, or if
+    /// `mode` quality gates are not met.
+    ///
+    /// Modes (forward-compatible with Lane 7 geometry work):
+    /// - `scaffold` — always accept a spec-valid envelope (default)
+    /// - `typed-no-geometry` — require validated typed elements
+    /// - `geometry` — require typed elements + geometry
+    /// - `strict` — geometry + metadata/units/storeys + no warnings
+    ///
+    /// On synthetic / scaffold-only fixtures, only `scaffold`
+    /// typically succeeds; stronger modes raise `ValueError` until
+    /// real typed/geometry recovery is available.
+    #[pyo3(signature = (mode = "scaffold"))]
+    fn write_ifc(&mut self, mode: &str) -> PyResult<String> {
+        let mode = parse_export_quality_mode(mode)?;
+        write_ifc_with_quality_mode_and_limits(&mut self.inner, mode, self.walker_limits)
+    }
+
+    /// Spreadsheet schedule of the decoded model as CSV text
+    /// (`rvt::ifc::schedule_csv`): `kind="elements"` (every building
+    /// element: type, level, material, placement, size, host) or
+    /// `kind="rooms"` (number, name, level). `metric=True` writes lengths in
+    /// metres; `excel=True` prefixes a UTF-8 byte-order mark for Excel on
+    /// Windows. Only decoded values are written; unknowns are empty cells.
+    #[pyo3(signature = (kind = "elements", metric = false, excel = false))]
+    fn schedule_csv(&mut self, kind: &str, metric: bool, excel: bool) -> PyResult<String> {
+        use rvt::ifc::schedule_csv::{CsvOptions, LengthUnit, elements_csv, rooms_csv};
+        let model = ifc::RvtDocExporter
+            .export_with_diagnostics_mode_and_limits(
+                &mut self.inner,
+                ifc::ExportQualityMode::Scaffold,
+                self.walker_limits,
+            )
+            .map_err(to_py_val)?
+            .model;
+        let options = CsvOptions {
+            unit: if metric {
+                LengthUnit::Metres
+            } else {
+                LengthUnit::Feet
+            },
+            excel_bom: excel,
+        };
+        match kind {
+            "elements" => Ok(elements_csv(&model, &options)),
+            "rooms" => Ok(rooms_csv(&model, &options)),
+            other => Err(PyValueError::new_err(format!(
+                "unknown schedule kind {other:?}; expected \"elements\" or \"rooms\""
+            ))),
+        }
+    }
+
+    /// Produce the JSON diagnostics sidecar for the default IFC export.
+    ///
+    /// The returned string matches `rvt-ifc --diagnostics` and is intended
+    /// for bug reports, support bundles, and automated readiness checks.
+    fn export_diagnostics_json(&mut self) -> PyResult<String> {
+        let result = ifc::RvtDocExporter
+            .export_with_diagnostics_and_limits(&mut self.inner, self.walker_limits)
+            .map_err(to_py_val)?;
+        serde_json::to_string(&result.diagnostics).map_err(to_py_val)
+    }
+
+    /// Produce the default IFC export diagnostics as a Python dict.
+    fn export_diagnostics<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let json = self.export_diagnostics_json()?;
+        let json_module = py.import("json")?;
+        json_module.call_method1("loads", (json,))
+    }
+
+    /// Parse Global/ElemTable header. Returns a dict with
+    /// `{element_count, record_count, header_flag, decompressed_bytes}`.
+    /// See `docs/elem-table-record-layout-2026-04-21.md`.
+    fn elem_table_header<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let header = elem_table::parse_header(&mut self.inner).map_err(to_py_val)?;
+        let d = PyDict::new(py);
+        d.set_item("element_count", header.element_count)?;
+        d.set_item("record_count", header.record_count)?;
+        d.set_item("header_flag", header.header_flag)?;
+        d.set_item("decompressed_bytes", header.decompressed_bytes)?;
+        Ok(d)
+    }
+
+    /// Parse Global/ElemTable records. Returns a list of dicts with
+    /// `{offset, id_primary, id_secondary, owner_id}`; `owner_id` is the
+    /// ElementId the record's element belongs to, or `None` (RE-31).
+    /// Handles the three layout
+    /// variants automatically (family 12 B, project 2023 28 B,
+    /// project 2024 40 B). On a 34 MB project this returns all
+    /// 26,425 records; on a family file, all declared records.
+    fn elem_table_records<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let records = elem_table::parse_records(&mut self.inner).map_err(to_py_val)?;
+        let list = PyList::empty(py);
+        for r in records {
+            let d = PyDict::new(py);
+            d.set_item("offset", r.offset)?;
+            d.set_item("id_primary", r.id_primary)?;
+            d.set_item("id_secondary", r.id_secondary)?;
+            d.set_item("owner_id", r.owner_id)?;
+            list.append(d)?;
+        }
+        Ok(list)
+    }
+
+    /// Return the sorted, deduplicated list of ElementIds declared by
+    /// Global/ElemTable. Useful for walker coverage validation —
+    /// diff the walker's HandleIndex against this set to find
+    /// "declared but not located" elements.
+    fn declared_element_ids(&mut self) -> PyResult<Vec<u32>> {
+        elem_table::declared_element_ids(&mut self.inner).map_err(to_py_val)
+    }
+
+    /// Document identity as a dict: `revit_version`, `build`, `title`,
+    /// `last_saved` (ISO 8601 UTC), `worksharing` (e.g. `"Not enabled"`),
+    /// `workshared`, `username`, `central_model_path`, `last_save_path`,
+    /// `document_guid`, `document_increments`, `locale`,
+    /// `single_user_cloud_model`, and `properties` (every `BasicFileInfo`
+    /// `Key: value` line as `{"key", "value"}`). Pass `redact=True` to
+    /// scrub the user name and user paths before sharing.
+    #[pyo3(signature = (redact = false))]
+    fn metadata<'py>(&mut self, py: Python<'py>, redact: bool) -> PyResult<Bound<'py, PyAny>> {
+        let mut m = self.inner.metadata().map_err(to_py_val)?;
+        if redact {
+            m.redact();
+        }
+        metadata_to_py(py, &m)
+    }
+
+    fn __repr__(&mut self) -> String {
+        let v = self.inner.basic_file_info().ok().map(|b| b.version);
+        match v {
+            Some(v) => format!("RevitFile(version={v})"),
+            None => "RevitFile(version=?)".into(),
+        }
+    }
+}
+
+/// One-shot helper: open a Revit file, run the document-level IFC
+/// exporter, return the STEP string. Equivalent to
+/// `rvt.RevitFile(path).write_ifc()`.
+#[pyfunction]
+#[pyo3(signature = (path, mode = "scaffold"))]
+fn rvt_to_ifc(path: &str, mode: &str) -> PyResult<String> {
+    let mut rf = RustRevitFile::open(path).map_err(to_py_io)?;
+    let mode = parse_export_quality_mode(mode)?;
+    write_ifc_with_quality_mode(&mut rf, mode)
+}
+
+/// Document identity for the file at `path` without loading the whole
+/// file — only the two small identity streams are read, so it is the fast
+/// path for inventories. Same dict as `RevitFile.metadata()`. Raises
+/// `FileNotFoundError` / `IOError` on I/O failure and `ValueError` when
+/// the file is not a readable Revit file.
+#[pyfunction]
+#[pyo3(signature = (path, redact = false))]
+fn read_metadata<'py>(py: Python<'py>, path: &str, redact: bool) -> PyResult<Bound<'py, PyAny>> {
+    let mut m = rvt::metadata::read_metadata(path).map_err(to_py_metadata_err)?;
+    if redact {
+        m.redact();
+    }
+    metadata_to_py(py, &m)
+}
+
+/// One-shot helper: open a Revit file, run the default IFC exporter,
+/// and return the JSON diagnostics sidecar.
+#[pyfunction]
+fn rvt_to_ifc_diagnostics(path: &str) -> PyResult<String> {
+    let mut rf = RustRevitFile::open(path).map_err(to_py_io)?;
+    let result = ifc::RvtDocExporter
+        .export_with_diagnostics(&mut rf)
+        .map_err(to_py_val)?;
+    serde_json::to_string(&result.diagnostics).map_err(to_py_val)
+}
+
+/// Compiled Python submodule named `_rvt`. Sits under the
+/// pure-Python `rvt` package in `python/`, whose `__init__.py`
+/// re-exports everything here. That layout ships type stubs
+/// (`__init__.pyi`) and a PEP-561 `py.typed` marker alongside the
+/// extension so mypy and pyright pick them up.
+#[pymodule]
+fn _rvt(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyRevitFile>()?;
+    m.add_function(wrap_pyfunction!(rvt_to_ifc, m)?)?;
+    m.add_function(wrap_pyfunction!(rvt_to_ifc_diagnostics, m)?)?;
+    m.add_function(wrap_pyfunction!(read_metadata, m)?)?;
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add("MVP_TYPED_CLASSES", elements::MVP_TYPED_CLASSES.to_vec())?;
+    Ok(())
+}

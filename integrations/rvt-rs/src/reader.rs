@@ -1,0 +1,816 @@
+//! High-level reader API. Opens a `.rvt` / `.rfa` / `.rte` / `.rft` file
+//! and exposes its streams + parsed metadata.
+
+use crate::{
+    Error, Result,
+    basic_file_info::BasicFileInfo,
+    class_index, compression,
+    part_atom::PartAtom,
+    streams::{
+        BASIC_FILE_INFO, CONTENTS, FORMATS_LATEST, GLOBAL_CONTENT_DOCUMENTS,
+        GLOBAL_DOC_INCREMENT_TABLE, GLOBAL_ELEM_TABLE, GLOBAL_HISTORY, GLOBAL_LATEST,
+        GLOBAL_PARTITION_TABLE, PART_ATOM, PROJECT_INFORMATION, REVIT_PREVIEW_4_0,
+        TRANSMISSION_DATA,
+    },
+};
+use cfb::CompoundFile;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeSet,
+    fs::File,
+    io::{Cursor, Read},
+    path::Path,
+    sync::Arc,
+};
+
+/// Default maximum file size accepted by [`RevitFile::open`].
+///
+/// 2 GiB is above any real-world Revit project we've observed
+/// (typical: few MB–a few hundred MB; worksharing extreme: ~1 GiB)
+/// and well below "pathological or hostile" territory. Callers with
+/// specific larger-file needs should use [`RevitFile::open_with_limits`].
+pub const DEFAULT_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Default maximum stream size accepted by [`RevitFile::read_stream`].
+///
+/// 256 MiB per stream is comfortably above any observed stream. The
+/// largest legitimate stream we've seen in the corpus is ~40 MiB
+/// (Global/Latest on a large worksharing project). Hostile input
+/// with a claimed huge stream size will be rejected before a
+/// multi-GB allocation.
+pub const DEFAULT_MAX_STREAM_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Limits applied when opening a Revit file. Protects against
+/// pathological or hostile input that would otherwise force
+/// unbounded memory allocation.
+///
+/// See audit P0 items 4 and 5 (AUDIT-2026-04-19.md) for the
+/// rationale — RVT is a file-upload target, and bounded resource
+/// consumption is a DoS-safety requirement, not a nice-to-have.
+#[derive(Debug, Clone, Copy)]
+pub struct OpenLimits {
+    /// Maximum file size accepted. File bytes are read into memory
+    /// entirely on open (CFB requires random access), so this
+    /// doubles as an upper bound on the initial allocation.
+    pub max_file_bytes: u64,
+    /// Maximum per-stream size accepted by [`RevitFile::read_stream`].
+    /// Streams larger than this cause an error rather than a
+    /// multi-GB alloc.
+    pub max_stream_bytes: u64,
+    /// Inflate limits applied to every `compression::inflate_at`
+    /// call sourced from this `RevitFile`. Keeps bounded-decompression
+    /// and open-limits consistent so a file opened under restrictive
+    /// limits doesn't accidentally re-inflate under permissive ones.
+    pub inflate_limits: compression::InflateLimits,
+}
+
+impl Default for OpenLimits {
+    fn default() -> Self {
+        Self {
+            max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            max_stream_bytes: DEFAULT_MAX_STREAM_BYTES,
+            inflate_limits: compression::InflateLimits::default(),
+        }
+    }
+}
+
+/// Opened Revit file. Holds the CFB handle + cached stream bytes.
+pub struct RevitFile {
+    cfb: CompoundFile<Cursor<Vec<u8>>>,
+    /// Limits to apply on subsequent reads. Copied from the
+    /// `OpenLimits` passed at construction; defaults to
+    /// `OpenLimits::default()` for back-compat `open`/`open_bytes`.
+    limits: OpenLimits,
+    /// Memoised inflate of multi-member streams, keyed by stream path.
+    /// Every `Partitions/*` consumer (element records, arc walls, plan
+    /// loops, level records, IFC export overrides, the partition
+    /// scanner) used to read and inflate the same streams again, and a
+    /// geometry export runs a dozen of those passes over ~180 MiB of
+    /// inflated bytes. The streams are immutable for the lifetime of
+    /// the handle — `RevitFile` never writes — so one inflate serves
+    /// all of them.
+    inflated: std::collections::HashMap<String, Arc<compression::InflatedStream>>,
+    /// Memoised `Partitions/NN` string-record extraction. The UTF-16
+    /// decode over the whole partition is the single most expensive
+    /// step after inflate, and unit recovery, storey names and the
+    /// partition MVP each asked for it independently.
+    partition_strings: Option<Arc<Vec<crate::object_graph::StringRecord>>>,
+    /// Memoised RE-35 second-prologue ElementIds. Every category sweep and
+    /// the unattributed count read the same result, so the record chains
+    /// are walked once per file.
+    second_prologue_ids: Option<Arc<crate::partition_element_records::SecondPrologueIds>>,
+    /// Memoised RE-38 family and type names.
+    element_names: Option<Arc<crate::partition_names::ElementNames>>,
+    /// Memoised design option sets and their primary options (RE-40).
+    design_options: Option<Arc<crate::partition_design_options::DesignOptions>>,
+    /// Memoised production walk (B71): the elements
+    /// [`crate::walker::iter_elements_with_control`] yields for a minimum
+    /// score and walker limits. An export walks once to write and again for
+    /// its diagnostics' class counts; the second reuses the first.
+    walk: Option<CachedWalk>,
+    /// Memoised data objects (RE-153) of each partition stream (B80): the
+    /// original symbols, railing types and MEP systems each scanned every
+    /// partition for them.
+    data_objects: std::collections::HashMap<String, PartitionDataObjects>,
+    /// Memoised native extraction preamble (B82): each native consumer read
+    /// the schema, the element index and the increments again.
+    native_preamble: Option<Arc<crate::native_document::Preamble>>,
+}
+
+/// A partition stream's data objects, each at its offset (RE-153).
+pub type PartitionDataObjects = Arc<Vec<(usize, crate::partition_room_parameters::DataObject)>>;
+
+/// A memoised walk: its minimum score, its limits and its elements.
+type CachedWalk = (
+    i64,
+    crate::walker::WalkerLimits,
+    Arc<Vec<crate::walker::DecodedElement>>,
+);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Summary {
+    pub file_size: u64,
+    pub streams: Vec<String>,
+    pub version: u32,
+    pub build: Option<String>,
+    pub original_path: Option<String>,
+    pub guid: Option<String>,
+    pub locale: Option<String>,
+    pub partition_stream: Option<String>,
+    pub partatom: Option<PartAtom>,
+    pub class_name_count: usize,
+    pub class_name_sample: Vec<String>,
+}
+
+impl RevitFile {
+    /// Open a Revit file from disk.
+    ///
+    /// Returns an error if the file doesn't exist, can't be read, or
+    /// doesn't start with the OLE2 / MS-CFB magic bytes
+    /// (`D0 CF 11 E0 A1 B1 1A E1`).
+    ///
+    /// ```no_run
+    /// use rvt::RevitFile;
+    ///
+    /// let mut rf = RevitFile::open("your-project.rfa")?;
+    /// let summary = rf.summarize()?;
+    /// println!("Revit {}", summary.version);
+    /// # Ok::<(), rvt::Error>(())
+    /// ```
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_limits(path, OpenLimits::default())
+    }
+
+    /// Open a Revit file from disk with explicit resource limits.
+    ///
+    /// Stats the file before reading; refuses if file size exceeds
+    /// `limits.max_file_bytes` to prevent multi-GB allocations from
+    /// a hostile input. Back-compat [`Self::open`] calls this with
+    /// `OpenLimits::default()` (2 GiB file, 256 MiB per stream, 256
+    /// MiB per inflate).
+    ///
+    /// ```no_run
+    /// use rvt::reader::{RevitFile, OpenLimits};
+    ///
+    /// // Only accept files up to 100 MB.
+    /// let limits = OpenLimits {
+    ///     max_file_bytes: 100 * 1024 * 1024,
+    ///     ..OpenLimits::default()
+    /// };
+    /// let mut rf = RevitFile::open_with_limits("your-project.rfa", limits)?;
+    /// # Ok::<(), rvt::Error>(())
+    /// ```
+    pub fn open_with_limits(path: impl AsRef<Path>, limits: OpenLimits) -> Result<Self> {
+        let path = path.as_ref();
+        // Name the file in I/O errors: a batch run over a folder otherwise
+        // reports a bare "No such file or directory". The `ErrorKind` is kept
+        // so callers (and the Python bindings) can still match on it.
+        let with_path = |e: std::io::Error| {
+            Error::Io(std::io::Error::new(
+                e.kind(),
+                format!("{}: {e}", path.display()),
+            ))
+        };
+        let metadata = std::fs::metadata(path).map_err(with_path)?;
+        if metadata.is_dir() {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::IsADirectory,
+                format!(
+                    "{}: is a directory, not a .rvt / .rfa / .rte / .rft file",
+                    path.display()
+                ),
+            )));
+        }
+        if metadata.len() > limits.max_file_bytes {
+            return Err(Error::Cfb(format!(
+                "file size {} exceeds limit {}",
+                metadata.len(),
+                limits.max_file_bytes
+            )));
+        }
+        let mut f = File::open(path).map_err(with_path)?;
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        f.read_to_end(&mut bytes).map_err(with_path)?;
+        Self::open_bytes_with_limits(bytes, limits)
+    }
+
+    /// Open a Revit file from an in-memory byte buffer.
+    ///
+    /// Useful for callers that have the file bytes already (e.g. streamed
+    /// over the network). Equivalent to `open` after a `read_to_end`.
+    ///
+    /// ```
+    /// use rvt::RevitFile;
+    /// // Four bytes that are definitely not a valid CFB file.
+    /// let result = RevitFile::open_bytes(b"nope".to_vec());
+    /// assert!(matches!(result, Err(rvt::Error::NotACfbFile)));
+    /// ```
+    pub fn open_bytes(bytes: Vec<u8>) -> Result<Self> {
+        Self::open_bytes_with_limits(bytes, OpenLimits::default())
+    }
+
+    /// Open-bytes variant with explicit limits. The byte count check
+    /// has already been done by the caller if they came through
+    /// [`Self::open_with_limits`]; here it's repeated for in-memory
+    /// paths that skip disk stat.
+    pub fn open_bytes_with_limits(bytes: Vec<u8>, limits: OpenLimits) -> Result<Self> {
+        if (bytes.len() as u64) > limits.max_file_bytes {
+            return Err(Error::Cfb(format!(
+                "in-memory buffer size {} exceeds limit {}",
+                bytes.len(),
+                limits.max_file_bytes
+            )));
+        }
+        if bytes.len() < 8 || bytes[..8] != [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1] {
+            return Err(Error::NotACfbFile);
+        }
+        let cfb = CompoundFile::open(Cursor::new(bytes)).map_err(|e| Error::Cfb(e.to_string()))?;
+        Ok(Self {
+            cfb,
+            limits,
+            inflated: std::collections::HashMap::new(),
+            partition_strings: None,
+            second_prologue_ids: None,
+            element_names: None,
+            design_options: None,
+            walk: None,
+            data_objects: std::collections::HashMap::new(),
+            native_preamble: None,
+        })
+    }
+
+    /// Resource limits this file was opened under. Use to match
+    /// the limits when calling bounded-inflate on extracted stream
+    /// bytes.
+    pub fn limits(&self) -> OpenLimits {
+        self.limits
+    }
+
+    /// Read and inflate every gzip member of `name`, memoised.
+    ///
+    /// Repeat calls return the same shared buffer instead of reading
+    /// the CFB stream and inflating it again. Use this for any
+    /// multi-member stream a pipeline touches more than once —
+    /// `Partitions/*` above all, where a geometry export otherwise
+    /// inflates the same ~180 MiB a dozen times over.
+    pub fn inflated_partition(&mut self, name: &str) -> Result<Arc<compression::InflatedStream>> {
+        if let Some(cached) = self.inflated.get(name) {
+            return Ok(Arc::clone(cached));
+        }
+        let raw = self.read_stream(name)?;
+        let inflated = Arc::new(compression::InflatedStream::from_stored(name, &raw));
+        self.inflated
+            .insert(name.to_string(), Arc::clone(&inflated));
+        Ok(inflated)
+    }
+
+    /// The data objects (RE-153) of partition stream `name`, each at its
+    /// offset in the stream's inflated bytes ([`Self::inflated_partition`]),
+    /// memoised (B80).
+    pub fn partition_data_objects(&mut self, name: &str) -> Result<PartitionDataObjects> {
+        if let Some(cached) = self.data_objects.get(name) {
+            return Ok(Arc::clone(cached));
+        }
+        let inflated = self.inflated_partition(name)?;
+        let objects = Arc::new(crate::partition_room_parameters::data_objects(
+            inflated.bytes(),
+        ));
+        self.data_objects
+            .insert(name.to_string(), Arc::clone(&objects));
+        Ok(objects)
+    }
+
+    /// What every native extraction reads before the partitions
+    /// ([`crate::native_document::Preamble`]), memoised (B82).
+    pub(crate) fn native_preamble(
+        &mut self,
+    ) -> anyhow::Result<Arc<crate::native_document::Preamble>> {
+        if let Some(cached) = &self.native_preamble {
+            return Ok(Arc::clone(cached));
+        }
+        let preamble = Arc::new(crate::native_document::read_preamble(self)?);
+        self.native_preamble = Some(Arc::clone(&preamble));
+        Ok(preamble)
+    }
+
+    /// ElementIds [`crate::partition_element_records::assign_second_prologue_ids`]
+    /// reads for second-prologue frames from their enclosing partition
+    /// records, by stream and frame offset, memoised (RE-35).
+    pub fn second_prologue_ids(
+        &mut self,
+    ) -> Arc<crate::partition_element_records::SecondPrologueIds> {
+        if let Some(cached) = &self.second_prologue_ids {
+            return Arc::clone(cached);
+        }
+        let computed =
+            Arc::new(crate::partition_element_records::compute_second_prologue_ids(self));
+        self.second_prologue_ids = Some(Arc::clone(&computed));
+        computed
+    }
+
+    /// Family and type names from the partition name entries, with each
+    /// named type's family candidates, memoised (RE-38). Empty where the
+    /// release is not proven or a stream does not parse.
+    pub fn element_names(&mut self) -> Arc<crate::partition_names::ElementNames> {
+        if let Some(cached) = &self.element_names {
+            return Arc::clone(cached);
+        }
+        let computed =
+            Arc::new(crate::partition_names::compute_element_names(self).unwrap_or_default());
+        self.element_names = Some(Arc::clone(&computed));
+        computed
+    }
+
+    /// The elements a production walk with `min_score` and `limits` yielded
+    /// on this file, when one ran (B71).
+    pub(crate) fn cached_walk(
+        &self,
+        min_score: i64,
+        limits: crate::walker::WalkerLimits,
+    ) -> Option<Arc<Vec<crate::walker::DecodedElement>>> {
+        self.walk
+            .as_ref()
+            .filter(|(score, held, _)| *score == min_score && *held == limits)
+            .map(|(_, _, elements)| Arc::clone(elements))
+    }
+
+    /// Keep a production walk's elements for later walks with the same
+    /// `min_score` and `limits` (B71).
+    pub(crate) fn store_walk(
+        &mut self,
+        min_score: i64,
+        limits: crate::walker::WalkerLimits,
+        elements: Arc<Vec<crate::walker::DecodedElement>>,
+    ) {
+        self.walk = Some((min_score, limits, elements));
+    }
+
+    /// Design option sets and their primary options, memoised (RE-40).
+    /// Empty where the release is not proven or a stream does not parse.
+    pub fn design_options(&mut self) -> Arc<crate::partition_design_options::DesignOptions> {
+        if let Some(cached) = &self.design_options {
+            return Arc::clone(cached);
+        }
+        let computed = Arc::new(
+            crate::partition_design_options::compute_design_options(self).unwrap_or_default(),
+        );
+        self.design_options = Some(Arc::clone(&computed));
+        computed
+    }
+
+    /// Sorted `Partitions/*` stream paths.
+    pub fn partition_stream_names(&self) -> Vec<String> {
+        self.stream_names()
+            .into_iter()
+            .filter(|name| name.starts_with("Partitions/"))
+            .collect()
+    }
+
+    /// String records extracted from the `Partitions/NN` stream, memoised.
+    ///
+    /// See [`crate::object_graph::string_records_from_partitions`] for
+    /// what the extraction does; this is the shared-result entry point
+    /// that avoids re-running the UTF-16 decode over the whole
+    /// partition for every consumer.
+    pub fn partition_string_records(
+        &mut self,
+    ) -> Result<Arc<Vec<crate::object_graph::StringRecord>>> {
+        if let Some(cached) = &self.partition_strings {
+            return Ok(Arc::clone(cached));
+        }
+        let records = Arc::new(crate::object_graph::extract_partition_string_records(self)?);
+        self.partition_strings = Some(Arc::clone(&records));
+        Ok(records)
+    }
+
+    /// List all OLE stream paths (sorted). Paths are always returned
+    /// with forward-slash separators regardless of host OS — on
+    /// Windows, `Path::display()` emits backslashes, but CFB stream
+    /// paths are logically `/`-separated.
+    pub fn stream_names(&self) -> Vec<String> {
+        let mut streams: Vec<_> = self
+            .cfb
+            .walk()
+            .filter(|e| e.is_stream())
+            .map(|e| {
+                e.path()
+                    .display()
+                    .to_string()
+                    .replace('\\', "/")
+                    .trim_start_matches('/')
+                    .to_string()
+            })
+            .collect();
+        streams.sort();
+        streams
+    }
+
+    /// Read a named stream's raw bytes, capped at the file's
+    /// configured `max_stream_bytes`.
+    ///
+    /// For streams larger than the limit, returns an error rather
+    /// than allocating a potentially multi-GB `Vec`. Use
+    /// [`Self::read_stream_with_limit`] to override per-call.
+    pub fn read_stream(&mut self, name: &str) -> Result<Vec<u8>> {
+        self.read_stream_with_limit(name, self.limits.max_stream_bytes)
+    }
+
+    /// Read a named stream's raw bytes, capped at an explicit
+    /// byte limit.
+    ///
+    /// `max_bytes` is the ceiling on output size. A stream whose
+    /// declared size (or read position) exceeds this returns
+    /// `Error::Cfb("stream exceeds limit…")`.
+    pub fn read_stream_with_limit(&mut self, name: &str, max_bytes: u64) -> Result<Vec<u8>> {
+        let path = if name.starts_with('/') {
+            name.to_string()
+        } else {
+            format!("/{name}")
+        };
+        let mut stream = self
+            .cfb
+            .open_stream(&path)
+            .map_err(|_| Error::StreamNotFound(name.to_string()))?;
+        // Stream size is known up-front from the CFB directory entry.
+        // Reject before reading.
+        let stream_size = stream.len();
+        if stream_size > max_bytes {
+            return Err(Error::Cfb(format!(
+                "stream '{name}' size {stream_size} exceeds limit {max_bytes}"
+            )));
+        }
+        let cap = (stream_size as usize).min(max_bytes as usize);
+        let mut out = Vec::with_capacity(cap);
+        // Read in bounded chunks so we can catch the case where a
+        // stream's directory-entry size is a lie (malformed CFB).
+        let mut buf = [0u8; 8192];
+        loop {
+            let n = stream.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            if (out.len() as u64) + (n as u64) > max_bytes {
+                return Err(Error::Cfb(format!(
+                    "stream '{name}' exceeded limit {max_bytes} mid-read"
+                )));
+            }
+            out.extend_from_slice(&buf[..n]);
+        }
+        Ok(out)
+    }
+
+    /// Parse `BasicFileInfo`.
+    pub fn basic_file_info(&mut self) -> Result<BasicFileInfo> {
+        let bytes = self.read_stream(BASIC_FILE_INFO)?;
+        BasicFileInfo::from_bytes(&bytes)
+    }
+
+    /// Parse `PartAtom` XML.
+    pub fn part_atom(&mut self) -> Result<PartAtom> {
+        let bytes = self.read_stream(PART_ATOM)?;
+        PartAtom::from_bytes(&bytes)
+    }
+
+    /// Parse the project-level Atom entry from the `ProjectInformation`
+    /// stream (see [`crate::project_information`]). `Ok(None)` when the file
+    /// has no such stream — families never do.
+    pub fn project_information(&mut self) -> Result<Option<PartAtom>> {
+        if !self.stream_names().iter().any(|n| n == PROJECT_INFORMATION) {
+            return Ok(None);
+        }
+        let bytes = self.read_stream(PROJECT_INFORMATION)?;
+        crate::project_information::parse(&bytes, self.limits.inflate_limits.max_output_bytes)
+            .map(Some)
+    }
+
+    /// The document's Atom entry, whichever stream carries it: `PartAtom`
+    /// on families and templates, `ProjectInformation` on project files.
+    /// `Ok(None)` when neither stream is present.
+    pub fn document_atom(&mut self) -> Result<Option<PartAtom>> {
+        if self.stream_names().iter().any(|n| n == PART_ATOM) {
+            return self.part_atom().map(Some);
+        }
+        self.project_information()
+    }
+
+    /// Extract the PNG thumbnail from `RevitPreview4.0`.
+    ///
+    /// The raw stream has a ~300-byte Revit-specific header (magic
+    /// `62 19 22 05` — the same header magic seen at the start of the
+    /// `Contents` stream). The PNG payload begins at the first occurrence
+    /// of the standard PNG magic bytes.
+    ///
+    /// When an `IEND` chunk is present, the returned buffer ends at the
+    /// trailing CRC of that chunk — trailing junk after a well-formed PNG
+    /// is trimmed. If no `IEND` is found, bytes from PNG magic through
+    /// end-of-stream are returned (fail-open for truncated previews).
+    pub fn preview_png(&mut self) -> Result<Vec<u8>> {
+        let bytes = self.read_stream(REVIT_PREVIEW_4_0)?;
+        extract_preview_png(&bytes)
+    }
+
+    /// Like [`Self::preview_png`], but never trims after `IEND` — returns
+    /// every byte from PNG magic through end of the OLE stream. Useful for
+    /// forensic inspection of trailing payload.
+    pub fn preview_png_untrimmed(&mut self) -> Result<Vec<u8>> {
+        let bytes = self.read_stream(REVIT_PREVIEW_4_0)?;
+        extract_preview_png_untrimmed(&bytes)
+    }
+
+    /// Raw bytes of the `RevitPreview4.0` stream including Revit's
+    /// custom wrapper. Use `preview_png` for just the PNG.
+    pub fn preview_raw(&mut self) -> Result<Vec<u8>> {
+        self.read_stream(REVIT_PREVIEW_4_0)
+    }
+
+    /// Probe `TransmissionData` (UTF-16LE vs opaque vs empty) with
+    /// opportunistic UUID / path / XML-node extracts when UTF-16LE.
+    ///
+    /// Does **not** resolve linked models or decode Autodesk transmission
+    /// field layouts — see [`crate::transmission_data`]. Empty extracts
+    /// ≠ “no links”.
+    pub fn transmission_data_probe(
+        &mut self,
+    ) -> Result<crate::transmission_data::TransmissionDataProbe> {
+        crate::transmission_data::probe_transmission_data(self)
+    }
+
+    /// Decompress `Formats/Latest` and extract the class/schema inventory.
+    pub fn class_names(&mut self) -> Result<BTreeSet<String>> {
+        let bytes = self.read_stream(FORMATS_LATEST)?;
+        // Formats/Latest has GZIP magic at offset 0 (no custom header).
+        // Wave 2 gate deliberately does **not** strip page trailers here —
+        // naive strip regresses opportunistic `class_names` on redistributable
+        // corpora (#151 judge: narrow). `inflate_stream_at` stays path-aware
+        // for API uniformity but is a no-op strip for Formats.
+        let decompressed = compression::inflate_stream_at(FORMATS_LATEST, &bytes, 0)?;
+        class_index::extract_class_names(&decompressed)
+    }
+
+    /// Decompress `Formats/Latest` and parse it into a full schema table —
+    /// classes + fields + C++ type signatures. This is the structured
+    /// version of `class_names()`.
+    pub fn schema(&mut self) -> Result<crate::formats::SchemaTable> {
+        let bytes = self.read_stream(FORMATS_LATEST)?;
+        let decompressed = compression::inflate_stream_at(FORMATS_LATEST, &bytes, 0)?;
+        crate::formats::parse_schema(&decompressed)
+    }
+
+    /// Every class of the embedded schema with its serialization tag, read by
+    /// the schema grammar ([`crate::formats::schema_classes`], #154).
+    pub fn schema_classes(&mut self) -> Result<crate::formats::SchemaClasses> {
+        let bytes = self.read_stream(FORMATS_LATEST)?;
+        let decompressed = compression::inflate_stream_at(FORMATS_LATEST, &bytes, 0)?;
+        Ok(crate::formats::schema_classes(&decompressed))
+    }
+
+    /// Find the version-specific `Partitions/NN` stream name.
+    pub fn partition_stream_name(&self) -> Option<String> {
+        self.stream_names()
+            .into_iter()
+            .find(|n| n.starts_with("Partitions/"))
+    }
+
+    /// Produce a one-shot summary of everything we can parse.
+    ///
+    /// Historically this method was mixed — strict on BasicFileInfo
+    /// (propagated errors) but lossy on PartAtom / class-names
+    /// (swallowed failures via `.ok()` / `.unwrap_or_default()`).
+    /// Prefer [`RevitFile::summarize_strict`] or
+    /// [`RevitFile::summarize_lossy`] — this wrapper calls through
+    /// to the lossy path and discards the diagnostics for backwards
+    /// compatibility. It's kept on the stable surface but new
+    /// callers should pick the strictness level they actually want.
+    #[deprecated(
+        since = "0.1.2",
+        note = "Use `summarize_strict` for errors-on-any-failure or `summarize_lossy` for Decoded<Summary> with accumulated diagnostics."
+    )]
+    pub fn summarize(&mut self) -> Result<Summary> {
+        self.summarize_lossy().map(|d| d.value)
+    }
+
+    /// Strict variant of [`RevitFile::summarize`] (API-04) — returns
+    /// `Err` on ANY parse failure, including PartAtom absence and
+    /// class-name enumeration failure. Use when downstream code
+    /// can't tolerate a partially-populated `Summary`.
+    pub fn summarize_strict(&mut self) -> Result<Summary> {
+        let streams = self.stream_names();
+        let bfi = self.basic_file_info()?;
+        // PartAtom: absence is a soft concept — not every file has
+        // one. Missing PartAtom is NOT an error here; a failed
+        // parse of an existing PartAtom IS.
+        let partatom = match self.part_atom() {
+            Ok(p) => Some(p),
+            Err(Error::StreamNotFound(_)) => None,
+            Err(e) => return Err(e),
+        };
+        let partition_stream = self.partition_stream_name();
+        let class_names = self.class_names()?;
+        let class_name_count = class_names.len();
+        let class_name_sample: Vec<String> = class_names.into_iter().take(30).collect();
+
+        let file_size: u64 = streams.iter().filter_map(|n| self.stream_size(n)).sum();
+
+        Ok(Summary {
+            file_size,
+            streams,
+            version: bfi.version,
+            build: bfi.build,
+            original_path: bfi.original_path,
+            guid: bfi.guid,
+            locale: bfi.locale,
+            partition_stream,
+            partatom,
+            class_name_count,
+            class_name_sample,
+        })
+    }
+
+    /// Lossy variant (API-05) — returns a [`crate::parse_mode::Decoded<Summary>`]
+    /// that accumulates partial-parse issues into its
+    /// `diagnostics` field instead of aborting. Fails only when
+    /// BasicFileInfo itself is unreadable (without it there's
+    /// nothing to summarise). Every other failure becomes a
+    /// `Diagnostic::fail_stream` entry and the corresponding
+    /// `Summary` field uses its default.
+    ///
+    /// Use when you're summarising a batch of files and want a
+    /// best-effort report even for the ones with partial parses.
+    pub fn summarize_lossy(&mut self) -> Result<crate::parse_mode::Decoded<Summary>> {
+        use crate::parse_mode::{Decoded, Diagnostics};
+
+        let streams = self.stream_names();
+        // BasicFileInfo is load-bearing — without it we can't
+        // populate any versioned identity. Propagate its error.
+        let bfi = self.basic_file_info()?;
+
+        let mut diagnostics = Diagnostics::default();
+
+        let partatom = match self.part_atom() {
+            Ok(p) => Some(p),
+            Err(Error::StreamNotFound(_)) => None,
+            Err(_) => {
+                diagnostics.fail_stream("PartAtom");
+                None
+            }
+        };
+
+        let partition_stream = self.partition_stream_name();
+        if partition_stream.is_none() {
+            diagnostics.fail_stream("Partitions/*");
+        }
+
+        let class_names = match self.class_names() {
+            Ok(n) => n,
+            Err(_) => {
+                diagnostics.fail_stream(FORMATS_LATEST);
+                Default::default()
+            }
+        };
+        let class_name_count = class_names.len();
+        let class_name_sample: Vec<String> = class_names.into_iter().take(30).collect();
+
+        let file_size: u64 = streams.iter().filter_map(|n| self.stream_size(n)).sum();
+
+        let summary = Summary {
+            file_size,
+            streams,
+            version: bfi.version,
+            build: bfi.build,
+            original_path: bfi.original_path,
+            guid: bfi.guid,
+            locale: bfi.locale,
+            partition_stream,
+            partatom,
+            class_name_count,
+            class_name_sample,
+        };
+
+        Ok(if diagnostics.is_empty() {
+            Decoded::complete(summary)
+        } else {
+            Decoded::partial(summary, diagnostics)
+        })
+    }
+
+    /// Get size of a named stream (returns `None` if missing).
+    pub fn stream_size(&self, name: &str) -> Option<u64> {
+        let path = if name.starts_with('/') {
+            name.to_string()
+        } else {
+            format!("/{name}")
+        };
+        self.cfb.entry(&path).ok().map(|e| e.len())
+    }
+
+    /// Check the common/invariant streams are all present. Useful for triage:
+    /// if any of these is missing, the file is either corrupt or not a Revit file
+    /// despite having a valid CFB container.
+    pub fn has_revit_signature(&self) -> bool {
+        self.missing_required_streams().is_empty()
+    }
+
+    /// Diagnostic form of `has_revit_signature` — returns the list of
+    /// required streams that are missing, or an empty vec if all are
+    /// present. Much more useful than the bool when triaging: "why does
+    /// this 2016 file work on Linux but not Windows?" gets a concrete
+    /// answer ("missing Global/DocumentIncrementTable") instead of "yes
+    /// or no".
+    pub fn missing_required_streams(&self) -> Vec<&'static str> {
+        let names: BTreeSet<String> = self.stream_names().into_iter().collect();
+        let required = [
+            BASIC_FILE_INFO,
+            CONTENTS,
+            FORMATS_LATEST,
+            GLOBAL_CONTENT_DOCUMENTS,
+            GLOBAL_DOC_INCREMENT_TABLE,
+            GLOBAL_ELEM_TABLE,
+            GLOBAL_HISTORY,
+            GLOBAL_LATEST,
+            GLOBAL_PARTITION_TABLE,
+            PART_ATOM,
+            REVIT_PREVIEW_4_0,
+            TRANSMISSION_DATA,
+        ];
+        required
+            .iter()
+            .copied()
+            .filter(|r| !names.contains(*r))
+            .collect()
+    }
+}
+
+const PNG_MAGIC: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+/// PNG chunk type `IEND` (zero-length terminal chunk).
+const PNG_IEND_TYPE: [u8; 4] = [0x49, 0x45, 0x4E, 0x44];
+
+/// Locate PNG magic inside a `RevitPreview4.0` stream and return bytes from
+/// that offset through end-of-input (no IEND trim).
+fn extract_preview_png_untrimmed(stream: &[u8]) -> Result<Vec<u8>> {
+    let pos = stream
+        .windows(8)
+        .position(|w| w == PNG_MAGIC)
+        .ok_or_else(|| Error::StreamNotFound("PNG magic inside RevitPreview4.0".into()))?;
+    Ok(stream[pos..].to_vec())
+}
+
+/// Locate PNG magic and, when present, trim after the IEND chunk CRC.
+fn extract_preview_png(stream: &[u8]) -> Result<Vec<u8>> {
+    let mut png = extract_preview_png_untrimmed(stream)?;
+    if let Some(end) = png_iend_exclusive_end(&png) {
+        png.truncate(end);
+    }
+    Ok(png)
+}
+
+/// Return the exclusive end offset of a well-formed IEND chunk inside `png`,
+/// or `None` if no IEND type marker with room for its CRC is found.
+///
+/// IEND wire layout: `[u32 BE length=0][IEND][u32 CRC]` (12 bytes). We scan
+/// for the type bytes and require a 4-byte length field of zero immediately
+/// before them plus four CRC bytes after.
+fn png_iend_exclusive_end(png: &[u8]) -> Option<usize> {
+    // Need at least 4 (len) + 4 (type) + 4 (crc) = 12 bytes for a hit.
+    if png.len() < 12 {
+        return None;
+    }
+    for i in 0..=png.len().saturating_sub(8) {
+        if png[i..i + 4] != PNG_IEND_TYPE {
+            continue;
+        }
+        // Type must be preceded by a 4-byte big-endian length of zero.
+        if i < 4 {
+            continue;
+        }
+        let len_start = i - 4;
+        if png[len_start..i] != [0, 0, 0, 0] {
+            continue;
+        }
+        let crc_end = i + 4 + 4; // type + CRC
+        if crc_end > png.len() {
+            return None;
+        }
+        return Some(crc_end);
+    }
+    None
+}

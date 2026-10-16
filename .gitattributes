@@ -1,3 +1,5 @@
 
 # Generated bundle includes upstream GLSL shader strings; preserve their whitespace.
 src/uvyazka/viewer/assets/* linguist-generated=true -whitespace
+integrations/** text eol=lf
+integrations/rvt-rs/** linguist-vendored=true

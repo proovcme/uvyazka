@@ -1,0 +1,11 @@
+[package]
+name = "ifccs-rvt-metadata"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rvt = { path = "../rvt-rs" }
+serde_json = "1"
+
+[profile.release]
+lto = false

@@ -393,7 +393,8 @@
     },
     {
       "path": "src/ifc/mod.rs",
-      "sha256": "2614ac510af0fa0e0b96939bb070418e1b69312a62085d4e6dc4a4f49c01650d"
+      "sha256": "47c8c6877542107feaaf85e3c89836b3e816390bb8ec2f8a5c2c7232c4fe7926",
+      "upstream_sha256": "2614ac510af0fa0e0b96939bb070418e1b69312a62085d4e6dc4a4f49c01650d"
     },
     {
       "path": "src/ifc/pbr.rs",
@@ -589,7 +590,8 @@
     },
     {
       "path": "src/partition_mep_systems.rs",
-      "sha256": "bedc9baeef255b3eff409996fed732b6216f1c468652c03000ee950995d9674d"
+      "sha256": "720a06a2490d9709619089e797ba17f8db401ac82a3be1a9eb08ad43ba496d4a",
+      "upstream_sha256": "bedc9baeef255b3eff409996fed732b6216f1c468652c03000ee950995d9674d"
     },
     {
       "path": "src/partition_name_candidates.rs",
@@ -621,7 +623,8 @@
     },
     {
       "path": "src/partition_schema_mvp.rs",
-      "sha256": "38e5546b3da4d81bc5e9026345df5d47ec999215693a10c8bde3dd86e49eecfa"
+      "sha256": "03ce2976056b9be804547562c1a1bca79a4cb2f949d02ebbbe56ce2d31add32e",
+      "upstream_sha256": "38e5546b3da4d81bc5e9026345df5d47ec999215693a10c8bde3dd86e49eecfa"
     },
     {
       "path": "src/partition_stairs.rs",
@@ -705,5 +708,16 @@
     }
   ],
   "selection": "Buildable library, CLI sources, Python/WASM workspace members, compiler data and notices. No model corpus, binaries, upstream git metadata or private IFCCS projects.",
-  "hash_policy": "SHA-256 of UTF-8 source bytes with CRLF normalized to LF"
+  "hash_policy": "SHA-256 of UTF-8 source bytes with CRLF normalized to LF",
+  "local_patches": [
+    {
+      "id": "uvyazka-native-mep-v1",
+      "description": "Unicode system names, explicit native member edges including electrical base equipment, visible extraction diagnostics",
+      "files": [
+        "src/partition_mep_systems.rs",
+        "src/partition_schema_mvp.rs",
+        "src/ifc/mod.rs"
+      ]
+    }
+  ]
 }

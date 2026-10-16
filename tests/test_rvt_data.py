@@ -28,6 +28,18 @@ def fixture():
 
 
 class DataTests(unittest.TestCase):
+    def test_mep_evidence_is_addressable_and_older_snapshots_remain_unknown(self):
+        row=fixture()
+        self.assertEqual(project_record(row,'mep_system')[0]['status'],'unavailable')
+        row['mep_system']={'name':'П1','saved_name':'П1','class':'RbsHvacSystem','name_field':'m_strName',
+            'members':[71], 'member_evidence':[{'element_id':71,'object_index':2,'field':'m_arrRefs','entry_index':0,'connection_type':1,'role':'network_member'}]}
+        result=project_record(row,'mep_system')
+        self.assertEqual(result[0]['member_count'],1)
+        self.assertFalse(result[0]['engineering_connectivity_verified'])
+        self.assertEqual(result[1]['json_path'],['graph','objects',2,'fields','m_arrRefs',0])
+        row.pop('mep_system');row['mep_system_diagnostic']='missing explicit edge'
+        self.assertEqual(project_record(row,'mep_system')[0]['diagnostic'],'missing explicit edge')
+
     def test_schedule_projection_uses_edges_order_and_preserves_empty_and_zero(self):
         row=fixture()
         fields=project_record(row,'schedule_fields')
@@ -68,6 +80,8 @@ class DataTests(unittest.TestCase):
                 self.assertEqual(data.extract('one',doc['doc_id'],'another','views'),result)
                 self.assertEqual(native.call_count,2)
                 key=result['extraction_id']
+                with self.assertRaisesRegex(ValueError,'all-profile'):
+                    data.read('one',key,'systems')
                 page=data.read('one',key,'schedules',limit=1)
                 self.assertEqual(page['items'][0]['element_id'],'42')
                 record=data.record('one',key,0,'schedule_fields')

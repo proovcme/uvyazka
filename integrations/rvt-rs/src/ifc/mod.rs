@@ -1,3 +1,4 @@
+//! Uvyazka modification: include native MEP extraction gaps in export diagnostics.
 //! Layer 5 — IFC export (document-level scaffold).
 //!
 //! # What this module currently produces
@@ -3148,6 +3149,7 @@ pub fn build_export_diagnostics_with_limits(
 
     let recovered_units = recover_project_units(rf);
     let mut warnings = diagnostic_candidates.warnings;
+    warnings.extend(walker_stats.mep_warnings.iter().cloned());
     if !empty_panels.types_with_material.is_empty() {
         warnings.push(format!(
             "{} empty curtain panel type(s) carry a material, which an empty panel should not: {:?}",
@@ -3786,6 +3788,7 @@ fn unsupported_export_features(model: &IfcModel) -> Vec<String> {
 #[derive(Debug, Default)]
 struct ProductionWalkerStats {
     class_counts: std::collections::BTreeMap<String, usize>,
+    mep_warnings: std::collections::BTreeSet<String>,
     mean_element_confidence: Option<f32>,
     elements_below_min_confidence: usize,
 }
@@ -3806,6 +3809,7 @@ fn production_walker_stats(
     let mut n = 0usize;
     let min_c = crate::walker::DEFAULT_MIN_ELEMENT_CONFIDENCE;
     for el in iter {
+        stats.mep_warnings.extend(el.provenance.warnings.iter().filter(|w| w.starts_with("RVT_MEP:")).cloned());
         *stats.class_counts.entry(el.class.clone()).or_insert(0) += 1;
         sum += el.provenance.confidence;
         n += 1;

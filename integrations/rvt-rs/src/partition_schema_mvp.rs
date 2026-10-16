@@ -1,3 +1,4 @@
+//! Uvyazka modification: native MEP membership and visible extraction warnings.
 //! Schema / partition MVP recovers for production `iter_elements`.
 //!
 //! Extends the ArcWall-only partition merge with fail-closed recovers
@@ -4475,7 +4476,7 @@ pub fn mep_systems_from_fields(fields: &[(String, InstanceField)]) -> Vec<(u32, 
 fn attach_mep_systems(
     rf: &mut RevitFile,
     revit_version: u32,
-    groups: [&mut Vec<DecodedElement>; 6],
+    mut groups: [&mut Vec<DecodedElement>; 6],
 ) {
     use crate::partition_mep_systems as pms;
     if !pms::supports_revit_version(revit_version) {
@@ -4485,7 +4486,13 @@ fn attach_mep_systems(
         .iter()
         .flat_map(|elements| elements.iter().filter_map(|element| element.id))
         .collect();
-    let systems = pms::scan_mep_systems(rf, revit_version, &ids).unwrap_or_default();
+    let (systems, diagnostics) = match pms::scan_mep_systems_report(rf, revit_version, &ids) {
+        Ok(report) => (report.systems, report.diagnostics),
+        Err(error) => (Vec::new(), vec![error.to_string()]),
+    };
+    if let Some(element) = groups.iter_mut().flat_map(|g| g.iter_mut()).next() {
+        element.provenance.warnings.extend(diagnostics.into_iter().map(|d| format!("RVT_MEP: {d}")));
+    }
     if systems.is_empty() {
         return;
     }

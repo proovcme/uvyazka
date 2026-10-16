@@ -18,12 +18,12 @@ def register_tools(mcp,workspace):
 
     @mcp.tool(annotations=read)
     def get_rvt_data(project_id:str,extraction_id:str,section:str='elements',query:str='',offset:int=0,limit:int=40,json_path:list[str|int]|None=None,max_chars:int=6000) -> dict:
-        """Read a bounded cached RVT inventory without Revit. Sections: summary, coverage (by native class), units, parameter_definitions, classes, elements (all record kinds), views, schedules, placements, diagnostics. record_id addresses get_rvt_record. section=value reads extraction-report JSON by json_path with character continuation. Source SHA identifies the snapshot, not the approved revision. Saved unit formats do not by themselves convert raw values to SI."""
+        """Read a bounded cached RVT inventory without Revit. Sections: summary, coverage (by native class), units, parameter_definitions, classes, elements (all record kinds), views, schedules, placements, systems, diagnostics. record_id addresses get_rvt_record. section=value reads extraction-report JSON by json_path with character continuation. Source SHA identifies the snapshot, not the approved revision. Saved unit formats do not by themselves convert raw values to SI."""
         return RvtData(workspace).read(project_id,extraction_id,section,query,offset,limit,json_path,max_chars)
 
     @mcp.tool(annotations=read)
     def get_rvt_record(project_id:str,extraction_id:str,record_id:int,section:str='fields',offset:int=0,limit:int=40,json_path:list[str|int]|None=None,max_chars:int=6000) -> dict:
-        """Read cached RVT fields, parameters, view settings, graph objects, schedule_definition (filters/sorting/settings), schedule_fields or schedule_cells without Revit. For a truncated row use section=value, json_path and character offset; next_offset continues JSON text. Saved cells do not prove evaluated body rows or typed quantities; view settings are not rendered drawings. Missing remains missing; raw values and source addresses are preserved."""
+        """Read cached RVT fields, parameters, view settings, graph objects, mep_system (Unicode name and explicit member references, including electrical base equipment), schedule_definition, schedule_fields or schedule_cells without Revit. MEP membership is saved evidence, not an engineering completeness approval; missing projections remain unavailable. For a truncated row use section=value, json_path and character offset. Saved cells do not prove evaluated body rows; view settings are not rendered drawings."""
         return RvtData(workspace).record(project_id,extraction_id,record_id,section,offset,limit,json_path,max_chars)
 
     @mcp.tool(annotations={'readOnlyHint':False,'destructiveHint':False,'idempotentHint':False})

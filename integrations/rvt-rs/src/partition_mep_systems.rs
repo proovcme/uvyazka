@@ -1,196 +1,265 @@
-//! MEP systems and their members (RE-162, B33, #528).
-//!
-//! An MEP system is an element of its own, a data object (RE-153) of class
-//! `RbsHvacSystem`, `RbsPipingSystem` or `RbsElectricalSystem`. An HVAC or
-//! piping system's name is the first string of printable ASCII in its
-//! payload; an electrical system's is its circuit number
-//! (RE-162 §3). Its members are the elements whose own data objects
-//! hold the system's ElementId. On the RE1 Mechanical, Plumbing and
-//! Electrical models (Revit 2025, MIT), against Revit's own IFC: every one of
-//! Revit's 26 `IfcSystem`s is one such object of the same name, and every
-//! element Revit groups in it holds its id.
+//! Uvyazka patch: MEP names and membership from current native object graphs.
+//! No byte-pattern membership or first-printable-string fallback is used.
+use crate::native_parameters::ObjectGraph;
+use crate::{RevitFile, native_document};
+use anyhow::{Result, ensure};
+use serde::Serialize;
+use serde_json::Value;
+use std::collections::BTreeSet;
 
-use crate::partition_room_parameters::{DATA_OBJECT_HEADER, verified_data_object};
-use crate::{Result, RevitFile};
-use std::collections::{BTreeMap, BTreeSet};
-
-/// The schema classes of MEP systems.
 pub const SYSTEM_CLASSES: [&str; 3] = ["RbsHvacSystem", "RbsPipingSystem", "RbsElectricalSystem"];
-/// Longest system name read, in UTF-16 units.
-const MAX_NAME_UNITS: usize = 256;
-
-/// One MEP system.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MepSystem {
-    /// Its ElementId.
-    pub id: u32,
-    /// Its schema class, one of [`SYSTEM_CLASSES`].
-    pub class: String,
-    /// Its name, where its object holds one.
-    pub name: Option<String>,
-    /// The elements of `elements` (see [`scan_mep_systems`]) whose own data
-    /// objects hold its id.
-    pub members: BTreeSet<u32>,
-}
-
-/// Data objects are read on Revit 2024 and later (RE-153).
-pub fn supports_revit_version(revit_version: u32) -> bool {
-    revit_version >= 2024
-}
-
-/// The `u32 n · UTF-16 × n` string at `q` of `bytes`, `n` at most
-/// [`MAX_NAME_UNITS`].
-fn string_at(bytes: &[u8], q: usize) -> Option<Vec<u16>> {
-    let n = u32::from_le_bytes(bytes.get(q..q.checked_add(4)?)?.try_into().ok()?) as usize;
-    if n > MAX_NAME_UNITS {
-        return None;
-    }
-    Some(
-        bytes
-            .get(q + 4..q + 4 + 2 * n)?
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect(),
-    )
-}
-
-/// The first non-empty `u32 n · UTF-16 × n` string in `payload` of printable
-/// ASCII: an HVAC or piping system's name. Shorter strings of other units
-/// come first, a `1` followed by half an ElementId reading as one.
-fn first_string(payload: &[u8]) -> Option<String> {
-    (0..payload.len()).find_map(|q| {
-        let units = string_at(payload, q)?;
-        (!units.is_empty() && units.iter().all(|u| (0x20..0x7f).contains(u)))
-            .then(|| String::from_utf16_lossy(&units))
-    })
-}
-
-/// The marker an electrical system's circuit number is found from:
-/// `0xff` × 8 then `01`.
-const CIRCUIT_MARKER: [u8; 9] = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01];
-/// Bytes from the marker's last byte to the count of the entries before the
-/// circuit number.
-const CIRCUIT_LIST_OFFSET: usize = 20;
-/// Bytes of each of those entries.
-const CIRCUIT_ENTRY_BYTES: usize = 32;
-/// The name Revit gives a circuit with no circuit number.
 pub const UNNAMED_CIRCUIT: &str = "<unnamed>";
 
-/// An electrical system's name, its circuit number (RE-162): after the first
-/// [`CIRCUIT_MARKER`] in its object, [`CIRCUIT_LIST_OFFSET`] bytes on, a
-/// `u32` count of [`CIRCUIT_ENTRY_BYTES`]-byte entries, then the number as `u32
-/// n · UTF-16 × n`. An empty number is Revit's [`UNNAMED_CIRCUIT`].
-fn circuit_number(object: &[u8]) -> Option<String> {
-    let marker = memchr::memmem::find(object, &CIRCUIT_MARKER)? + CIRCUIT_MARKER.len() - 1;
-    let list = marker + CIRCUIT_LIST_OFFSET;
-    let count = u32::from_le_bytes(object.get(list..list + 4)?.try_into().ok()?) as usize;
-    let units = string_at(object, list + 4 + count.checked_mul(CIRCUIT_ENTRY_BYTES)?)?;
-    if units.is_empty() {
-        return Some(UNNAMED_CIRCUIT.into());
-    }
-    units
-        .iter()
-        .all(|u| (0x20..0x7f).contains(u))
-        .then(|| String::from_utf16_lossy(&units))
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MemberEvidence {
+    pub element_id: u32,
+    pub object_index: usize,
+    pub field: String,
+    pub entry_index: usize,
+    pub connection_type: u64,
+    pub role: String,
 }
 
-/// Every MEP system in the file, with its members among `elements`. A system
-/// whose objects in two streams disagree on its name keeps no name. Empty for
-/// a release before 2024 or a schema with none of [`SYSTEM_CLASSES`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MepSystem {
+    pub id: u32,
+    pub class: String,
+    pub name: Option<String>,
+    pub name_field: String,
+    pub saved_name: String,
+    pub members: BTreeSet<u32>,
+    pub member_evidence: Vec<MemberEvidence>,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct MepReport {
+    pub systems: Vec<MepSystem>,
+    pub diagnostics: Vec<String>,
+    pub selected_records: usize,
+}
+
+pub fn supports_revit_version(version: u32) -> bool {
+    (2024..=2027).contains(&version)
+}
+
+fn id(value: &Value) -> Option<u32> {
+    let value = value.get("m_id")?.get("m_id64")?.as_u64()?;
+    u32::try_from(value).ok().filter(|id| *id > 0)
+}
+
+/// Resolve a field by its explicit edge, including pointer token/class checks.
+fn target(graph: &ObjectGraph, owner: usize, pointer: &Value) -> Result<Option<usize>> {
+    let token = pointer["pointer_token"]
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("missing pointer token"))?;
+    let offset = pointer["offset"]
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("missing pointer offset"))?;
+    let edges: Vec<_> = graph
+        .edges
+        .iter()
+        .filter(|e| e.source_object_index == owner && e.pointer_offset as u64 == offset)
+        .collect();
+    if token == 0 {
+        ensure!(edges.is_empty(), "null pointer has a graph edge");
+        return Ok(None);
+    }
+    ensure!(
+        edges.len() == 1,
+        "pointer must have exactly one explicit edge"
+    );
+    let edge = edges[0];
+    let object = graph
+        .objects
+        .get(edge.target_object_index)
+        .ok_or_else(|| anyhow::anyhow!("edge target outside graph"))?;
+    ensure!(
+        edge.pointer_token as u64 == token && edge.target_class_tag == object.class_tag,
+        "edge token/class mismatch"
+    );
+    Ok(Some(edge.target_object_index))
+}
+
+fn references(
+    system: &mut MepSystem,
+    graph: &ObjectGraph,
+    index: usize,
+    field: &str,
+    connector: bool,
+) -> Result<()> {
+    let values = graph.objects[index].fields[field]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("missing {field} array"))?;
+    for (entry_index, reference) in values.iter().enumerate() {
+        let kind = reference["m_connType"]
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("missing connection type"))?;
+        let member = id(&reference["m_id"]);
+        if member.is_none() && reference["m_id"]["m_id"]["m_id64"].as_i64() == Some(-1) {
+            continue;
+        }
+        let member =
+            member.ok_or_else(|| anyhow::anyhow!("invalid or unrepresentable member ElementId"))?;
+        ensure!(
+            kind == 1 || (connector && kind == 4 && system.class == "RbsElectricalSystem"),
+            "unsupported system reference type {kind}"
+        );
+        ensure!(member != system.id, "system references itself as a member");
+        system.members.insert(member);
+        system.member_evidence.push(MemberEvidence {
+            element_id: member,
+            object_index: index,
+            field: field.into(),
+            entry_index,
+            connection_type: kind,
+            role: if kind == 4 {
+                "base_equipment_reference"
+            } else {
+                "network_member"
+            }
+            .into(),
+        });
+    }
+    Ok(())
+}
+
+/// Project one complete bounded graph. Saved values are not recalculated.
+pub fn project_system(element_id: u64, graph: &ObjectGraph) -> Result<MepSystem> {
+    let root = graph
+        .objects
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("empty system graph"))?;
+    ensure!(
+        SYSTEM_CLASSES.contains(&root.class_name.as_str()),
+        "unsupported system class"
+    );
+    let system_id = u32::try_from(element_id)?;
+    ensure!(
+        id(&root.fields["m_id"]) == Some(system_id),
+        "system root identity mismatch"
+    );
+    let field = if root.class_name == "RbsElectricalSystem" {
+        "m_number"
+    } else {
+        "m_strName"
+    };
+    let saved_name = root.fields[field]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing {field} string"))?;
+    let name = if saved_name.is_empty() && root.class_name == "RbsElectricalSystem" {
+        UNNAMED_CIRCUIT
+    } else {
+        saved_name
+    };
+    let mut system = MepSystem {
+        id: system_id,
+        class: root.class_name.clone(),
+        name: Some(name.into()),
+        name_field: field.into(),
+        saved_name: saved_name.into(),
+        members: BTreeSet::new(),
+        member_evidence: Vec::new(),
+    };
+    if let Some(manager) = target(graph, 0, &root.fields["m_pConnectorMgr"])? {
+        let object = &graph.objects[manager];
+        ensure!(
+            object.class_name == "RbsSystemConnectorManager",
+            "unexpected system connector manager"
+        );
+        let pointers = object.fields["m_connPtrArray"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("missing system connector array"))?;
+        for pointer in pointers {
+            let index = target(graph, manager, pointer)?
+                .ok_or_else(|| anyhow::anyhow!("null system connector"))?;
+            ensure!(
+                graph.objects[index].class_name == "Connector",
+                "unexpected connector class"
+            );
+            references(&mut system, graph, index, "m_arrRefs", true)?;
+        }
+    }
+    let sections = root.fields["m_rgSections"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("missing system section array"))?;
+    for pointer in sections {
+        let index =
+            target(graph, 0, pointer)?.ok_or_else(|| anyhow::anyhow!("null system section"))?;
+        let section = &graph.objects[index];
+        ensure!(
+            matches!(
+                section.class_name.as_str(),
+                "RbsDuctSection" | "RbsPipeSection"
+            ),
+            "unsupported system section class"
+        );
+        if let Some(ids) = section.fields.get("m_rgNetworkSegmentIds") {
+            ensure!(
+                ids.as_array().is_some_and(|a| a.is_empty()),
+                "network segment IDs require a separate decoder"
+            );
+        }
+        references(&mut system, graph, index, "m_rgSection", false)?;
+    }
+    Ok(system)
+}
+
+/// Read current system records once; preserve successful systems and report gaps.
+pub fn scan_mep_systems_report(
+    rf: &mut RevitFile,
+    version: u32,
+    elements: &BTreeSet<u32>,
+) -> Result<MepReport> {
+    ensure!(
+        supports_revit_version(version),
+        "unvalidated MEP graph version {version}"
+    );
+    let options = native_document::Options {
+        selected_classes: SYSTEM_CLASSES.iter().map(|s| s.to_string()).collect(),
+        ..Default::default()
+    };
+    let mut report = MepReport::default();
+    let summary = native_document::extract_graphs(rf, &options, |record| {
+        report.selected_records += 1;
+        let result = record
+            .graph
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("system graph unavailable"))
+            .and_then(|g| project_system(record.identity.element_id, g));
+        match result {
+            Ok(mut system) => {
+                system.members.retain(|member| elements.contains(member));
+                system
+                    .member_evidence
+                    .retain(|e| elements.contains(&e.element_id));
+                report.systems.push(system);
+            }
+            Err(error) => report
+                .diagnostics
+                .push(format!("system {}: {error}", record.identity.element_id)),
+        }
+        Ok(())
+    })?;
+    if !summary.selected_ids_without_records.is_empty() {
+        report.diagnostics.push(format!(
+            "{} selected system records are unavailable",
+            summary.selected_ids_without_records.len()
+        ));
+    }
+    Ok(report)
+}
+
+/// Compatibility entrypoint: callers cannot silently accept incomplete membership.
 pub fn scan_mep_systems(
     rf: &mut RevitFile,
-    revit_version: u32,
+    version: u32,
     elements: &BTreeSet<u32>,
 ) -> Result<Vec<MepSystem>> {
-    if !supports_revit_version(revit_version) {
-        return Ok(Vec::new());
-    }
-    let classes = rf.schema_classes()?;
-    let tags: BTreeMap<u32, String> = classes
-        .classes
-        .iter()
-        .filter(|class| SYSTEM_CLASSES.contains(&class.name.as_str()))
-        .map(|class| (u32::from(class.tag), class.name.clone()))
-        .collect();
-    if tags.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut systems: BTreeMap<u32, MepSystem> = BTreeMap::new();
-    let mut names: BTreeMap<u32, Option<String>> = BTreeMap::new();
-    let streams = rf.partition_stream_names();
-    for stream in &streams {
-        let Ok(inflated) = rf.inflated_partition(stream) else {
-            continue;
-        };
-        let buf = inflated.bytes();
-        for (&tag, class) in &tags {
-            for hit in memchr::memmem::find_iter(buf, &tag.to_le_bytes()) {
-                let Some(p) = hit.checked_sub(16) else {
-                    continue;
-                };
-                let Some(object) = verified_data_object(buf, p) else {
-                    continue;
-                };
-                if object.class & 0xffff != tag {
-                    continue;
-                }
-                let name = if class == "RbsElectricalSystem" {
-                    circuit_number(&buf[p..object.end])
-                } else {
-                    first_string(&buf[p + DATA_OBJECT_HEADER..object.end - 4])
-                };
-                match names.get_mut(&object.element_id) {
-                    None => {
-                        names.insert(object.element_id, name);
-                    }
-                    Some(held) => {
-                        if *held != name {
-                            *held = None;
-                        }
-                    }
-                }
-                systems
-                    .entry(object.element_id)
-                    .or_insert_with(|| MepSystem {
-                        id: object.element_id,
-                        class: class.clone(),
-                        name: None,
-                        members: BTreeSet::new(),
-                    });
-            }
-        }
-    }
-    // B70: one pass per stream over the objects of `elements`, looking in each
-    // payload for a system's id, instead of a backward search for the object
-    // around every place a system's id occurs.
-    let (Some(&low), Some(&high)) = (systems.keys().next(), systems.keys().next_back()) else {
-        return Ok(Vec::new());
-    };
-    for stream in &streams {
-        let Ok(inflated) = rf.inflated_partition(stream) else {
-            continue;
-        };
-        let buf = inflated.bytes();
-        let Ok(objects) = rf.partition_data_objects(stream) else {
-            continue;
-        };
-        for &(p, object) in objects.iter() {
-            if !elements.contains(&object.element_id) {
-                continue;
-            }
-            for word in buf[p + DATA_OBJECT_HEADER..object.end].windows(4) {
-                let id = u32::from_le_bytes(word.try_into().expect("4 bytes"));
-                if !(low..=high).contains(&id) || id == object.element_id {
-                    continue;
-                }
-                if let Some(system) = systems.get_mut(&id) {
-                    system.members.insert(object.element_id);
-                }
-            }
-        }
-    }
-    for system in systems.values_mut() {
-        system.name = names.remove(&system.id).flatten();
-    }
-    Ok(systems.into_values().collect())
+    let report = scan_mep_systems_report(rf, version, elements)?;
+    ensure!(
+        report.diagnostics.is_empty(),
+        "incomplete MEP system extraction: {}",
+        report.diagnostics.join("; ")
+    );
+    Ok(report.systems)
 }

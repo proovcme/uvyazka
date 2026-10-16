@@ -68,7 +68,8 @@ def converter_status(home=None):
             valid = exists and (origin != 'managed' or manifest.get('binaries', {}).get(name) == sha256(path))
             rows[name] = {"path": str(path), "available": valid, "origin": origin,
                 "integrity": "verified" if origin == 'managed' and valid else "unverified" if valid else "missing_or_changed",
-                "source_revision": manifest.get('upstream_revision') if origin == 'managed' and valid else None}
+                "source_revision": manifest.get('upstream_revision') if origin == 'managed' and valid else None,
+                "local_patches":manifest.get('local_patches',[]) if origin == 'managed' and valid else []}
         except (OSError, ValueError, KeyError) as error:
             rows[name] = {"available": False, "error": str(error)}
     return {"engine": "rvt-rs", "available": all(rows[k]['available'] for k in ('rvt-ifc','rvt-info')),

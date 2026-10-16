@@ -14,7 +14,8 @@ from .planning import Planning, bounded
 from .rvt_runtime import binary_path, sha256
 from .simulation import canonical_hash
 
-VERSION = '0.1.0'
+VERSION = '0.2.0'
+SYSTEM_CLASSES = {'RbsHvacSystem', 'RbsPipingSystem', 'RbsElectricalSystem'}
 SQL = [
     'create table if not exists rvt_extractions(extraction_id text primary key,payload text not null)',
     'create table if not exists rvt_native_records(extraction_id text,record_id integer,element_id text,class_name text,kind text,name text,status text,payload text,primary key(extraction_id,record_id))',
@@ -66,6 +67,16 @@ def pointer_row(record,index,key,value,**extra):
 
 def project_record(record,section):
     graph=objects(record)
+    if section=='mep_system':
+        system=record.get('mep_system')
+        if not system:
+            return [{'status':'unavailable','diagnostic':record.get('mep_system_diagnostic') or 'This snapshot has no system projection; re-extract with the updated runtime'}]
+        rows=[{'name':system['name'],'saved_name':system['saved_name'],'class':system['class'],
+            'member_count':len(system['members']),'value_semantics':'serialized_not_evaluated',
+            'engineering_connectivity_verified':False,
+            'json_path':['graph','objects',0,'fields',system['name_field']]}]
+        rows.extend({**e,'json_path':['graph','objects',e['object_index'],'fields',e['field'],e['entry_index']]} for e in system['member_evidence'])
+        return rows
     if section=='fields':
         return [pointer_row(record,0,k,v) for k,v in (graph[0]['fields'] if graph else {}).items()]
     if section=='graph':
@@ -140,7 +151,7 @@ def project_record(record,section):
                     result.append({'section_index':fields.get('m_index'),'properties':graph[target]['fields'],
                         'json_path':['graph','objects',target,'fields'],'value_semantics':'saved_cell_not_evaluated_body'})
         return result
-    raise ValueError('section: fields, parameters, view, graph, schedule_definition, schedule_fields, schedule_cells or value')
+    raise ValueError('section: fields, parameters, view, graph, mep_system, schedule_definition, schedule_fields, schedule_cells or value')
 
 
 def preview_page(rows,offset=0,limit=40):
@@ -226,9 +237,9 @@ class RvtData:
                 if len(line)>3*1024*1024:raise ValueError('Native record exceeds the cache budget')
                 row=json.loads(line);kind=kind_for(row.get('class_name'),classes);counts[kind]=counts.get(kind,0)+1
                 graph=objects(row);fields=graph[0]['fields'] if graph else {}
-                name=fields.get('m_viewName') or fields.get('m_name') or ''
+                name=(row.get('mep_system') or {}).get('name') or fields.get('m_viewName') or fields.get('m_name') or ''
                 if not isinstance(name,str):name=''
-                status=row.get('projection_status') or ('partial_metadata' if row.get('metadata_diagnostic') else row['status'])
+                status=row.get('projection_status') or ('partial_mep' if row.get('mep_system_diagnostic') else 'partial_metadata' if row.get('metadata_diagnostic') else row['status'])
                 records.append((fingerprint,index,str(row['identity']['element_id']),row.get('class_name'),kind,name,status,encode(row)))
         result={'project_id':project_id,'extraction_id':fingerprint,'profile':profile,'source':pointer,'created_at':now(),
             'reader_version':VERSION,'reader_sha256':reader_hash,'status':report['status'],'counts':counts,
@@ -270,7 +281,11 @@ class RvtData:
 
     def read(self,project_id,extraction_id,section='elements',query='',offset=0,limit=40,json_path=None,max_chars=6000):
         snapshot=self.snapshot(project_id,extraction_id)
-        scope={'project_id':project_id,'extraction_id':extraction_id,'source':snapshot['source'],'snapshot_status':snapshot['status']}
+        scope={'project_id':project_id,'extraction_id':extraction_id,'source':snapshot['source'],'snapshot_status':snapshot['status'],'profile':snapshot['profile']}
+        if section=='systems':
+            if snapshot['profile']!='all':raise ValueError('System inventory requires an all-profile extraction; a views/schedules snapshot cannot establish system absence')
+            scope['engineering_connectivity_verified']=False
+            scope['absence_verified']=False
         if section=='summary':return snapshot
         if section in {'coverage','units','parameter_definitions','value'}:
             report=json.loads(Path(snapshot['summary_file']).read_text(encoding='utf-8'))
@@ -282,11 +297,12 @@ class RvtData:
         if section=='classes':
             rows=json.loads(Path(snapshot['classes_file']).read_text(encoding='utf-8'))['classes']
             return {**scope,**preview_page([{'name':r['name'],'parent':r['parent'],'field_count':len(r['fields'])} for r in rows if query.casefold() in r['name'].casefold()],offset,limit)}
-        if section not in {'elements','views','schedules','placements','diagnostics'}:raise ValueError('Unknown RVT data section')
+        if section not in {'elements','views','schedules','placements','systems','diagnostics'}:raise ValueError('Unknown RVT data section')
         with connection(self.workspace.db_path(project_id),readonly=True) as db:
             rows=[dict(r) for r in db.execute('select record_id,element_id,class_name,kind,name,status from rvt_native_records where extraction_id=? order by record_id',(extraction_id,))]
         kinds={'views':'view','schedules':'schedule','placements':'placement'}
         if section in kinds:rows=[r for r in rows if r['kind']==kinds[section]]
+        if section=='systems':rows=[r for r in rows if r['class_name'] in SYSTEM_CLASSES]
         if section=='diagnostics':rows=[r for r in rows if r['status']!='complete_bounded_graph']
         rows=[r for r in rows if query.casefold() in encode(r).casefold()]
         return {**scope,'section':section,**preview_page(rows,offset,limit)}
@@ -298,7 +314,7 @@ class RvtData:
         if not row:raise ValueError('Record not found in this extraction')
         record=json.loads(row[0]);scope={'project_id':project_id,'extraction_id':extraction_id,'record_id':record_id,
             'source':snapshot['source'],'native_source':record['source'],'identity':record['identity'],
-            'status':record.get('projection_status') or ('partial_metadata' if record.get('metadata_diagnostic') else record['status']),
+            'status':record.get('projection_status') or ('partial_mep' if record.get('mep_system_diagnostic') else 'partial_metadata' if record.get('metadata_diagnostic') else record['status']),
             'value_semantics':'serialized_not_evaluated','evaluated_schedule_body_available':False}
         if section=='value':
             return {**scope,**json_fragment(record,json_path,offset,max_chars)}

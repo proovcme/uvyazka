@@ -63,7 +63,14 @@ jobs:
         with:
           python-version: '3.12'
       - run: python tools/setup_rvt.py --profile dev --with-fixture-generator
+      - run: cargo test --locked --manifest-path integrations/rvt-metadata-reader/Cargo.toml --test mep_systems
+        env:
+          CARGO_TARGET_DIR: .uvyazka-build/rvt-target
       - run: python tools/check_rvt_runtime.py
+      - if: runner.os == 'Linux'
+        run: python -m pip install 'ifcopenshell>=0.8,<0.9'
+      - if: runner.os == 'Linux'
+        run: python tools/check_rvt_mep.py --fetch
   rvt-wasm:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

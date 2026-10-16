@@ -3,7 +3,7 @@ import json
 import pytest
 from uvyazka.core import Workspace
 from uvyazka.ingest import scan
-from uvyazka.construction.authoring_tools import register_tools
+from uvyazka.construction.authoring_tools import register_tools,store_for
 from uvyazka.construction.planning import Planning
 from test_authoring import plan_file, model_spec
 
@@ -15,6 +15,19 @@ class Tools:
             self.functions[function.__name__] = function
             return function
         return register
+
+
+def test_managed_upload_roots_are_project_scoped(workspace_temp):
+    root=workspace_temp/'upload-scope';root.mkdir()
+    first=root/'first';first.mkdir();second=root/'second';second.mkdir()
+    ws=Workspace(root/'state');ws.create_project('one','One',first);ws.create_project('two','Two',second)
+    uploads=ws.db_path('one').parent/'uploads';uploads.mkdir()
+    other_uploads=ws.db_path('two').parent/'uploads';other_uploads.mkdir()
+    foreign=other_uploads/'foreign.rvt';foreign.write_bytes(bytes.fromhex('D0CF11E0A1B11AE1'))
+    store=store_for(ws,'one')
+    assert uploads.resolve() in store.read_roots
+    assert other_uploads.resolve() not in store.read_roots
+    with pytest.raises(ValueError,match='корней'):store.import_rvt('foreign.rvt',path=str(foreign))
 
 
 def test_registered_drawing_build_federation_and_changed_source(workspace_temp):

@@ -2,7 +2,7 @@ const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const groupNames = {tep:'ТЭП',rooms:'Помещения',capacity:'ТУ и мощности',quantities:'Объёмы',finance:'Финансы',organization:'Организация'};
 const statusNames = {matches:'Совпадает',question:'Нужна сверка',not_comparable:'Недостаточно данных',needs_review:'Нужно пересмотреть'};
-const processingNames = {text_indexed:'Текст извлечён',pending:'Ожидает обработки',unsupported:'Нужен отдельный читатель',source_missing:'Источник отсутствует',parse_failed:'Ошибка чтения',empty_text:'Нет извлечённого текста'};
+const processingNames = {uploaded_rvt:'Загружен RVT',text_indexed:'Текст извлечён',pending:'Ожидает обработки',unsupported:'Нужен отдельный читатель',source_missing:'Источник отсутствует',parse_failed:'Ошибка чтения',empty_text:'Нет извлечённого текста'};
 const freshnessNames = {snapshot_metadata_matches:'Размер и время файла совпадают со снимком',content_hash_matches:'Содержимое совпадает по хешу',historical_snapshot:'Сохранённая прежняя версия',stale_version:'Версия источника изменилась',needs_refresh:'Нужно обновить источник',source_unavailable:'Источник недоступен'};
 const unitNames = {m:'м',mm:'мм',cm:'см',km:'км',m2:'м²',m3:'м³',ha:'га',kg:'кг',t:'т',piece:'шт.',kW:'кВт',W:'Вт','m3/day':'м³/сут','l/s':'л/с','10 m2':'10 м²','1000 m2':'1000 м²','100 m3':'100 м³'};
 function unit(value) { return unitNames[value] || value; }
@@ -26,7 +26,7 @@ function locatorName(l) {
   return 'Строка: ' + (l.line || l.row || '—');
 }
 let current = '', projects = [], facts = [], checks = [], status = {}, view = 'overview', offset = 0, timer, generation = 0, resultGeneration = 0;
-const routes = {overview:'Обзор проекта',facts:'Все показатели',rooms:'Помещения',capacity:'ТУ и мощности',quantities:'Объёмы и материалы',finance:'Финансы',checks:'Сопоставления',coordination:'Увязка разделов',simulation:'График и модель',documents:'Документы',search:'Поиск по тексту',portfolio:'Все проекты'};
+const routes = {overview:'Обзор проекта',facts:'Все показатели',rooms:'Помещения',capacity:'ТУ и мощности',quantities:'Объёмы и материалы',finance:'Финансы',checks:'Сопоставления',coordination:'Увязка разделов',rvt:'Загрузить RVT',simulation:'График и модель',documents:'Документы',search:'Поиск по тексту',portfolio:'Все проекты'};
 function url(path) { const u = new URL(path, location.origin); u.searchParams.set('project_id', current); return u.pathname + u.search; }
 async function api(path) { const r = await fetch(path === '/api/projects' ? path : url(path)); const d = await r.json(); if (!r.ok) throw Error(d.error); return d; }
 function badge(s) { return `<span class="badge ${esc(s)}">${esc(statusNames[s] || s)}</span>`; }
@@ -51,6 +51,7 @@ async function route() {
   $('#page-title').textContent = routes[view];
   $('#navigation').innerHTML = Object.entries(routes).map(([key,title]) => `<a href="#${key}" class="nav-item ${key === view ? 'active' : ''}">${esc(title)}</a>`).join('');
   $('#section-select').innerHTML = Object.entries(routes).map(([key,title]) => `<option value="${key}" ${key === view ? 'selected' : ''}>${esc(title)}</option>`).join('');
+  if(view==='rvt'){await window.UvyazkaRvt.mount(current,$('#view'));return;}
   if (view === 'portfolio') {
     $('#view').innerHTML = panel('Реестр проектов', `<div class="table-wrap"><table><thead><tr><th>Объект</th><th>Документы</th><th>Наблюдения</th><th></th></tr></thead><tbody>${projects.map(p => `<tr><td>${esc(p.name)}<span class="fact-id">${esc(p.id)} · ${esc(p.location)}</span></td><td>${p.counts?.documents ?? '—'}</td><td>${p.counts?.facts ?? '—'}</td><td><button class="source-button" data-project="${esc(p.id)}">Открыть →</button></td></tr>`).join('')}</tbody></table></div>`); return;
   }

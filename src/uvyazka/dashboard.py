@@ -1,8 +1,9 @@
-"""Loopback-only read view over the same project store used by MCP."""
+"""Loopback project view with an explicit, protected native RVT upload route."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 import json
+import hmac
 
 from .core import Workspace
 
@@ -10,6 +11,8 @@ STATIC = Path(__file__).resolve().parent / "ui"
 
 
 def make_handler(workspace: Workspace):
+    from .construction.rvt_upload import RvtUploads,serve_get
+    uploads=RvtUploads(workspace)
     class Handler(BaseHTTPRequestHandler):
         def send(self, data, content_type="application/json; charset=utf-8", status=200):
             if isinstance(data, (dict, list)):
@@ -26,10 +29,11 @@ def make_handler(workspace: Workspace):
                 return self.send({"error": "Loopback host required"}, status=403)
             request = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(request.query).items()}
             try:
+                if serve_get(self,uploads,request.path,q):return
                 from .construction.http import serve_route
                 if serve_route(self, workspace, request.path, q):
                     return
-                static = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"), "/style.css": ("style.css", "text/css")}
+                static = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"), "/rvt.js": ("rvt.js", "text/javascript"), "/style.css": ("style.css", "text/css")}
                 if request.path in static:
                     name, mime = static[request.path]
                     return self.send((STATIC / name).read_bytes(), mime + "; charset=utf-8")
@@ -78,7 +82,22 @@ def make_handler(workspace: Workspace):
                 self.send({"error": "Unable to read project: " + str(exc)}, status=500)
 
         def do_POST(self):
-            self.send({"error": "Dashboard is read-only; use explicit MCP tools for observations"}, status=405)
+            if self.headers.get('Host') not in {f'127.0.0.1:{self.server.server_port}',f'localhost:{self.server.server_port}'}:
+                return self.send({'error':'Loopback host required'},status=403)
+            request=urlparse(self.path)
+            if request.path!='/api/rvt/upload':
+                return self.send({"error": "Use explicit MCP tools for observations"}, status=405)
+            origin=self.headers.get('Origin')
+            if (origin and origin!='http://'+self.headers['Host']) or not hmac.compare_digest(self.headers.get('X-Uvyazka-Token',''),uploads.token):
+                return self.send({'error':'Open the local dashboard before uploading'},status=403)
+            try:
+                if self.headers.get('Content-Type')!='application/octet-stream':raise ValueError('Raw RVT upload required')
+                if self.headers.get('Transfer-Encoding'):raise ValueError('Content-Length required')
+                query={k:v[0] for k,v in parse_qs(request.query).items()}
+                self.connection.settimeout(60)
+                result=uploads.receive(query.get('project_id',''),query.get('filename',''),int(self.headers.get('Content-Length','0')),self.rfile,query.get('simulate')=='1')
+                self.send(result,status=202)
+            except (ValueError,OSError) as error:self.send({'error':str(error)},status=400)
 
         def log_message(self, *args):
             pass

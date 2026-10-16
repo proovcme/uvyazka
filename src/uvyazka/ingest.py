@@ -58,7 +58,11 @@ def scan(workspace: Workspace, project_id: str, limit: int = 100) -> dict:
                        (doc_id, relative, path.suffix.lower(), sha, stat.st_size, stat.st_mtime_ns, status, revision))
             if supported:
                 pending.append((doc_id, path, sha, revision))
+        uploaded=set()
+        if db.execute("select 1 from sqlite_master where name='uploaded_sources'").fetchone():
+            uploaded={r[0] for r in db.execute('select doc_id from uploaded_sources')}
         for row in db.execute("select doc_id,index_status from documents").fetchall():
+            if row['doc_id'] in uploaded:continue
             if row["doc_id"] not in seen:
                 ids = [r[0] for r in db.execute("select chunk_id from chunks where doc_id=?", (row["doc_id"],))]
                 db.executemany("delete from chunk_fts where rowid=?", [(i,) for i in ids])

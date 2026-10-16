@@ -12,7 +12,7 @@ from .rvt_data import RvtData
 from .simulation import canonical_hash
 
 
-def prepare(workspace,project_id,doc_id,request_id,convert_geometry=True):
+def prepare(workspace,project_id,doc_id,request_id,convert_geometry=True,progress=None):
     if not request_id or len(request_id)>128:raise ValueError('request_id: 1–128 characters')
     document,source=workspace.source_record(project_id,doc_id)
     if source.suffix.lower()!='.rvt' or not 0<source.stat().st_size<=512*1024*1024:raise ValueError('Choose a registered RVT <=512 MiB')
@@ -35,6 +35,7 @@ def prepare(workspace,project_id,doc_id,request_id,convert_geometry=True):
     native=None;geometry=None;stages={}
     caught=(ValueError,OSError,subprocess.SubprocessError)
     try:
+        if progress:progress('extracting')
         native=data.extract(project_id,doc_id,stage_id('data'),'all')
         stages['data']={'status':native['status'],'extraction_id':native['extraction_id'],
             'record_count':native['record_count'],'counts':native['counts']}
@@ -43,6 +44,7 @@ def prepare(workspace,project_id,doc_id,request_id,convert_geometry=True):
     planning.validate_sources(project_id,[pointer])
     if convert_geometry:
         try:
+            if progress:progress('converting')
             imported=import_rvt_document(workspace,project_id,doc_id,stage_id('geometry'))
             geometry=planning.model(project_id,imported['model_id'])
             conversion=geometry['source']['conversion']
@@ -55,6 +57,7 @@ def prepare(workspace,project_id,doc_id,request_id,convert_geometry=True):
     else:stages['geometry']={'status':'not_requested'}
     planning.validate_sources(project_id,[pointer])
     crosswalk=None
+    if progress:progress('linking')
     if native is not None and geometry is not None:
         with connection(path,readonly=True) as db:
             ids={r['element_id']:r['record_id'] for r in db.execute('select element_id,record_id from rvt_native_records where extraction_id=?',(native['extraction_id'],))}

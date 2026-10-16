@@ -13,7 +13,12 @@ def store_for(workspace, project_id, readonly=False):
     except ImportError as exc:
         raise ValueError("Install uvyazka[authoring] for drawing/IFC authoring") from exc
     root = workspace.db_path(project_id).parent / "construction"
-    return DrawingProjects(root, [workspace.project(project_id)["source_root"]],readonly=readonly)
+    allowed=[workspace.project(project_id)['source_root']]
+    managed=(root.parent/'uploads').resolve()
+    if managed.is_dir():
+        if not managed.is_relative_to(root.parent.resolve()):raise ValueError('Upload directory is outside the project state')
+        allowed.append(managed)
+    return DrawingProjects(root,allowed,readonly=readonly)
 
 
 def source_links(workspace, project_id, drawing_id):
@@ -48,10 +53,11 @@ def import_rvt_document(workspace,project_id,doc_id,request_id):
     p=Planning(workspace);p.validate_sources(project_id,[pointer])
     store=store_for(workspace,project_id)
     from .rvt import import_identity
-    identity=import_identity(path,path.name)
+    name=Path(doc['relative_path']).name
+    identity=import_identity(path,name)
     fingerprint=canonical_hash(['rvt',doc_id,pointer['sha256'],identity])
     if old:=p._retry(project_id,request_id,fingerprint):return old
-    result=store.import_rvt(path.name,path=str(path))
+    result=store.import_rvt(name,path=str(path))
     p.validate_sources(project_id,[pointer])
     if result['model_id']!=identity:raise ValueError('RVT or converter changed during import; retry after checking versions')
     return adopt(workspace,project_id,result['model_id'],[pointer],request_id,fingerprint)

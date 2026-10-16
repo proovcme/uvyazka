@@ -149,16 +149,24 @@ class Workspace:
             coverage = {r[0]: r[1] for r in db.execute("select index_status,count(*) from documents group by index_status")}
         questions = sum(c["status"] != "matches" for c in self.get_reconciliation(project_id)["checks"])
         return {"project": project, "snapshot": meta, "counts": counts, "coverage": coverage, "questions": questions,
-                "limitations": ["Text indexing is not a complete numerical or engineering audit.", "Observations are unconfirmed; source metadata matches do not approve a revision.", "OCR, CAD/BIM extraction, a resource scheduler and POS/PPR generation are not implemented."]}
+                "limitations": ["Text indexing is not a complete numerical or engineering audit.", "Observations are unconfirmed; source metadata matches do not approve a revision.", "RVT/IFC extraction and scheduling have separate coverage; OCR and automatic approved POS/PPR generation are not implemented."]}
 
     def source_record(self, project_id: str, doc_id: str) -> tuple[dict, Path]:
         with connection(self.db_path(project_id), readonly=True) as db:
             row = db.execute("select * from documents where doc_id=?", (doc_id,)).fetchone()
+            uploaded = None
+            if db.execute("select 1 from sqlite_master where name='uploaded_sources'").fetchone():
+                uploaded = db.execute('select relative_path from uploaded_sources where doc_id=?',(doc_id,)).fetchone()
         if row is None:
             raise ValueError("Unknown document in selected project")
         record = dict(row)
         root = Path(self.project(project_id)["source_root"]).resolve()
-        target = (root / record["relative_path"]).resolve()
+        relative = record['relative_path']
+        if uploaded:
+            parent=self.db_path(project_id).parent.resolve();root=(parent/'uploads').resolve()
+            if not root.is_relative_to(parent):raise ValueError('Upload directory is outside the project state')
+            relative=uploaded['relative_path']
+        target = (root / relative).resolve()
         if target == root or not target.is_relative_to(root):
             raise ValueError("Source is outside the project's source root")
         return record, target

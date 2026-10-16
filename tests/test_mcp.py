@@ -28,7 +28,7 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    self.assertEqual(len(listed.tools), 30)
+                    self.assertEqual(len(listed.tools), 41)
                     by_name = {tool.name: tool for tool in listed.tools}
                     self.assertTrue(by_name["read_evidence"].annotations.readOnlyHint)
                     self.assertFalse(by_name["record_observations"].annotations.readOnlyHint)

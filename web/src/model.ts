@@ -28,6 +28,12 @@ export interface BimElement {
   source: { kind: 'explicit'; file_sha256: string; step_id: number };
   mesh: MeshData | null;
   geometry_error: string | null;
+  geometry_evidence?: { engine: string; body_source: string | null; status: string; quantity_eligible: boolean; requires_review: boolean; reason: string };
+  source_model_id?: string;
+  source_instance_id?: string;
+  source_element_id?: string;
+  source_step_id?: number;
+  revit?: { element_id: string; unique_id?: string; phase_status: string; phase_created_id?: string | null; phase_demolished_id?: string | null };
 }
 export interface Storey {
   id: string;
@@ -41,7 +47,8 @@ export interface ModelPackage {
   contract_version: '0.1.0';
   importer_version: string;
   model_id: string;
-  source: { filename: string; sha256: string; size_bytes: number; schema: string; exported_at: string; exporter: string };
+  source: { filename: string; sha256: string; size_bytes: number; schema: string; exported_at: string; exporter: string; format?: string;
+    conversion?: { engine: string; warnings: string[]; unsupported_features: string[]; ifc_sha256: string; confidence: { level?: string }; source_revision: string } };
   coordinate_system: { length_to_m: number; render_origin_m: Vec3; up_axis: 'Z'; bounds_min_m: Vec3; bounds_max_m: Vec3 };
   storeys: Storey[];
   elements: BimElement[];
@@ -49,7 +56,12 @@ export interface ModelPackage {
   diagnostics: { element_id: string; kind: string; message: string }[];
   statistics: { products: number; physical_elements: number; meshes: number; triangles: number; geometry_errors: number; binary_bytes: number };
   capabilities: { read: boolean; geometry_ready: boolean; technology_resolved: boolean; schedule_ready: boolean };
+  federation?: { members: ModelMember[]; note: string };
+  revit?: RevitPhases;
+  phase_sources?: Record<string, RevitPhases>;
 }
+export interface RevitPhases { status: string; phases: { id: string; name: string; order: number | null }[]; phase_order_known?: boolean }
+export interface ModelMember { model_id: string; instance_id: string; label: string; offset_m: number[]; rotation_deg: number }
 
 export function validatePackage(pkg: ModelPackage, binary: ArrayBuffer) {
   if (pkg.contract !== 'ModelPackage' || pkg.contract_version !== '0.1.0') throw new Error('Неподдерживаемая версия пакета модели');
@@ -72,5 +84,6 @@ export function matchesFilters(element: BimElement, storeys: Set<string>, select
   if (!storeys.has(element.storey_id ?? 'unassigned')) return false;
   if (selectedClass && !element.hierarchy.includes(selectedClass)) return false;
   if (/^#\d+$/.test(query)) return element.step_id === Number(query.slice(1));
+  if (query.startsWith('#')&&query.includes(':'))return element.id===query.slice(1);
   return !query || `${element.name} ${element.class} #${element.step_id} ${element.global_id}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
 }

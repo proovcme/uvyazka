@@ -108,3 +108,7 @@ uv run uvyazka export-skills C:\AgentSkills\uvyazka
 Для изменения интерфейса 3D нужен Node.js 22.12+:
 в каталоге web выполните `npm ci`, `npm test`, `npm run build`.
 Собранные ресурсы включены в Python-пакет и работают без CDN.
+
+Для создания IFC по описанию агента, чтения DXF и рендера:
+`uv sync --extra all --extra authoring`. Порядок действий и границы
+экспериментального RVT описаны в [CONSTRUCTION.md](CONSTRUCTION.md).

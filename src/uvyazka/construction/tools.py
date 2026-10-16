@@ -1,5 +1,6 @@
 """Register construction tools on the same MCP server as project memory."""
 from .planning import Planning, duration_from_quantity
+from .production import PROFILE, RATE_UNITS
 
 
 def register_tools(mcp, workspace):
@@ -10,6 +11,10 @@ def register_tools(mcp, workspace):
     def construction_schema() -> dict:
         """Read the document-independent work-graph and approximate spatial-model input contracts before creating them."""
         return {"time": "Integer continuous virtual minutes; no working calendars/weather. FS dependencies without lag. No automatic engineering approval.",
+            "ifccs_planner": {"version":"0.5.0","production_defaults":PROFILE,"rate_units":RATE_UNITS,
+                "production_overrides":"Optional dict with rates, crew_people, parameters. For each changed rate key supply all its resource rates. Defaults are assumptions, not norms.",
+                "phase_selections":"Map phase-source instance ID to a confirmed phase ID, or 'all'. Single model key: 'model'; federation keys: instance_id. Omitted selects latest known phase. Unknown metadata stays unknown.",
+                "authoring":"Use ifc_authoring_schema for drawing-led IFC4 creation; optional authoring extra. No internal LLM/OCR."},
             "workflow": ["Read PDF/table evidence, inspect DWG using an available CAD MCP, or import a registered IFC", "Create an optional spatial model; boxes are approximate and need geometry_basis", "Save a source-labelled work graph, with explicit duration/productivity assumptions", "Run resource-constrained scenarios; inspect paged schedule/events and 3D playback"],
             "scenario_example": {"id": "foundation", "name": "Foundation scenario", "model_id": None,
                 "resources": [{"id": "crew", "name": "Crew", "capacity": 1}], "assumptions": ["Synthetic example; durations require project confirmation"],
@@ -63,9 +68,9 @@ def register_tools(mcp, workspace):
         return Planning(workspace).scenario_page(project_id, scenario_id, revision, offset, limit)
 
     @mcp.tool(annotations=write)
-    def suggest_ifc_scenario(project_id: str, model_id: str, scenario_id: str, request_id: str, variant: str = "base", expected_revision: int | None = None) -> dict:
-        """Save IFCCS provisional work templates from IFC classes/materials. All technologies and seeded durations are assumptions. This is a starting hypothesis to edit, not a real construction plan."""
-        return Planning(workspace).suggest_ifc_scenario(project_id, model_id, scenario_id, request_id, variant, expected_revision)
+    def suggest_ifc_scenario(project_id: str, model_id: str, scenario_id: str, request_id: str, variant: str = "base", expected_revision: int | None = None, production: dict | None = None, concrete_curing_days: int = 28, phase_selections: dict | None = None) -> dict:
+        """Save IFCCS 0.5 work packages with quantities and editable resource productivity, MEP, temporary access and Revit phases. Technologies, rates and concrete curing age are provisional; age does not prove strength. Existing and future elements remain explicit."""
+        return Planning(workspace).suggest_ifc_scenario(project_id, model_id, scenario_id, request_id, variant, expected_revision, production, concrete_curing_days, phase_selections)
 
     @mcp.tool(annotations=write)
     def run_construction_scenario(project_id: str, scenario_id: str, revision: int | None = None, resource_overrides: dict | None = None) -> dict:

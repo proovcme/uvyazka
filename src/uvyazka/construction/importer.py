@@ -15,8 +15,9 @@ import ifcopenshell.util.element as elements
 import ifcopenshell.util.placement as placements
 import ifcopenshell.util.unit as units
 import numpy as np
+from .quantities import explicit_quantities, mesh_quantities
 
-IMPORTER_VERSION = "0.1.0"
+IMPORTER_VERSION = "0.4.0"
 CONTRACT_VERSION = "0.1.0"
 
 
@@ -102,7 +103,25 @@ def style_data(style):
         "opacity": max(0.08, min(1, 1 - transparency)) if math.isfinite(transparency) else 1}
 
 
-def import_model(source_path: str, output_path: str, source_name: str | None = None):
+def geometry_evidence(psets, exporter):
+    """Fail closed for experimental converter bodies, including separately uploaded IFC."""
+    carrier = next((values for name, values in psets.items() if name == "RvtElementRecordGeometry"), {})
+    if not carrier and "rvt-rs" not in exporter.lower():
+        return None
+    body = carrier.get("BodySource")
+    # A newly introduced source needs review before it can provide a takeoff.
+    decoded = {"partition_wall_centreline", "partition_wall_centreline_layer_joins", "partition_wall_arc",
+        "partition_wall_tapered_section", "partition_beam_axis", "partition_pipe_axis",
+        "partition_stair_run_sketch", "partition_roof_slope", "family_type_i_section", "saved_graphics_mesh"}
+    resolved_profile = body == "partition_element_record_bbox" and carrier.get("ProfileResolved") is True
+    allowed = body in decoded or resolved_profile
+    return {"engine": "rvt-rs", "body_source": body, "profile_resolved": carrier.get("ProfileResolved"),
+        "status": "decoded_approximation" if allowed else "bounding_box" if body and ("box" in body or "bbox" in body) else "unknown",
+        "quantity_eligible": allowed, "requires_review": True,
+        "reason": "Геометрия восстановлена экспериментальным RVT-декодером" if allowed else "Габаритный блок или неизвестное происхождение тела: объём и площадь работ недоступны"}
+
+
+def import_model(source_path: str, output_path: str, source_name: str | None = None, complete_progress=True):
     source, output = Path(source_path), Path(output_path)
     output.mkdir(parents=True, exist_ok=True)
     progress = output / "progress.json"
@@ -133,11 +152,18 @@ def import_model(source_path: str, output_path: str, source_name: str | None = N
             "class": name, "hierarchy": chain, "name": product.Name or name,
             "role": role, "storey_id": resolve_storey(product),
             "predefined_type": elements.get_predefined_type(product),
-            "materials": [material.Name or "Без названия" for material in elements.get_materials(product)],
+            "materials": [material.Name or "Без названия" for material in elements.get_materials(product) if material is not None],
             "property_sets": jsonable(elements.get_psets(product, psets_only=True)),
             "quantity_sets": jsonable(elements.get_psets(product, qtos_only=True)),
+            "quantities": explicit_quantities(product, model), "measured_quantities": {},
             "source": {"kind": "explicit", "file_sha256": digest, "step_id": product.id()},
             "mesh": None, "geometry_error": None}
+        evidence = geometry_evidence(row["property_sets"], model.header.file_name.preprocessor_version or "")
+        if evidence:
+            row["geometry_evidence"] = evidence
+        tag = getattr(product, 'Tag', None)
+        if tag and str(tag).isdigit() and 'rvt-rs' in (model.header.file_name.preprocessor_version or '').lower():
+            row['revit'] = {'element_id': str(tag), 'phase_status': 'unavailable'}
         if product.Representation:
             representations = product.Representation.Representations
             selected = next((r for r in representations if r.RepresentationIdentifier == "Body"), None)
@@ -160,6 +186,15 @@ def import_model(source_path: str, output_path: str, source_name: str | None = N
                     material_ids = np.clip(material_ids, 0, len(styles) - 1)
                     order = np.argsort(material_ids, kind="stable")
                     faces = faces[order]
+                    row["measured_quantities"] = mesh_quantities(vertices, faces)
+                    if 'IfcFlowSegment' in chain and len(vertices) >= 4:
+                        # This is a geometric estimate, not the stored Revit centreline.
+                        _, _, axes = np.linalg.svd(vertices - vertices.mean(axis=0), full_matrices=False)
+                        spans = np.ptp(vertices @ axes.T, axis=0)
+                        if spans[0] > 2 * max(spans[1:]) and spans[0] > 0:
+                            from .quantities import quantity
+                            row['measured_quantities']['length'] = quantity(spans[0], 'm', 'derived',
+                                'mesh_principal_span_not_centerline', review_note='Предварительная длина прямого участка по мешу; не осевая длина Revit')
                     groups, cursor = [], 0
                     for material_id, count in sorted(Counter(material_ids).items()):
                         groups.append({"start": cursor, "count": count * 3, "material_index": int(material_id)})
@@ -215,5 +250,6 @@ def import_model(source_path: str, output_path: str, source_name: str | None = N
                        "geometry_errors": len(diagnostics), "binary_bytes": binary_path.stat().st_size},
         "capabilities": {"read": True, "geometry_ready": True, "technology_resolved": False, "schedule_ready": False}}
     write_json(output / "manifest.json", result)
-    write_json(progress, {"status": "completed", "processed": len(rows), "total": len(rows), "message": "Модель готова"})
+    if complete_progress:
+        write_json(progress, {"status": "completed", "processed": len(rows), "total": len(rows), "message": "Модель готова"})
     return {"model_id": digest, "statistics": result["statistics"]}

@@ -1,0 +1,103 @@
+{
+  "snapshot_date": "2026-10-16",
+  "planner_version": "0.5.0",
+  "engine_version": "0.1.1",
+  "modules": [
+    {
+      "source": "ifccs/access.py",
+      "sha256": "3ee41e48a64d6e8fc8dffc00c74990307be6481d2447885ee1550375af171931"
+    },
+    {
+      "source": "ifccs/authoring.py",
+      "sha256": "9a68a0199261836eb3d364f267a2b341d0f5013b95c8781aca6f32e74bd9f9a1"
+    },
+    {
+      "source": "ifccs/drawings.py",
+      "sha256": "bb26164ff8e61bcf113bd700c3ccdddd86ce7be13609249081eb0e110b1d5bc0"
+    },
+    {
+      "source": "ifccs/federation.py",
+      "sha256": "ec719cf989db4eca442af80b33890d81496243e7caa72310644e0f868a173b20"
+    },
+    {
+      "source": "ifccs/ifc_authoring.py",
+      "sha256": "2bf7d3c4629a72ce3340678bf12d7383d0118e3ee7d643b7586920fa8df5ba7a"
+    },
+    {
+      "source": "ifccs/importer.py",
+      "sha256": "6bfd7ebdc0ab21cf8aed6448a3091a850a9d87a7d4f3fe2348a82b6699d56478"
+    },
+    {
+      "source": "ifccs/mep.py",
+      "sha256": "3ac55f4409033abe089a76bb21f3a5475da11e054f1bbe293db1c54a53ed8a6f"
+    },
+    {
+      "source": "ifccs/model_preview.py",
+      "sha256": "f3d883d93d5a45ac0524f6ecbe5971caef35a9f2a5805e8af4b66939a22f0199"
+    },
+    {
+      "source": "ifccs/model_spec.py",
+      "sha256": "37daa748f6f18e50d6408679add9cfa3c109674678011b15c19167f351875de8"
+    },
+    {
+      "source": "ifccs/packages.py",
+      "sha256": "04822a1a5522319c8f1a5aa7c2e947b96657ee1c88991c77b8684eb9899afafe"
+    },
+    {
+      "source": "ifccs/planner.py",
+      "sha256": "61341b3c5763c11fa3664a263f7fc166a0bcdf895b6aa93fd8de7a14851ae588"
+    },
+    {
+      "source": "ifccs/production.py",
+      "sha256": "fbf75093f0e3d660217b4ead7f0682cf6d9464a466553bc6d391052d4ff96958"
+    },
+    {
+      "source": "ifccs/quantities.py",
+      "sha256": "275137abcfa9905e1414abb4d8eb0f7c8823214f435046c5246ac66e68a09852"
+    },
+    {
+      "source": "ifccs/revit_metadata.py",
+      "sha256": "dfebd44eb3be183a8f25f92f766de0c855e5374cc68b64e9259fc99462c86a74"
+    },
+    {
+      "source": "ifccs/rvt.py",
+      "sha256": "7278c01e99255749a0129fda05642c1f2d23c969443740ab39d6838c9678d45e"
+    },
+    {
+      "source": "ifccs/simulation.py",
+      "sha256": "3b3061c530bd4808af7c37d7f1973b014c5fa4feac3c7949b805027531572335"
+    },
+    {
+      "source": "web/src/viewer.ts",
+      "sha256": "f95ca4ea1a80c82937ea851e6ba7dd5b99028c7e4d56e951dc49aa0fd40fac09"
+    },
+    {
+      "source": "web/src/site.ts",
+      "sha256": "a9a0ba7537bcb10f92f0a384696453d75c6c4bbff2fd5956b0e47c555b9e5f57"
+    },
+    {
+      "source": "web/src/site-motion.ts",
+      "sha256": "4c20e3414e31d9809db6b02bbde5954f67adfcac5e06fe71597271fffdad56f5"
+    },
+    {
+      "source": "web/src/temporary-site.ts",
+      "sha256": "ba41c6ef6603ef64cf10839ab6f76cb1819fed2a4c6df0d14fecc9cf47090cd9"
+    },
+    {
+      "source": "web/src/crane-rig.ts",
+      "sha256": "ca02d7a6d32e19044641c925fbaad4d61b5785aa7f8893f3d70d04bd1d757308"
+    },
+    {
+      "source": "web/src/model.ts",
+      "sha256": "b7f78b9bbbbad36469b78898323829bf50432a4d4952f1cc33dd3dd9e611a4c4"
+    },
+    {
+      "source": "web/src/simulation.ts",
+      "sha256": "2d03b9160cf8088fd9c45219a7bcb660674a91eeda50228b5c06a4c17a0d4185"
+    },
+    {
+      "source": "web/src/scenes.ts",
+      "sha256": "bfb92301039beb97f184371068470b502c941455ef0b073ca811674e71d4052e"
+    }
+  ]
+}

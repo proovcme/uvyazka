@@ -2,9 +2,11 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { BimElement, ModelPackage } from './model';
 import { validatePackage } from './model';
+import { ConstructionSite } from './site';
+import type { RunPackage } from './simulation';
 
 type ElementMesh = THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial[]>;
-export type ConstructionState = 'future' | 'active' | 'complete';
+export type ConstructionState = 'future' | 'active' | 'complete' | 'absent';
 
 /** Owns presentation only. No scheduling, resources, or simulation clocks. */
 export class Viewer {
@@ -21,8 +23,12 @@ export class Viewer {
   private selected?: string;
   private highlight?: THREE.Box3Helper;
   private xray = false;
+  private sourceColors = false;
   private construction: Map<string, ConstructionState> | null = null;
   private showFuture = false;
+  private site?: ConstructionSite;
+  private model?: ModelPackage;
+  private clipHeight: number | null = null;
   private currentElements: BimElement[] = [];
   private observer: ResizeObserver;
   private frame = 0;
@@ -38,7 +44,8 @@ export class Viewer {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.3;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.localClippingEnabled = true;
     const canvas = this.renderer.domElement;
     canvas.setAttribute('aria-label', '3D-модель. Мышь: вращение, правая кнопка: перемещение, колесо: масштаб. Стрелки: перемещение. F: вся модель. Escape: снять выделение.');
     canvas.tabIndex = 0;
@@ -75,7 +82,7 @@ export class Viewer {
       const rect = canvas.getBoundingClientRect();
       this.raycaster.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), this.camera);
       const targets = [...this.meshes.values()].filter((mesh) => mesh.visible);
-      const hit = this.raycaster.intersectObjects(targets, false)[0];
+      const hit = this.raycaster.intersectObjects(targets, false).find((hit) => this.clipHeight === null || hit.point.y <= this.clipHeight);
       this.onPick(hit ? String(hit.object.userData.elementId) : null);
     });
     canvas.addEventListener('keydown', (event) => {
@@ -99,6 +106,7 @@ export class Viewer {
   load(pkg: ModelPackage, binary: ArrayBuffer) {
     validatePackage(pkg, binary);
     this.clearModel();
+    this.model = pkg;
     this.currentElements = pkg.elements;
     for (const element of pkg.elements) {
       const data = element.mesh;
@@ -156,7 +164,7 @@ export class Viewer {
 
   fit(direction: 'iso' | 'top' | 'front' = 'iso', selectedOnly = false) {
     if (this.bounds.isEmpty()) return;
-    let bounds = this.bounds;
+    let bounds = this.site?.group.visible ? this.site.siteBounds : this.bounds;
     const mesh = this.selected ? this.meshes.get(this.selected) : null;
     if (selectedOnly && mesh) bounds = new THREE.Box3().setFromObject(mesh);
     const center = bounds.getCenter(new THREE.Vector3());
@@ -206,24 +214,74 @@ export class Viewer {
     this.currentElements = elements;
     this.refreshPresentation();
   }
+  setSourceColors(active:boolean) {this.sourceColors=active;this.refreshPresentation();}
 
   setConstruction(states: Map<string, ConstructionState> | null, showFuture = false) {
-    this.construction = states;
     this.showFuture = showFuture;
+    this.construction = states;
     this.refreshPresentation();
   }
+
+  setSite(run: RunPackage | null, time = 0) {
+    if (!run) { if (this.site) this.site.group.visible = false; return; }
+    if (this.site?.run.run_id !== run.run_id && this.model) {
+      this.site?.dispose();
+      this.site = new ConstructionSite(this.model, run, this.meshes);
+      this.scene.add(this.site.group);
+    }
+    if (this.site) { this.site.group.visible = true; this.site.update(time); }
+  }
+
+  siteState() { return this.site?.snapshot() ?? null; }
+
+  focusTargets(ids: string[], azimuth = .8, elevation = .65) {
+    const box = new THREE.Box3();
+    for (const id of ids) { const mesh = this.meshes.get(id); if (mesh) box.union(new THREE.Box3().setFromObject(mesh)); }
+    if (box.isEmpty()) { this.cameraOrbit(azimuth, elevation, .86, 'site'); return; }
+    const center = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
+    const distance = Math.max(9, size.length() * 1.7) * Math.max(1, 1/this.camera.aspect);
+    this.controls.target.copy(center);
+    this.camera.position.copy(center).add(new THREE.Vector3(Math.cos(azimuth)*Math.cos(elevation), Math.sin(elevation), Math.sin(azimuth)*Math.cos(elevation)).multiplyScalar(distance));
+    this.camera.lookAt(center); this.controls.update(); this.invalidate();
+  }
+
+  cutaway(height: number | null) {
+    this.clipHeight = height;
+    const planes = height === null ? [] : [new THREE.Plane(new THREE.Vector3(0, -1, 0), height)];
+    for (const mesh of this.meshes.values()) for (const material of mesh.material) {
+      material.clippingPlanes = planes; material.clipShadows = true; material.needsUpdate = true;
+    }
+    this.invalidate();
+  }
+
+  cameraOrbit(azimuth: number, elevation: number, scale = 1, scope: 'site' | 'model' = 'site', offset = [0, 0, 0]) {
+    const bounds = scope === 'site' && this.site ? this.site.siteBounds : this.bounds;
+    const center = bounds.getCenter(new THREE.Vector3()).add(new THREE.Vector3(...offset));
+    const size = bounds.getSize(new THREE.Vector3());
+    const distance = size.length() / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2))) * scale * Math.max(1, 1 / this.camera.aspect);
+    this.controls.target.copy(center);
+    this.camera.position.copy(center).add(new THREE.Vector3(Math.cos(azimuth) * Math.cos(elevation), Math.sin(elevation), Math.sin(azimuth) * Math.cos(elevation)).multiplyScalar(distance));
+    this.camera.lookAt(center); this.controls.update(); this.invalidate();
+  }
+
+  modelHeight() { return { min: this.bounds.min.y, max: this.bounds.max.y }; }
 
   private refreshPresentation() {
     for (const element of this.currentElements) {
       const mesh = this.meshes.get(element.id);
       if (!mesh || !element.mesh) continue;
       const state = this.construction?.get(element.id);
-      mesh.visible = Boolean(mesh.userData.filterVisible) && (!this.construction || this.showFuture || state === 'active' || state === 'complete');
+      mesh.visible = Boolean(mesh.userData.filterVisible) && (!this.construction || state === 'active' || state === 'complete' || state === 'future' && this.showFuture);
+      if (this.construction && this.site?.group.visible && this.site.hiddenTargets.has(element.id)) mesh.visible = false;
       mesh.material.forEach((material, index) => {
         const opacity = element.role === 'space' || element.role === 'feature' ? 0.16 : element.mesh!.styles[index].opacity;
         material.color.copy((mesh.userData.baseColors as THREE.Color[])[index]);
+        if(this.sourceColors&&element.role==='element') {
+          const source=this.model?.federation?.members.findIndex(member=>member.instance_id===element.source_instance_id)??-1;
+          if(source>=0)material.color.set([0xc9b792,0x5794b9,0x77a28a,0xa47991][source%4]);
+        }
         if (state === 'active') material.color.set(0xd7a44a);
-        const alpha = state === 'active' ? 0.8 : state === 'future' && this.showFuture ? 0.15 : this.xray && element.role === 'element' ? Math.min(opacity, 0.25) : opacity;
+        const alpha = state === 'future' && this.showFuture ? 0.12 : state === 'active' ? 0.8 : this.xray && element.role === 'element' ? Math.min(opacity, 0.25) : opacity;
         material.transparent = alpha < 1;
         material.opacity = alpha;
         material.depthWrite = alpha >= 1;
@@ -234,6 +292,7 @@ export class Viewer {
   }
 
   private clearModel() {
+    this.site?.dispose(); this.site = undefined; this.clipHeight = null;
     this.select(null);
     for (const mesh of this.meshes.values()) {
       mesh.geometry.dispose();

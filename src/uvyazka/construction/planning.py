@@ -106,6 +106,12 @@ class Planning:
                 db.execute("insert into construction_scenarios values (?,?,?)", (payload["id"], payload["revision"], encode(payload)))
                 result = self.scenario_summary(payload)
             elif table == "construction_models":
+                existing = db.execute("select payload from construction_models where model_id=?", (payload["model_id"],)).fetchone()
+                if existing:
+                    payload = json.loads(existing[0])
+                folder = self.workspace.db_path(project_id).parent/"construction/models"/payload["model_id"]
+                folder.mkdir(parents=True,exist_ok=True)
+                (folder/"manifest.json").write_text(encode(payload),encoding="utf-8")
                 db.execute("insert or ignore into construction_models values (?,?)", (payload["model_id"], encode(payload)))
                 result = self.model_summary(payload)
             else:
@@ -137,7 +143,7 @@ class Planning:
                 continue
             record, path = self.workspace.source_record(project_id, source["doc_id"])
             cache_key = (source["doc_id"], source.get("sha256"))
-            if cache_key not in seen and (not path.is_file() or path.stat().st_size > 100*1024*1024 or digest(path) != source.get("sha256")):
+            if cache_key not in seen and (not path.is_file() or path.stat().st_size > (512 if path.suffix.lower()==".rvt" else 100)*1024*1024 or digest(path) != source.get("sha256")):
                 raise ValueError("Source fingerprint changed or source unavailable")
             seen.add(cache_key)
             if "page_number" in source:
@@ -314,20 +320,25 @@ class Planning:
         for op in operations:
             for target in op["target_ids"]:
                 groups.setdefault(target, []).append(op["id"])
+        supplied_units = scenario.get("units", []) if scenario.get("planner_version") == "0.5.0" else []
+        units = supplied_units or [{"id": k, "name": k, "kind": "generic", "lower": [0,0,0], "target_ids": [k], "operation_ids": v, "technology_status": "unapproved"} for k,v in groups.items()]
+        for unit in units:
+            if set(unit["target_ids"])-target_ids or set(unit["operation_ids"])-{o["id"] for o in operations}:
+                raise ValueError("Units must reference model targets and saved operations")
         scenario.update(project_id=project_id, revision=current_revision+1, created_at=now(), model_id=model_id,
-            contract="ScenarioPackage", contract_version="0.1.0", planner_version="agent-graph-0.2.0", tick_unit="minute",
+            contract="ScenarioPackage", contract_version="0.1.0", planner_version=scenario.get("planner_version", "agent-graph-0.3.0"), tick_unit="minute",
             sources=all_sources, assumptions=scenario.get("assumptions", []), seed=scenario.get("seed", 0),
-            units=[{"id": k, "name": k, "target_ids": [k], "operation_ids": v, "technology_status": "unapproved"} for k,v in groups.items()],
-            unplanned_element_ids=sorted(target_ids - groups.keys()))
+            units=units,
+            unplanned_element_ids=scenario.get("unplanned_element_ids",sorted(target_ids - groups.keys())) if supplied_units else sorted(target_ids - groups.keys()))
         validate_scenario(scenario)
         return self._save(project_id, "construction_scenarios", scenario, request_id, fingerprint)
 
-    def suggest_ifc_scenario(self, project_id, model_id, scenario_id, request_id, variant="base", expected_revision=None):
+    def suggest_ifc_scenario(self, project_id, model_id, scenario_id, request_id, variant="base", expected_revision=None, production=None, concrete_curing_days=28, phase_selections=None):
         from .planner import build_scenario
         model = self.model(project_id, model_id)
         if model["source"]["schema"] == "DocumentSpatialModel":
             raise ValueError("IFC heuristics require an IFC model; create a document-led graph explicitly")
-        s = build_scenario(model, variant)
+        s = build_scenario(model, variant, concrete_curing_days=concrete_curing_days, production=production, phase_selections=phase_selections)
         s.update(id=scenario_id, sources=model["source"].get("sources", []))
         return self.save_scenario(project_id, s, request_id, expected_revision)
 

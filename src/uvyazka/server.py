@@ -80,10 +80,17 @@ def build_server(workspace: Workspace | None = None):
     register_tools(mcp, memory)
     from .coordination import register_tools as register_coordination
     register_coordination(mcp, memory)
+    from .construction.authoring_tools import register_tools as register_authoring
+    register_authoring(mcp,memory)
     return mcp
 
 
 def main():
+    # Load optional native libraries before the stdio event loop on Windows.
+    import importlib.util
+    if importlib.util.find_spec("ifcopenshell"):
+        import numpy
+        import ifcopenshell
     build_server().run(transport="stdio")
 
 

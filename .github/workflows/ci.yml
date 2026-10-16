@@ -38,3 +38,14 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: git diff --exit-code -- ../src/uvyazka/viewer
+  authoring:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python -m pip install '.[all,authoring]' pytest
+      - run: python -m pytest tests/ifccs -q
+      - run: python tools/build_public_demo.py .uvyazka-build/demo-data

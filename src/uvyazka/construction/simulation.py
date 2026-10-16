@@ -6,7 +6,7 @@ import hashlib
 import heapq
 import json
 
-ENGINE_VERSION = "0.1.0"
+ENGINE_VERSION = "0.1.1"
 
 
 def canonical_hash(value):
@@ -97,6 +97,9 @@ class SimulationEngine:
                 self._emit("material_delivered", operation_id, target_ids=operation.get("target_ids", []), cause=sequence)
             if operation["kind"] == "inspection":
                 self._emit("quality_gate_passed", operation_id, synthetic=True, cause=sequence)
+            if operation["kind"] == "strength_check":
+                self._emit("concrete_readiness_assumed", operation_id, synthetic=True, strength_verified=False,
+                           concrete_readiness=operation.get("concrete_readiness", {}), cause=sequence)
             self._dispatch_at(self.time)
         elif kind == "dispatch":
             self.dispatch_times.remove(self.time)

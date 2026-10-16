@@ -23,6 +23,15 @@ def source_links(workspace, project_id, drawing_id):
         return [json.loads(r[0]) for r in db.execute("select payload from drawing_source_links where drawing_id=?", (drawing_id,))]
 
 
+def scoped(result, project_id, drawing_id):
+    """Keep upstream drawing IDs distinct and link to Uvyazka's own viewer."""
+    result = {**result, "project_id": project_id, "drawing_id": drawing_id}
+    for key in ("build", "active_build"):
+        if result.get(key):
+            result[key] = {**result[key], "viewer_url": "/simulation/?project=" + project_id}
+    return result
+
+
 def adopt(workspace, project_id, model_id, sources, request_id):
     p=Planning(workspace); folder=workspace.db_path(project_id).parent/"construction/models"/model_id
     model=json.loads((folder/"manifest.json").read_text(encoding="utf-8"))
@@ -61,12 +70,12 @@ def register_tools(mcp,workspace):
         with connection(workspace.db_path(project_id)) as db:
             db.execute("create table if not exists drawing_source_links(drawing_id text,source_id text,payload text,primary key(drawing_id,source_id))")
             db.execute("insert or replace into drawing_source_links values (?,?,?)",(drawing_id,result["source"]["id"],encode(pointer)))
-        return result
+        return scoped(result,project_id,drawing_id)
 
     @mcp.tool(annotations=read)
     def inspect_model_drawing(project_id:str,drawing_id:str,source_id:str,page:int=1,offset:int=0,limit:int=100) -> dict:
         """Read bounded PDF text/vector primitives, DXF entities or image metadata with source coordinates."""
-        return store_for(workspace,project_id,True).inspect(drawing_id,source_id,page,offset,min(max(1,limit),200))
+        return scoped(store_for(workspace,project_id,True).inspect(drawing_id,source_id,page,offset,min(max(1,limit),200)),project_id,drawing_id)
 
     @mcp.tool(annotations=read)
     def render_model_drawing(project_id:str,drawing_id:str,source_id:str,page:int=1,region:list[float]|None=None) -> Image:
@@ -76,15 +85,15 @@ def register_tools(mcp,workspace):
     @mcp.tool(annotations=write)
     def save_ifc_model_spec(project_id:str,drawing_id:str,expected_revision:int,spec:dict) -> dict:
         """Validate and save the complete typed model specification with explicit dimensions, evidence and assumptions. Existing revisions cannot be overwritten by stale callers."""
-        return store_for(workspace,project_id).set_spec(drawing_id,expected_revision,spec)
+        return scoped(store_for(workspace,project_id).set_spec(drawing_id,expected_revision,spec),project_id,drawing_id)
 
     @mcp.tool(annotations=read)
     def get_drawing_model(project_id:str,drawing_id:str,offset:int=0,limit:int=40) -> dict:
         """Read model-workspace revision, attached sources, build status and a bounded page of specified elements."""
         from .planning import bounded
         store=store_for(workspace,project_id,True); result=store.get(drawing_id)
-        return {**store.summary(result),"spec_metadata":{k:v for k,v in (result.get("spec") or {}).items() if k!="elements"},
-            **bounded((result.get("spec") or {}).get("elements",[]),offset,limit)}
+        return scoped({**store.summary(result),"spec_metadata":{k:v for k,v in (result.get("spec") or {}).items() if k!="elements"},
+            **bounded((result.get("spec") or {}).get("elements",[]),offset,limit)},project_id,drawing_id)
 
     @mcp.tool(annotations=write)
     def build_drawing_model(project_id:str,drawing_id:str,expected_revision:int,request_id:str) -> dict:
@@ -92,7 +101,7 @@ def register_tools(mcp,workspace):
         pointers=source_links(workspace,project_id,drawing_id)
         Planning(workspace).validate_sources(project_id,pointers)
         result=store_for(workspace,project_id).build(drawing_id,expected_revision)
-        return {**result,"model":adopt(workspace,project_id,result["build"]["model_id"],pointers,request_id)}
+        return scoped({**result,"model":adopt(workspace,project_id,result["build"]["model_id"],pointers,request_id)},project_id,drawing_id)
 
     @mcp.tool(annotations=read)
     def render_spatial_model(project_id:str,model_id:str,azimuth:float=45,elevation:float=35,cut_z:float|None=None) -> Image:

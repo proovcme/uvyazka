@@ -32,9 +32,12 @@ def test_registered_drawing_build_federation_and_changed_source(workspace_temp):
     drawing = call['create_drawing_model']('one', 'Synthetic drawing')
     key = drawing['drawing_id']
     registered = call['register_model_drawing']('one', key, document['doc_id'], 0)
+    assert registered['project_id'] == 'one' and registered['drawing_id'] == key
     source_id = registered['source']['id']
     call['save_ifc_model_spec']('one', key, 1, model_spec(source_id))
     result = call['build_drawing_model']('one', key, 2, 'build')
+    assert result['project_id'] == 'one' and result['drawing_id'] == key
+    assert result['build']['viewer_url'] == '/simulation/?project=one'
     planning = Planning(workspace); model_id = result['model']['model_id']
     model = planning.model('one', model_id)
     assert model['source']['sources'][0]['doc_id'] == document['doc_id']

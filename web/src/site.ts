@@ -1,19 +1,22 @@
 import * as THREE from 'three';
-import type { BimElement, ModelPackage } from './model';
+import type { ModelPackage } from './model';
 import type { RunPackage } from './simulation';
 import { activeLease, compileLeases, lerpPoint, liftPose, progress, smooth, truckPose } from './site-motion';
 import type { Lease, Point } from './site-motion';
 import { MOBILE_CRANE, mobileCraneRig } from './crane-rig';
 import { TemporarySite } from './temporary-site';
+import { CREWS, layoutSite } from './site-layout';
+import { workerMotion } from './worker-motion';
+import { OBB } from 'three/addons/math/OBB.js';
 
 type SourceMesh = THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial[]>;
-interface Person { root: THREE.Group; arms: THREE.Group[]; legs: THREE.Group[] }
+interface Person { root: THREE.Group; body: THREE.Group; tool: THREE.Group; arms: THREE.Group[]; legs: THREE.Group[] }
 interface Crane { root: THREE.Group; slew: THREE.Group; boom: THREE.Group; sections: THREE.Mesh[]; outriggers: { beam: THREE.Mesh; foot: THREE.Group; side: number; z: number }[]; rope: THREE.Mesh; hook: THREE.Group; slings: THREE.Mesh[]; mast: Point }
 interface Truck { root: THREE.Group; wheels: THREE.Mesh[]; load: THREE.Group; gate: THREE.Mesh }
 interface WorkSpot { start: Point; end: Point; supportId: string | null; fallback: boolean }
 export interface SiteActorState {
   id: string; resource: string; slot: number; operationId: string | null; active: boolean; phase: string;
-  position: Point; workers?: { position: Point; supportId: string | null; supported: boolean; fallback: boolean }[];
+  position: Point; workers?: { position: Point; supportId: string | null; supported: boolean; fallback: boolean; action: string; arm: number }[];
   equipment?: { type: string; boomLength: number; boomAngle: number; deployed: number; tip: Point; loadMassKg: null; status: string };
 }
 
@@ -52,28 +55,26 @@ export class ConstructionSite {
   private pit?: THREE.Mesh;
   private cargo = new Map<string, THREE.Group>();
   private spots = new Map<string, WorkSpot>();
-  private elementById: Map<string, BimElement>;
   private boxes = new Map<string, THREE.Box3>();
   private completion = new Map<string, number>();
   private ray = new THREE.Raycaster();
   private floorMeshes: SourceMesh[];
-  private pickup: Point;
   private transitY: number;
   private cargoMaxHalf = 0.3;
   private roadX: number;
-  private parkZ: number;
-  private dockZ: number;
   private stock: THREE.Group[] = [];
+  readonly layout: ReturnType<typeof layoutSite>;
+  private spatialIssues: {actor: string; obstacle: string}[] = [];
 
   constructor(readonly model: ModelPackage, readonly run: RunPackage, readonly meshes: Map<string, SourceMesh>) {
     this.group.name = 'Event-driven construction site';
     this.leases = compileLeases(run);
-    this.elementById = new Map(model.elements.map((element) => [element.id, element]));
     for (const [id, mesh] of meshes) this.boxes.set(id, new THREE.Box3().setFromObject(mesh));
     this.temporary = new TemporarySite(model, run, this.boxes);
     this.group.add(this.temporary.group);
     this.bounds = new THREE.Box3();
     for (const element of model.elements) if (element.role === 'element' && this.boxes.has(element.id)) this.bounds.union(this.boxes.get(element.id)!);
+    if(this.bounds.isEmpty()) this.bounds.set(new THREE.Vector3(-1,0,-1),new THREE.Vector3(1,1,1));
     for (const unit of run.scenario.units) for (const id of unit.target_ids) this.completion.set(id, run.operation_states[unit.operation_ids.at(-1)!].finish);
     this.floorMeshes = model.elements.filter((element) => element.hierarchy.includes('IfcSlab') && meshes.has(element.id)).map((element) => meshes.get(element.id)!);
     const size = this.bounds.getSize(new THREE.Vector3());
@@ -85,21 +86,18 @@ export class ConstructionSite {
       maxCargoRadius = Math.max(maxCargoRadius, Math.hypot(extent.x, extent.z) / 2);
     }
     this.transitY = this.bounds.max.y + this.cargoMaxHalf + 2.2;
-    this.pickup = [this.bounds.min.x - Math.max(6.5, maxCargoRadius + 2.5), 0.6, -6 - Math.max(0, maxCargoRadius - 4)];
-    this.roadX = this.pickup[0] - 4.5;
-    this.dockZ = this.pickup[2];
+    this.layout = layoutSite({minX:this.bounds.min.x,maxX:this.bounds.max.x,minZ:this.bounds.min.z,maxZ:this.bounds.max.z},run.scenario.resources,maxCargoRadius);
+    this.roadX = this.layout.bays.get('truck:0')?.park[0] ?? this.layout.bounds.minX+3;
     const capacity = (id: string) => run.scenario.resources.find((resource) => resource.id === id)?.capacity ?? 0;
-    const xmin = this.roadX - Math.max(0, capacity('truck') - 1) * 3.2 - 3;
-    this.siteBounds = new THREE.Box3(new THREE.Vector3(xmin, 0, this.bounds.min.z - 5), new THREE.Vector3(this.bounds.max.x + 8, this.transitY + 3, this.bounds.max.z + 5));
-    this.siteBounds.max.z=Math.max(this.siteBounds.max.z,this.bounds.min.z+18);
-    this.parkZ = this.siteBounds.min.z - 5;
+    const area=this.layout.bounds;
+    this.siteBounds = new THREE.Box3(new THREE.Vector3(area.minX,0,area.minZ),new THREE.Vector3(area.maxX,this.transitY+3,area.maxZ));
     this.makeEnvironment(size);
     for (let slot = 0; slot < capacity('crane'); slot++) {
-      const mast: Point = slot === 0 ? [this.bounds.min.x - 4.5, 0, -1] : [this.bounds.max.x + 4.5, 0, 1];
+      const mast = this.layout.cranes[slot];
       this.cranes.push(this.makeCrane(mast));
     }
     for (let slot = 0; slot < capacity('truck'); slot++) this.trucks.push(this.makeTruck());
-    for (const id of ['crew', 'concrete_crew', 'inspector', 'surveyor', 'hvac_crew', 'pipe_crew', 'electrical_crew', 'scaffold_crew', 'commissioning_crew']) {
+    for (const id of CREWS) {
       if(!run.scenario.operations.some(operation=>operation.demands[id]))continue;
       const slots: Person[][] = [];
       for (let slot = 0; slot < capacity(id); slot++) {
@@ -130,7 +128,7 @@ export class ConstructionSite {
       const pallet = new THREE.Group();
       this.box(pallet, [.9, .12, .8], [0, .08, 0], this.wood);
       for (let layer = 0; layer < 3; layer++) this.box(pallet, [.85, .17, .72], [0, .24 + layer * .18, 0], layer === 2 ? this.white : this.wood);
-      pallet.position.set(this.pickup[0] + (index % 2) * 1.2, 0, this.pickup[2] + 4 + Math.floor(index / 2) * 1.1);
+      pallet.position.set(this.layout.stock[0] + (index % 2) * 1.2, 0, this.layout.stock[2] + Math.floor(index / 2) * 1.1);
       this.group.add(pallet); this.stock.push(pallet);
     }
     this.update(0);
@@ -155,8 +153,10 @@ export class ConstructionSite {
   private makeEnvironment(size: THREE.Vector3) {
     const min = this.siteBounds.min, max = this.siteBounds.max;
     this.box(this.group, [max.x - min.x, .08, max.z - min.z], [(max.x + min.x) / 2, -.09, (max.z + min.z) / 2], this.material(0xdad9ca));
-    const lanes = this.run.scenario.resources.find((resource) => resource.id === 'truck')?.capacity ?? 1;
-    this.box(this.group, [3.2 * lanes + 1.8, .025, max.z - min.z], [this.roadX - (lanes - 1) * 1.6, -.025, (min.z + max.z) / 2], this.material(0xb0b5ac));
+    for(const bay of this.layout.bays.values()) if(!bay.id.startsWith('crane:')&&!bay.id.startsWith('vibrator:')) {
+      const e=bay.envelope;
+      this.box(this.group,[e.maxX-e.minX-.3,.025,e.maxZ-e.minZ],[bay.park[0],-.025,(e.minZ+e.maxZ)/2],this.material(0xb0b5ac));
+    }
     const fenceMaterial = this.material(0x72847b);
     const fenceSegment = (a: Point, b: Point) => {
       this.rod(this.group, [a[0], .05, a[2]], [a[0], 1.3, a[2]], .035, fenceMaterial);
@@ -173,9 +173,9 @@ export class ConstructionSite {
     this.box(cabin, [2.7, .16, 4.2], [0, 2.16, 0], this.white);
     this.box(cabin, [.04, .8, 1], [1.26, 1.3, -.8], this.window);
     this.box(cabin, [.04, 1.7, .75], [1.26, .85, .8], this.white);
-    cabin.position.set(this.bounds.max.x + 4, 0, this.bounds.max.z + 1.8); this.group.add(cabin);
-    this.sign('IFC / CS', [this.bounds.max.x + 5.3, 2, this.bounds.max.z + 1.8], 2.3);
-    this.sign('СКЛАД', [this.pickup[0], 1.7, this.pickup[2] + 7], 2.3);
+    cabin.position.set(...this.layout.cabin); this.group.add(cabin);
+    this.sign('IFC / CS', [this.layout.cabin[0]+1.3, 2, this.layout.cabin[2]], 2.3);
+    this.sign('СКЛАД', [this.layout.stock[0], 1.7, this.layout.stock[2] + 5], 2.3);
     this.sign('УСЛОВНАЯ ПЛОЩАДКА', [(min.x + max.x) / 2, .03, max.z - 1.5], 5, true);
   }
   private sign(text: string, point: Point, width: number, horizontal = false) {
@@ -252,7 +252,7 @@ export class ConstructionSite {
     const drum = new THREE.Group(); drum.position.set(0, 1.65, -.5); root.add(drum);
     const barrel = this.mesh(drum, this.cylinder, this.white); barrel.scale.set(.9, 2.5, .9); barrel.rotation.x = Math.PI / 2;
     this.box(drum, [1.6, .1, .16], [0, .5, 0], this.blue);
-    root.position.set(this.bounds.max.x + 3.8 + slot * 3, 0, -4); return { root, drum };
+    root.position.set(...this.layout.bays.get(`mixer:${slot}`)!.park); return { root, drum };
   }
   private makePerson(vest: THREE.Material): Person {
     const root = new THREE.Group(); this.group.add(root);
@@ -270,7 +270,13 @@ export class ConstructionSite {
       this.box(joint, [.16, .68, .18], [0, -.35, 0], this.dark);
       this.box(joint, [.18, .12, .29], [0, -.73, .045], this.black); return joint;
     });
-    return { root, arms, legs };
+    const body=new THREE.Group(); body.position.y=.8; root.add(body);
+    for(const child of [...root.children]) if(child!==body&&!legs.includes(child as THREE.Group)) {root.updateMatrixWorld(true);body.attach(child);}
+    const tool=new THREE.Group();arms[0].add(tool);tool.position.set(0,-.48,.04);
+    this.box(tool,[.06,.32,.06],[0,-.09,0],this.wood);
+    this.box(tool,[.24,.08,.1],[0,.08,0],this.metal);
+    tool.visible=false;
+    return { root, body, tool, arms, legs };
   }
   private makeFormwork() {
     for (const unit of this.run.scenario.units.filter((unit) => unit.kind === 'concrete')) {
@@ -342,13 +348,13 @@ export class ConstructionSite {
         this.box(bed, [1.8, .8, 3], [0, 1.6, -.65], this.wood);
       } else this.box(root, [2.1, .8, 1], [0, .5, -1.5], this.metal);
     }
-    root.position.set(this.bounds.max.x + 4 + slot * 3, 0, this.bounds.min.z + 3);
+    root.position.set(...this.layout.bays.get(`${resource}:${slot}`)!.park);
     return { root, moving, hose };
   }
   private targetBox(lease: Lease) {
     const result = new THREE.Box3();
     for (const id of lease.operation.target_ids) if (this.boxes.has(id)) result.union(this.boxes.get(id)!);
-    if (result.isEmpty()) result.setFromCenterAndSize(new THREE.Vector3(this.bounds?.max.x ?? 5, .8, 0), new THREE.Vector3(1, 1, 1));
+    if (result.isEmpty()) result.setFromCenterAndSize(new THREE.Vector3((this.bounds.min.x+this.bounds.max.x)/2, .2, this.bounds.min.z-2), new THREE.Vector3(2,.4,1));
     return result;
   }
   private completedAt(tick: number) {
@@ -373,8 +379,8 @@ export class ConstructionSite {
     return outside ? { y: 0, id: null } : null;
   }
   private stagingPoint(resource: string, slot: number, member: number): Point {
-    const index=['crew','concrete_crew','inspector','surveyor','hvac_crew','pipe_crew','electrical_crew','scaffold_crew','commissioning_crew'].indexOf(resource);
-    return [this.bounds.max.x+2+(slot%3)*1.3+member*.55,0,this.bounds.min.z+2+Math.max(0,index)*1.4+Math.floor(slot/3)*.5];
+    const base=this.layout.staging.get(`${resource}:${slot}`) ?? this.layout.cabin;
+    return [base[0]+member*1.3,0,base[2]];
   }
   private workSpot(lease: Lease, member: number): WorkSpot {
     const key = `${lease.resource}/${lease.slot}/${lease.operation.id}/${member}`;
@@ -382,15 +388,15 @@ export class ConstructionSite {
     const target = this.targetBox(lease), center = target.getCenter(new THREE.Vector3());
     const completed = this.completedAt(lease.start);
     const occupied = new Set([...completed, ...lease.operation.target_ids]);
-    const side = member ? -1 : 1;
-    const candidates = [[target.min.x - .55, center.z + side * .45], [target.max.x + .55, center.z + side * .45], [center.x + side * .45, target.min.z - .55], [center.x + side * .45, target.max.z + .55]];
+    const side = member % 2 ? -1 : 1, offset=side*(.6+Math.floor(member/2)*1.3);
+    const candidates = [[target.min.x - .65, center.z + offset], [target.max.x + .65, center.z + offset], [center.x + offset, target.min.z - .65], [center.x + offset, target.max.z + .65]];
     for (const [x, z] of candidates) {
       const surface = this.support(x, z, target.min.y + .1, completed);
       if (!surface) continue;
       const point: Point = [x, surface.y, z];
       if (!this.clearBody(point, occupied)) continue;
       let end = point;
-      for (const dx of [.5, -.5]) {
+      for (const dx of [1.2, -1.2]) {
         const other: Point = [x + dx, surface.y, z];
         const valid = [0, .25, .5, .75, 1].every((t) => {
           const test: Point = [x + dx * t, surface.y, z];
@@ -424,9 +430,72 @@ export class ConstructionSite {
     return true;
   }
 
+  private equipmentObjects() {
+    return [
+      ...this.cranes.map((c,slot)=>({id:`crane:${slot}`,roots:[c.root,c.rope,c.hook,...c.slings,...(this.states.find(s=>s.id===`crane:${slot}`)?.operationId ? [this.cargo.get(this.states.find(s=>s.id===`crane:${slot}`)!.operationId!)].filter((v):v is THREE.Group=>Boolean(v)):[])]})),
+      ...this.trucks.map((c,slot)=>({id:`truck:${slot}`,roots:[c.root]})),
+      ...this.mixers.map((c,slot)=>({id:`mixer:${slot}`,roots:[c.root]})),
+      ...[...this.machines].flatMap(([resource,slots])=>slots.map((c,slot)=>({id:`${resource}:${slot}`,roots:[c.root,...c.hose??[]]}))),
+    ];
+  }
+  private parts(roots: THREE.Object3D[]) {
+    const parts: {box:THREE.Box3; obb:OBB}[]=[];
+    for(const root of roots) root.traverseVisible(object=>{
+      if(!(object instanceof THREE.Mesh))return;
+      object.geometry.computeBoundingBox();
+      const local=object.geometry.boundingBox as THREE.Box3;
+      if(!local||local.isEmpty())return;
+      parts.push({box:local.clone().applyMatrix4(object.matrixWorld),obb:new OBB().fromBox3(local).applyMatrix4(object.matrixWorld)});
+    });
+    return parts;
+  }
+  /** Conservative mesh envelopes. Contacts are reported and the unsafe visual action is withheld. */
+  private equipmentContacts(completed: Set<string>) {
+    this.group.updateMatrixWorld(true);
+    const actors=this.equipmentObjects().map(a=>({...a,parts:this.parts(a.roots)}));
+    const obstacles=[...[...completed].filter(id=>this.boxes.has(id)).map(id=>({id:`element:${id}`,box:this.boxes.get(id)!})),
+      ...this.temporary!.objects.filter(o=>o.root.visible).map(o=>({id:`temporary:${o.asset.id}`,box:new THREE.Box3().setFromObject(o.root)}))];
+    const contacts: {actor:string;obstacle:string}[]=[];
+    for(let i=0;i<actors.length;i++) {
+      const a=actors[i];
+      for(const o of obstacles) if(a.parts.some(p=>p.box.intersectsBox(o.box)&&p.obb.intersectsOBB(new OBB().fromBox3(o.box)))) {
+        contacts.push({actor:a.id,obstacle:o.id});break;
+      }
+      for(const b of actors.slice(i+1)) if(a.parts.some(p=>b.parts.some(q=>p.box.intersectsBox(q.box)&&p.obb.intersectsOBB(q.obb)))) contacts.push({actor:a.id,obstacle:b.id});
+    }
+    return contacts;
+  }
+  private enforceEquipmentClearance(completed: Set<string>) {
+    const contacts=this.equipmentContacts(completed);
+    this.spatialIssues=contacts;
+    const blocked=new Set(contacts.flatMap(c=>[c.actor,c.obstacle]));
+    for(const id of blocked) {
+      const state=this.states.find(s=>s.id===id);if(!state)continue;
+      const {resource,slot}=state;
+      if(resource==='crane') {
+        const c=this.cranes[slot], pivot:Point=[c.mast[0],MOBILE_CRANE.pivotHeight,c.mast[2]];
+        const hook:Point=[pivot[0],pivot[1]+Math.sin(.22)*MOBILE_CRANE.retractedLength-.8,pivot[2]-Math.cos(.22)*MOBILE_CRANE.retractedLength];
+        const rig=mobileCraneRig(pivot,hook);
+        c.slew.rotation.y=Math.PI/2;c.boom.rotation.z=rig.angle;
+        c.sections.forEach(s=>s.position.x=MOBILE_CRANE.retractedLength/2);
+        c.outriggers.forEach(o=>{o.beam.scale.x=1.3;o.beam.position.x=o.side*1.1;o.foot.position.set(o.side*1.65,.3,o.z);});
+        this.moveRod(c.rope,rig.head,hook,.018);c.hook.position.set(...hook);c.slings.forEach(s=>s.visible=false);
+        const cargo=state.operationId?this.cargo.get(state.operationId):undefined;if(cargo)cargo.visible=false;
+        state.position=hook;
+        if(state.equipment)Object.assign(state.equipment,{boomLength:rig.length,boomAngle:rig.angle,deployed:0,tip:rig.head});
+      } else {
+        const object=resource==='truck'?this.trucks[slot]:resource==='mixer'?this.mixers[slot]:this.machines.get(resource)?.[slot];
+        if(object) {object.root.position.set(...this.layout.bays.get(id)!.park);state.position=object.root.position.toArray() as Point;}
+        this.machines.get(resource)?.[slot].hose?.forEach(h=>h.visible=false);
+      }
+      state.phase='ожидание · пространственный конфликт';
+      this.warnings.set(`collision:${id}`,`${id}: движение или рабочая зона пересекает препятствие. Визуальное действие остановлено; требуется изменить размещение/очерёдность. Расчётный график не пересчитан.`);
+    }
+  }
+
   update(tick: number) {
     this.temporary?.update(tick);
-    this.states.length = 0; this.hiddenTargets.clear(); this.warnings.clear();
+    this.states.length = 0; this.hiddenTargets.clear(); this.warnings.clear(); this.spatialIssues=[];
     for(const asset of this.temporary?.states??[])if(!asset.placementValid)this.warnings.set(asset.id,
       'Для вышки-туры не найдено свободное место с опорой в предварительной геометрической проверке. Требуется уточнить размещение; показано сопровождение с площадки.');
     this.formStates.length = 0;
@@ -451,7 +520,8 @@ export class ConstructionSite {
       if (lease) {
         const target = this.targetBox(lease), center = target.getCenter(new THREE.Vector3()), half = target.getSize(new THREE.Vector3()).multiplyScalar(.5);
         const destination: Point = [center.x, center.y, center.z];
-        const pickup: Point = [this.pickup[0], .35 + half.y, this.pickup[2]];
+        const source=this.layout.pickups[slot];
+        const pickup: Point = [source[0], .35 + half.y, source[2]];
         const p = progress(lease, tick);
         deployed = Math.min(smooth(p / .05), smooth((1 - p) / .02));
         const prior: Point = [pickup[0], this.transitY, pickup[2]];
@@ -498,7 +568,7 @@ export class ConstructionSite {
     }
     for (const [slot, truck] of this.trucks.entries()) {
       const lease = activeLease(this.leases, 'truck', slot, tick);
-      const park: Point = [this.roadX - slot * 3.2, 0, this.parkZ], dock: Point = [park[0], 0, this.dockZ];
+      const {park,dock}=this.layout.bays.get(`truck:${slot}`)!;
       const pose = truckPose(lease, tick, park, dock);
       truck.root.position.set(...pose.position);
       truck.root.rotation.y = 0; // Reverse along the same isolated access lane after unloading.
@@ -513,46 +583,52 @@ export class ConstructionSite {
       const lease = activeLease(this.leases, resource, slot, tick);
       const workers: NonNullable<SiteActorState['workers']> = [];
       for (const [member, person] of people.entries()) {
-        let point = this.stagingPoint(resource, slot, member), supportId: string | null = null, fallback = false, walk = 0;
+        let point = this.stagingPoint(resource, slot, member), supportId: string | null = null, fallback = false;
+        let motion=workerMotion(undefined,tick,member,false,false);
         if (lease) {
-          const spot = this.workSpot(lease, member); const p = progress(lease, tick);
-          const blend = p < .16 ? smooth(p / .16) : p > .86 ? smooth((1 - p) / .14) : 1;
-          point = spot.start.map((value, index) => value + (spot.end[index] - value) * blend) as Point;
+          const spot = this.workSpot(lease, member);
+          motion=workerMotion(lease,tick,member,spot.start.some((v,i)=>Math.abs(v-spot.end[i])>.01),spot.fallback);
+          point = spot.end.map((value, index) => value + (spot.start[index] - value) * motion.travel) as Point;
           supportId = spot.supportId; fallback = spot.fallback;
           const occupied = new Set([...completed, ...lease.operation.target_ids]);
           if (!this.clearBody(point, occupied)) { point = this.stagingPoint(resource, slot, member); supportId = null; fallback = true; }
-          walk = p < .16 || p > .86 ? Math.sin(p * 80) * .38 : 0;
         }
         const platform=lease?this.temporary?.platformFor(lease.operation.id,tick):null;
-        if(platform) {point=[platform.x+(member%2? .24:-.24),platform.y,platform.z];supportId='temporary-access';fallback=false;}
+        if(platform && member<2) {point=[platform.x+(member%2? .24:-.24),platform.y,platform.z];supportId='temporary-access';fallback=false;motion=workerMotion(lease,tick,member,false,false);}
+        // Reserve entire machinery corridors for people as well as moving vehicles.
+        const inLane=[...this.layout.bays.values()].some(b=>point[0]-.4<b.envelope.maxX&&point[0]+.4>b.envelope.minX&&point[2]-.4<b.envelope.maxZ&&point[2]+.4>b.envelope.minZ&&point[1]<3);
+        const occupiedByWorker=this.states.flatMap(s=>s.workers??[]).concat(workers).some(w=>Math.hypot(w.position[0]-point[0],w.position[2]-point[2])<.48&&Math.abs(w.position[1]-point[1])<1.7);
+        if(inLane||occupiedByWorker) {point=this.stagingPoint(resource,slot,member);supportId=null;fallback=true;}
+        if(fallback) {point=this.stagingPoint(resource,slot,member);supportId=null;motion=workerMotion(lease,tick,member,false,true);if(lease)this.warnings.set(`access:${resource}:${slot}`,'Бригада ожидает: свободный доступ к фронту не подтверждён. Время операции в расчётном графике не пересчитано.');}
         person.root.position.set(point[0], point[1] + .035, point[2]);
         const target = lease ? this.targetBox(lease).getCenter(new THREE.Vector3()) : new THREE.Vector3(point[0], 0, point[2] - 1);
         person.root.rotation.y = Math.atan2(target.x - point[0], target.z - point[2]);
-        person.legs.forEach((leg, index) => { leg.rotation.x = walk * (index ? 1 : -1); });
-        const action = lease ? progress(lease, tick) : 0;
-        person.arms.forEach((arm, index) => { arm.rotation.x = lease ? -.65 + Math.sin(action * 50 + index) * .22 + walk * (index ? -1 : 1) : 0; });
+        person.legs.forEach((leg, index) => { leg.rotation.x = motion.walk * (index ? 1 : -1); });
+        person.arms.forEach((arm, index) => { arm.rotation.x = motion.arm * (motion.walk && index ? -1 : 1); });
+        person.body.rotation.x=motion.lean;
+        person.tool.visible=Boolean(lease)&&!fallback&&!/inspect|survey|commission/.test(resource);
         const surface = this.support(point[0], point[2], point[1] + .05, completed);
         const supported = Boolean(platform || surface && Math.abs(surface.y - point[1]) < .05);
-        workers.push({ position: point, supportId, supported, fallback });
+        workers.push({ position: point, supportId, supported, fallback, action:motion.action, arm:motion.arm });
       }
       this.states.push({ id: `${resource}:${slot}`, resource, slot, operationId: lease?.operation.id ?? null, active: Boolean(lease), phase: lease ? workers.every((worker) => worker.fallback) ? 'сопровождение с площадки' : 'работа у фронта' : 'ожидание назначения', position: people[0].root.position.toArray() as Point, workers });
     }
     for (const [slot, mixer] of this.mixers.entries()) {
       const lease = activeLease(this.leases, 'mixer', slot, tick);
-      const park: Point = [this.bounds.max.x + 6 + slot * 3, 0, this.parkZ], dock: Point = [park[0], 0, this.bounds.min.z + 7];
+      const {park,dock}=this.layout.bays.get(`mixer:${slot}`)!;
       const pose = truckPose(lease, tick, park, dock); mixer.root.position.set(...pose.position); mixer.root.visible = Boolean(lease);
       mixer.drum.rotation.z = lease ? progress(lease, tick) * 18 : 0;
       this.states.push({ id: `mixer:${slot}`, resource: 'mixer', slot, operationId: lease?.operation.id ?? null, active: Boolean(lease), phase: lease ? 'доставка и подача бетонной смеси' : 'ожидание назначения', position: pose.position });
     }
     for (const [resource, machines] of this.machines) for (const [slot, machine] of machines.entries()) {
       const lease = activeLease(this.leases, resource, slot, tick), p = lease ? progress(lease, tick) : 0;
-      const point: Point = [this.bounds.max.x + 3.5 + slot * 3, 0, this.bounds.min.z + 3];
+      const bay=this.layout.bays.get(`${resource}:${slot}`)!;
+      const point: Point = [...bay.dock];
       machine.root.visible = Boolean(lease);
       if (lease) {
-        if (resource === 'excavator') { point[0] -= 1; point[2] += 2 * Math.sin(p * Math.PI * 4); machine.root.rotation.y = Math.PI; }
-        if (resource === 'dump_truck') point[2] += (1 - Math.sin(Math.PI * p)) * 12;
-        if (resource === 'compactor') { point[0] = this.bounds.max.x + .7; point[2] += p * 5; }
-        if (resource === 'vibrator') { const center = this.targetBox(lease).getCenter(new THREE.Vector3()); point[0] = center.x; point[1] = center.y + .3; point[2] = center.z; }
+        if (resource === 'excavator') { machine.root.rotation.y = Math.PI; }
+        if (resource === 'dump_truck'||resource==='compactor') {const pose=truckPose(lease,tick,bay.park,bay.dock);point[2]=pose.position[2];}
+        if (resource === 'vibrator') { const target = this.targetBox(lease); point[0] = target.getCenter(new THREE.Vector3()).x+.8+slot*.85; point[1] = target.max.y+.05; point[2] = target.getCenter(new THREE.Vector3()).z; }
         machine.moving.forEach((object) => { if (resource === 'excavator') object.rotation.y = Math.sin(p * 30) * .6; if (resource === 'dump_truck') object.rotation.x = p > .65 && p < .85 ? -.3 : 0; });
       }
       machine.root.position.set(...point);
@@ -560,7 +636,7 @@ export class ConstructionSite {
         machine.hose.forEach((rod) => { rod.visible = Boolean(lease); });
         if (lease) {
           const target = this.targetBox(lease).getCenter(new THREE.Vector3());
-          const top = Math.max(target.y + 3, 5), dx = target.x - point[0], dz = target.z - point[2];
+          const top = Math.max(this.bounds.max.y + 3, 5), dx = target.x - point[0], dz = target.z - point[2];
           const joints: Point[] = [[point[0], 1.8, point[2]], [point[0], top, point[2]], [point[0] + dx * .5, top + 1, point[2] + dz * .5], [target.x, top, target.z], [target.x, target.y + .3, target.z]];
           machine.hose.forEach((rod, i) => this.moveRod(rod, joints[i], joints[i + 1], i === 3 ? .045 : .09));
         }
@@ -575,6 +651,7 @@ export class ConstructionSite {
       return work && this.run.operation_states[work].start > tick;
     }).length;
     this.stock.forEach((stock, index) => { stock.visible = index < Math.min(this.stock.length, batches); });
+    this.enforceEquipmentClearance(completed);
   }
 
   snapshot() {
@@ -582,7 +659,9 @@ export class ConstructionSite {
       hiddenTargets: [...this.hiddenTargets], formwork: structuredClone(this.formStates), equipmentProfile: MOBILE_CRANE,
       temporaryAccess: structuredClone(this.temporary?.states ?? []),
       excavationProxyVisible: Boolean(this.pit?.visible),
-      truckRoadClearance: this.bounds.min.x - this.roadX, animationVersion: '0.4.0' };
+      spatialConflicts:structuredClone(this.spatialIssues),
+      layoutBasis:'expandable_visual_site_not_surveyed',
+      truckRoadClearance: this.bounds.min.x - this.roadX, animationVersion: '0.5.0' };
   }
   dispose() {
     this.temporary?.dispose();

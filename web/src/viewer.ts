@@ -170,8 +170,15 @@ export class Viewer {
     const center = bounds.getCenter(new THREE.Vector3());
     const size = bounds.getSize(new THREE.Vector3());
     const halfFov = THREE.MathUtils.degToRad(this.camera.fov / 2);
-    const distance = Math.max(size.length(), 1) / (2 * Math.tan(halfFov)) * Math.max(1, 1 / this.camera.aspect) * 1.12;
     const axis = direction === 'top' ? new THREE.Vector3(0, 1, 0.0001) : direction === 'front' ? new THREE.Vector3(0, 0.14, 1) : new THREE.Vector3(1, 0.82, 1.2);
+    axis.normalize();
+    const right=new THREE.Vector3(0,1,0).cross(axis).normalize(), up=axis.clone().cross(right);
+    let distance=1;
+    for(const x of [-.5,.5])for(const y of [-.5,.5])for(const z of [-.5,.5]) {
+      const corner=new THREE.Vector3(size.x*x,size.y*y,size.z*z), depth=corner.dot(axis);
+      distance=Math.max(distance,depth+Math.abs(corner.dot(right))/(Math.tan(halfFov)*this.camera.aspect),depth+Math.abs(corner.dot(up))/Math.tan(halfFov));
+    }
+    distance*=1.08;
     this.controls.target.copy(center);
     this.camera.position.copy(center).addScaledVector(axis.normalize(), distance);
     this.camera.lookAt(center);
@@ -229,7 +236,7 @@ export class Viewer {
       this.site = new ConstructionSite(this.model, run, this.meshes);
       this.scene.add(this.site.group);
     }
-    if (this.site) { this.site.group.visible = true; this.site.update(time); }
+    if (this.site) { this.site.group.visible = true; this.site.update(time); this.invalidate(); }
   }
 
   siteState() { return this.site?.snapshot() ?? null; }

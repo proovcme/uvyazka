@@ -78,13 +78,19 @@ async function loadRun(id: string) {
 function renderState() {
   el('inspector-title').textContent = 'Состояние сценария';
   if (!run || !clock) {viewer?.setConstruction(null);el('inspector').innerHTML='<p>Модель открыта. Подготовьте сценарий кнопкой «Рассчитать» или с помощью агента.</p>'; return;}
-  const tick = Math.floor(clock.time), state = projectState(run,tick);
+  const tick = clock.time, state = projectState(run,tick);
   viewer?.setConstruction(state.construction, el<HTMLInputElement>('show-complete').checked);
   if(model?.model_id===run.scenario.model_id) viewer?.setSite(el<HTMLInputElement>('site').checked?run:null,tick);
-  el('clock').textContent = tick+' мин'; el<HTMLInputElement>('time').value = String(tick);
+  el('clock').textContent = Math.floor(tick)+' мин'; el<HTMLInputElement>('time').value = String(tick);
   el('play').textContent=clock.playing?'Ⅱ':'▶'; el('play').setAttribute('aria-label',clock.playing?'Пауза':'Воспроизвести');
   el('inspector').innerHTML=`<p><strong>${state.completed} / ${run.scenario.operations.length}</strong> работ завершено</p><h3>В работе</h3>${state.active.map(o=>`<p>${esc(o.name)}</p>`).join('')||'<p>Нет активных работ</p>'}<h3>Ожидают ресурсы</h3>${state.waiting.map(o=>`<p>${esc(o.name)}</p>`).join('')||'<p>Нет ожидающих работ</p>'}`;
   el('resources').innerHTML='<h3>Ресурсы</h3>'+run.scenario.resources.map(r=>`<label>${esc(r.name)}<strong>${state.resources.get(r.id)||0} / ${r.capacity}</strong><progress value="${state.resources.get(r.id)||0}" max="${r.capacity}"></progress></label>`).join('');
+  const site=el<HTMLInputElement>('site').checked?viewer?.siteState():null;
+  if(site) {
+    const working=site.actors.flatMap(a=>a.workers??[]).filter(w=>!w.fallback&&w.action!=='ожидание назначения');
+    el('inspector').innerHTML+=`<h3>На площадке</h3><p>Работают у фронта: ${working.length}. Ожидают доступа: ${site.actors.flatMap(a=>a.workers??[]).filter(w=>w.fallback).length}.</p>`;
+    if(site.warnings.length)el('inspector').innerHTML+=`<details open><summary>Требуют решения: ${site.warnings.length}</summary>${site.warnings.map(w=>`<p>${esc(w.message)}</p>`).join('')}</details>`;
+  }
   document.querySelectorAll<HTMLElement>('[data-operation]').forEach(row=>row.dataset.state=state.states.get(row.dataset.operation!)||'pending');
 }
 async function loadProject(id:string) {

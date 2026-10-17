@@ -142,7 +142,7 @@ function setMode(mode:'view'|'simulate') {
   workspaceMode=mode;document.body.dataset.mode=mode;
   el('mode-view').setAttribute('aria-pressed',String(mode==='view'));el('mode-simulate').setAttribute('aria-pressed',String(mode==='simulate'));
   if(clock)clock.playing=false;touring=false;last=0;cancelAnimationFrame(frame);el('tour').setAttribute('aria-pressed','false');
-  if(mode==='simulate'){setPanel('tree',false);setPanel('inspector',true);}else{setPanel('tree',!matchMedia('(max-width: 760px)').matches);setPanel('inspector',false);}
+  if(mode==='simulate'){setPanel('tree',false);setPanel('inspector',!matchMedia('(max-width: 900px)').matches);}else{setPanel('tree',!matchMedia('(max-width: 760px)').matches);setPanel('inspector',false);}
   if(mode==='simulate')viewer?.show(new Set(model?.elements.filter(e=>e.role==='element').map(e=>e.id)??[]));
   renderState();if(mode==='view'){viewer?.show(new Set(model?.elements.filter(e=>e.role==='element').map(e=>e.id)??[]));viewer?.fit();}
 }

@@ -11,19 +11,19 @@ export function browserPanel(callbacks:{reset:()=>void;drawing:(file:File)=>Prom
 <div class="browser-actions simulation-only"><label>Ресурсы<select id="browser-variant"><option value="base">Базовые</option><option value="reinforced">Усиленные</option></select></label><label>Доступность ресурсов<select id="browser-capacity"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option></select></label><label>Выдержка бетона, суток<input id="browser-curing" type="number" min="1" max="365" value="28"></label><button id="browser-plan" disabled>Рассчитать сценарий</button></div>
 <p class="simulation-only">Работы, технология, выработка и связи — предварительные допущения IFCCS. Стадии RVT в браузере пока не читаются; существующие и демонтируемые элементы автоматически не исключаются.</p>
 <div class="browser-actions"><a id="browser-ifc" hidden>Скачать IFC</a><a id="browser-report" hidden>Диагностика JSON</a></div><details id="browser-diagnostics" hidden><summary>Покрытие и вопросы</summary><pre></pre></details>`;
-  document.querySelector('.notice')!.after(section);
+  document.getElementById('import-host')!.append(section);
   const el=<T extends HTMLElement=HTMLElement>(id:string)=>section.querySelector<T>('#'+id)!;
   const base=new URL('.',location.href).href;
   let active=0,importer:Worker|null=null,planner:Worker|null=null,current:ModelPackage|null=null;
   const urls=new Map<string,string>();
-  const status=(text:string)=>el('browser-status').textContent=text;
-  const busy=(yes:boolean)=>{el<HTMLButtonElement>('browser-cancel').disabled=!yes;el<HTMLButtonElement>('browser-plan').disabled=yes||!current;};
+  const status=(text:string)=>{el('browser-status').textContent=text;const footer=document.getElementById('workspace-status')!;footer.textContent=text;footer.title=text;};
+  const busy=(yes:boolean)=>{document.body.classList.toggle('is-busy',yes);el<HTMLButtonElement>('browser-cancel').disabled=!yes;el<HTMLButtonElement>('browser-plan').disabled=yes||!current;};
   const stop=()=>{active++;importer?.terminate();planner?.terminate();importer=planner=null;busy(false);};
   const download=(id:string,data:Blob,name:string)=>{const old=urls.get(id);if(old)URL.revokeObjectURL(old);const url=URL.createObjectURL(data);urls.set(id,url);const a=el<HTMLAnchorElement>(id);a.href=url;a.download=name;a.hidden=false;};
   el('browser-cancel').onclick=()=>{callbacks.cancelDrawing();stop();status('Отменено. Последний готовый результат сохранён в текущей вкладке.');};
   el('browser-demo').onclick=()=>{stop();location.href=base;};
   el<HTMLInputElement>('browser-file').onchange=async()=>{
-    const file=el<HTMLInputElement>('browser-file').files?.[0];if(!file)return;
+    const file=el<HTMLInputElement>('browser-file').files?.[0];if(!file)return;document.querySelector<HTMLDialogElement>('#file-dialog')!.showModal();
     stop();const job=active;
     if(!/\.(ifc|rvt|dwg|dxf)$/i.test(file.name)||!file.size||file.size>(/\.ifc$/i.test(file.name)?128:64)*1024*1024){status('Нужен IFC до 128 MiB либо DWG, DXF, RVT до 64 MiB');return;}
     current=null;callbacks.reset();busy(true);status('Чтение '+file.name);

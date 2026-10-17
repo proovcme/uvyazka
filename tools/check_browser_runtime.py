@@ -69,6 +69,7 @@ def main():
             imported_seconds=time.monotonic()-start
             (args.out/(path.name+'.model.json')).write_text(json.dumps(imported,ensure_ascii=False),encoding='utf-8')
             page.locator('#mode-simulate').click()
+            page.locator('#file-settings').click()
             page.locator('#browser-plan').click()
             wait_expression(page,"window.__results.some(x=>x.kind==='planned'||x.kind==='error')",timeout=300000)
             planned=page.evaluate("window.__results.find(x=>x.kind==='planned')?.run || null")
@@ -84,6 +85,7 @@ def main():
             assert page.locator('#error').is_hidden(),page.locator('#error').inner_text()
             # Reuse the loaded Python worker with the network disabled.
             context.set_offline(True)
+            page.locator('#file-settings').click()
             page.locator('#browser-capacity').select_option('2')
             page.locator('#browser-plan').click()
             wait_expression(page,"window.__results.filter(x=>x.kind==='planned').length===2 || window.__results.some(x=>x.kind==='error')",timeout=60000)

@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tomllib
 from build_public_demo import export
+from build_cad_viewer import build as build_cad_viewer
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,6 +31,7 @@ if __name__ == '__main__':
         raise SystemExit('Install Node.js and run npm ci in web first')
     subprocess.run([npm, 'run', 'build', '--', '--base=/uvyazka/', '--outDir', str(output)],
         cwd=ROOT / 'web', env={**os.environ, 'VITE_UVYAZKA_DEMO': '1'}, check=True)
+    build_cad_viewer(output / 'cad')
     export(output / 'demo', ROOT / '.uvyazka-build/synthetic-cache')
     shutil.copytree(runtime, output/'runtime')
     downloads = output / 'downloads'

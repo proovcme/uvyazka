@@ -58,7 +58,10 @@ export class TemporarySite {
         const height=Math.max(1,size.y), points:number[][]=[];
         for(const x of [-.65,.65]) for(const z of [-.45,.45]) points.push([x,0,z,x,height+1,z]);
         for(let y=0;y<=height+.01;y+=.5) points.push([-.65,y,-.45,.65,y,-.45],[-.65,y,.45,.65,y,.45]);
-        points.push([-.65,0,-.45,.65,height,-.45],[.65,0,.45,-.65,height,.45],[-.65,height+1,-.45,.65,height+1,-.45],[-.65,height+1,.45,.65,height+1,.45]);
+        // Open front access bay; external ladder is an explicit simulation assumption.
+        points.push([.65,0,.45,-.65,height,.45],[-.65,height+1,-.45,-.25,height+1,-.45],[.25,height+1,-.45,.65,height+1,-.45],[-.65,height+1,.45,.65,height+1,.45]);
+        for(const x of [-.22,.22])points.push([x,0,-.8,x,height+.8,-.8]);
+        for(let y=.2;y<height+.5;y+=.28)points.push([-.22,y,-.8,.22,y,-.8]);
         this.lines(root,points);
         const geometry=new THREE.BoxGeometry(1.3,.07,.9);this.geometries.push(geometry);
         const plank=new THREE.Mesh(geometry,this.deck);plank.position.y=height;root.add(plank);
@@ -94,6 +97,17 @@ export class TemporarySite {
     const candidates=[new THREE.Vector3(lo.x-.8,0,center.z),new THREE.Vector3(hi.x+.8,0,center.z),new THREE.Vector3(center.x,0,lo.z-.8),new THREE.Vector3(center.x,0,hi.z+.8)];
     const point=candidates.sort((a,b)=>a.distanceToSquared(center)-b.distanceToSquared(center))[0];
     point.y=Math.min(hi.y,lo.y+Math.max(2,Math.round((center.y-lo.y)/2)*2))+.04;return point;
+  }
+  accessFor(operationId:string,tick:number,member:number) {
+    const object=this.objects.find(o=>o.valid&&o.platform&&o.asset.work_operation_ids.includes(operationId)&&
+      this.run.operation_states[o.asset.check_id].finish<=tick&&tick<this.run.operation_states[o.asset.remove_id].start);
+    if(!object||member>1)return null;
+    const p=object.platform!,base=object.root.position;
+    return {id:object.asset.id,base:new THREE.Vector3(p.x,base.y,p.z-.8),
+      top:new THREE.Vector3(p.x,p.y,p.z-.8),entry:new THREE.Vector3(p.x,p.y,p.z-.25),
+      position:new THREE.Vector3(p.x+(member? .30:-.30),p.y,p.z+.12),
+      availableUntil:this.run.operation_states[object.asset.remove_id].start,
+      basis:'assumed_external_tower_ladder'};
   }
   dispose() {this.group.removeFromParent();this.geometries.forEach(g=>g.dispose());this.frame.dispose();this.deck.dispose();}
 }

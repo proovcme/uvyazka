@@ -13,6 +13,6 @@ test('parallel operations on one target complete only when all operations finish
 });
 test('playback pauses and speed only affect the presentation clock',()=>{
  const clock=new PlaybackClock(100);clock.advance(1);assert.equal(clock.time,0);
- clock.playing=true;clock.rate=10;clock.advance(2);assert.equal(clock.time,20);
+ clock.playing=true;clock.rate=10;clock.advance(2);assert.equal(clock.time,1/3);
  clock.seek(200);assert.equal(clock.time,100);clock.advance(1);assert.equal(clock.playing,false);
 });

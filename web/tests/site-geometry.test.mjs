@@ -9,6 +9,7 @@ globalThis.document={createElement:()=>({width:0,height:0,getContext:()=>({fillR
 test('actual machine meshes remain disjoint at simultaneous work and after backwards seeking',()=>{
   for(const count of [1,4]) {
     const geometry=new THREE.BoxGeometry(10,.3,8), mesh=new THREE.Mesh(geometry,[new THREE.MeshStandardMaterial()]);
+    geometry.clearGroups();geometry.addGroup(0,geometry.index.count,0);
     mesh.position.set(100,0,200);mesh.updateMatrixWorld(true);mesh.userData.elementId='slab';
     const model={coordinate_system:{render_origin_m:[0,0,0]},elements:[{id:'slab',role:'element',hierarchy:['IfcSlab']}]};
     const resources=['crane','truck','mixer','concrete_pump','excavator','dump_truck','compactor','vibrator','crew'].map(id=>({id,capacity:count,people_per_slot:2}));

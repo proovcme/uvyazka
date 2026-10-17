@@ -68,6 +68,7 @@ def main():
                 results.append({'file':path.name,'error':status});context.close();continue
             imported_seconds=time.monotonic()-start
             (args.out/(path.name+'.model.json')).write_text(json.dumps(imported,ensure_ascii=False),encoding='utf-8')
+            page.locator('#mode-simulate').click()
             page.locator('#browser-plan').click()
             wait_expression(page,"window.__results.some(x=>x.kind==='planned'||x.kind==='error')",timeout=300000)
             planned=page.evaluate("window.__results.find(x=>x.kind==='planned')?.run || null")

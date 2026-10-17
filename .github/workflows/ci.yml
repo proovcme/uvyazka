@@ -101,6 +101,10 @@ jobs:
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
       - run: python tools/build_browser_runtime.py
+      - run: npm ci
+        working-directory: integrations/cad-viewer
       - run: python tools/build_demo_site.py
+      - run: python tools/fetch_cad_fixtures.py
+      - run: node tools/check_cad_worker.mjs
       - run: python tools/fetch_browser_fixtures.py
-      - run: python tools/check_browser_runtime.py --serve --channel chromium .uvyazka-build/browser-fixtures/*
+      - run: python tools/check_browser_runtime.py --serve --channel chromium .uvyazka-build/browser-fixtures/*.ifc .uvyazka-build/browser-fixtures/*.rvt

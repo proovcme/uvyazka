@@ -6,17 +6,18 @@ import type { Lease, Point } from './site-motion';
 import { MOBILE_CRANE, mobileCraneRig } from './crane-rig';
 import { TemporarySite } from './temporary-site';
 import { CREWS, layoutSite } from './site-layout';
-import { workerMotion } from './worker-motion';
+import { findWalkRoute, makeWorkerTask, sampleWorkerTask, reserveWorkerTask, distance, taskAction } from './worker-task';
+import type { WorkerTask, WorkerRoute, WorkerTool, NavigationWorld } from './worker-task';
 import { OBB } from 'three/addons/math/OBB.js';
 
 type SourceMesh = THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial[]>;
-interface Person { root: THREE.Group; body: THREE.Group; tool: THREE.Group; arms: THREE.Group[]; legs: THREE.Group[] }
+interface Person { root: THREE.Group; body: THREE.Group; tools: Map<WorkerTool,THREE.Group>; arms: THREE.Group[]; forearms: THREE.Group[]; legs: THREE.Group[]; marker:THREE.Mesh }
 interface Crane { root: THREE.Group; slew: THREE.Group; boom: THREE.Group; sections: THREE.Mesh[]; outriggers: { beam: THREE.Mesh; foot: THREE.Group; side: number; z: number }[]; rope: THREE.Mesh; hook: THREE.Group; slings: THREE.Mesh[]; mast: Point }
 interface Truck { root: THREE.Group; wheels: THREE.Mesh[]; load: THREE.Group; gate: THREE.Mesh }
-interface WorkSpot { start: Point; end: Point; supportId: string | null; fallback: boolean }
 export interface SiteActorState {
   id: string; resource: string; slot: number; operationId: string | null; active: boolean; phase: string;
-  position: Point; workers?: { position: Point; supportId: string | null; supported: boolean; fallback: boolean; visible: boolean; action: string; arm: number }[];
+  position: Point; workers?: { position: Point; supportId: string | null; supported: boolean; fallback: boolean; visible: boolean; action: string; arm: number;
+    phase:string; targetId:string|null; targetName:string; tool:string|null; route:Point[]; routeBasis:string[]; reason:string|null; contact:Point|null; workProgress:number }[];
   equipment?: { type: string; boomLength: number; boomAngle: number; deployed: number; tip: Point; loadMassKg: null; status: string };
 }
 
@@ -54,7 +55,6 @@ export class ConstructionSite {
   private formStates: { unitId: string; fraction: number; phase: string }[] = [];
   private pit?: THREE.Mesh;
   private cargo = new Map<string, THREE.Group>();
-  private spots = new Map<string, WorkSpot>();
   private boxes = new Map<string, THREE.Box3>();
   private completion = new Map<string, number>();
   private ray = new THREE.Raycaster();
@@ -65,6 +65,11 @@ export class ConstructionSite {
   private stock: THREE.Group[] = [];
   readonly layout: ReturnType<typeof layoutSite>;
   private spatialIssues: {actor: string; obstacle: string}[] = [];
+  private workerTasks=new Map<string,WorkerTask>();
+  private workerLeases:Lease[]=[];
+  private plannedWorkerLeases=0;
+  private workerPaths=new Map<string,THREE.Line>();
+  private accessRamps:{base:Point;landing:Point;top:Point;floorId:string;root:THREE.Group;ready:number}[]=[];
 
   constructor(readonly model: ModelPackage, readonly run: RunPackage, readonly meshes: Map<string, SourceMesh>) {
     this.group.name = 'Event-driven construction site';
@@ -131,6 +136,8 @@ export class ConstructionSite {
       pallet.position.set(this.layout.stock[0] + (index % 2) * 1.2, 0, this.layout.stock[2] + Math.floor(index / 2) * 1.1);
       this.group.add(pallet); this.stock.push(pallet);
     }
+    this.makePedestrianAccess();
+    this.workerLeases=this.leases.filter(l=>this.crews.has(l.resource)).sort((a,b)=>a.start-b.start||a.resource.localeCompare(b.resource)||a.slot-b.slot);
     this.update(0);
   }
 
@@ -260,10 +267,13 @@ export class ConstructionSite {
     for (const x of [-.12, .12]) this.box(root, [.055, .45, .245], [x, 1.06, .005], this.yellow);
     const head = this.mesh(root, this.sphere, this.skin); head.position.y = 1.48; head.scale.set(.15, .18, .15);
     const helmet = this.mesh(root, this.sphere, this.yellow); helmet.position.y = 1.62; helmet.scale.set(.19, .10, .19);
+    const forearms:THREE.Group[]=[];
     const arms = [-1, 1].map((side) => {
       const joint = new THREE.Group(); joint.position.set(side * .25, 1.26, 0); root.add(joint);
-      this.box(joint, [.12, .48, .14], [0, -.22, 0], vest);
-      const hand = this.mesh(joint, this.sphere, this.skin); hand.scale.set(.075, .09, .075); hand.position.set(0, -.48, 0); return joint;
+      this.box(joint, [.12, .28, .14], [0, -.14, 0], vest);
+      const forearm=new THREE.Group();forearm.position.y=-.28;joint.add(forearm);forearms.push(forearm);
+      this.box(forearm,[.1,.26,.12],[0,-.13,0],vest);
+      const hand = this.mesh(forearm, this.sphere, this.skin); hand.scale.set(.075, .09, .075); hand.position.set(0, -.28, 0); return joint;
     });
     const legs = [-1, 1].map((side) => {
       const joint = new THREE.Group(); joint.position.set(side * .105, .8, 0); root.add(joint);
@@ -272,11 +282,17 @@ export class ConstructionSite {
     });
     const body=new THREE.Group(); body.position.y=.8; root.add(body);
     for(const child of [...root.children]) if(child!==body&&!legs.includes(child as THREE.Group)) {root.updateMatrixWorld(true);body.attach(child);}
-    const tool=new THREE.Group();arms[0].add(tool);tool.position.set(0,-.48,.04);
-    this.box(tool,[.06,.32,.06],[0,-.09,0],this.wood);
-    this.box(tool,[.24,.08,.1],[0,.08,0],this.metal);
-    tool.visible=false;
-    return { root, body, tool, arms, legs };
+    const tools=new Map<WorkerTool,THREE.Group>();
+    for(const kind of ['hammer','trowel','wrench','pliers','hose','meter','probe'] as WorkerTool[]) {
+      const tool=new THREE.Group();forearms[0].add(tool);tool.position.y=-.28;tool.visible=false;tools.set(kind,tool);
+      if(kind==='meter')this.box(tool,[.18,.08,.27],[0,-.08,0],this.blue);
+      else if(kind==='hose')this.rod(tool,[0,.1,0],[0,-.23,0],.04,this.black);
+      else if(kind==='trowel'){this.box(tool,[.05,.17,.06],[0,-.06,0],this.wood);this.box(tool,[.18,.025,.25],[0,-.15,0],this.metal);}
+      else {this.box(tool,[.045,.22,.05],[0,-.07,0],kind==='hammer'?this.wood:this.metal);
+        this.box(tool,[kind==='probe'?.05:.16,.06,.065],[0,-.17,0],this.metal);}
+    }
+    const marker=this.mesh(this.group,this.sphere,this.orange);marker.scale.setScalar(.055);marker.visible=false;
+    return { root, body, tools, arms, forearms, legs, marker };
   }
   private makeFormwork() {
     for (const unit of this.run.scenario.units.filter((unit) => unit.kind === 'concrete')) {
@@ -362,13 +378,6 @@ export class ConstructionSite {
     for(const unit of this.run.scenario.units) if((unit.kind==='demolition'||this.run.scenario.element_phase_states?.[unit.id]==='temporary')&&this.run.operation_states[unit.operation_ids.at(-1)!].finish<=tick) for(const id of unit.target_ids)ids.delete(id);
     return ids;
   }
-  private clearBody(point: Point, occupied: Set<string>) {
-    const capsuleBox = new THREE.Box3(new THREE.Vector3(point[0] - .19, point[1] + .14, point[2] - .19), new THREE.Vector3(point[0] + .19, point[1] + 1.72, point[2] + .19));
-    for (const id of occupied) {
-      if (this.boxes.get(id)?.intersectsBox(capsuleBox)) return false;
-    }
-    return true;
-  }
   private support(x: number, z: number, maxY: number, completed: Set<string>): { y: number; id: string | null } | null {
     this.ray.set(new THREE.Vector3(x, maxY + .15, z), new THREE.Vector3(0, -1, 0));
     for (const hit of this.ray.intersectObjects(this.floorMeshes.filter((mesh) => completed.has(String(mesh.userData.elementId))), false)) {
@@ -382,35 +391,150 @@ export class ConstructionSite {
     const base=this.layout.staging.get(`${resource}:${slot}`) ?? this.layout.cabin;
     return [base[0]+member*1.3,0,base[2]];
   }
-  private workSpot(lease: Lease, member: number): WorkSpot {
-    const key = `${lease.resource}/${lease.slot}/${lease.operation.id}/${member}`;
-    if (this.spots.has(key)) return this.spots.get(key)!;
-    const target = this.targetBox(lease), center = target.getCenter(new THREE.Vector3());
-    const completed = this.completedAt(lease.start);
-    const occupied = new Set([...completed, ...lease.operation.target_ids]);
-    const side = member % 2 ? -1 : 1, offset=side*(.6+Math.floor(member/2)*1.3);
-    const candidates = [[target.min.x - .65, center.z + offset], [target.max.x + .65, center.z + offset], [center.x + offset, target.min.z - .65], [center.x + offset, target.max.z + .65]];
-    for (const [x, z] of candidates) {
-      const surface = this.support(x, z, target.min.y + .1, completed);
-      if (!surface) continue;
-      const point: Point = [x, surface.y, z];
-      if (!this.clearBody(point, occupied)) continue;
-      let end = point;
-      for (const dx of [1.2, -1.2]) {
-        const other: Point = [x + dx, surface.y, z];
-        const valid = [0, .25, .5, .75, 1].every((t) => {
-          const test: Point = [x + dx * t, surface.y, z];
-          const floor = this.support(test[0], test[2], surface.y + .05, completed);
-          return floor && Math.abs(floor.y - surface.y) < .04 && this.clearBody(test, occupied);
-        });
-        if (valid) { end = other; break; }
-      }
-      const spot = { start: end, end: point, supportId: surface.id, fallback: target.min.y - surface.y > 1.8 };
-      this.spots.set(key, spot); return spot;
+  private makePedestrianAccess() {
+    // The educational model explicitly uses proposed temporary access steps.
+    // Imported projects never acquire invented stairs from this demonstration rule.
+    if(this.model.source?.schema!=='SyntheticDemo')return;
+    for(const mesh of this.floorMeshes) {
+      const id=String(mesh.userData.elementId),b=this.boxes.get(id)!;
+      if(b.max.y<.2||b.max.y>.8||b.max.x-b.min.x<2)continue;
+      const x=(b.min.x+b.max.x)/2+this.accessRamps.length*1.2;
+      const base:Point=[x,0,b.max.z+2.5],landing:Point=[x,b.max.y,b.max.z+.05],top:Point=[x,b.max.y,b.max.z-.4];
+      const root=new THREE.Group();this.group.add(root);
+      const n=Math.ceil(b.max.y/.16),length=(base[2]-landing[2])/n;
+      for(let i=0;i<n;i++)this.box(root,[.95,b.max.y*(i+1)/n,length],[x,b.max.y*(i+1)/n/2,base[2]-(i+.5)*length],this.wood);
+      this.accessRamps.push({base,landing,top,floorId:id,root,ready:this.completion.get(id)??0});
     }
-    const point = this.stagingPoint(lease.resource, lease.slot, member);
-    const result = { start: point, end: point, supportId: null, fallback: true };
-    this.spots.set(key, result); return result;
+  }
+  private navigationWorld(occupied:Set<string>,level:number,home:Point,available:Set<string>=occupied):NavigationWorld {
+    const surfaces=new Map<string,number|null>();
+    const floorBoxes=this.floorMeshes.filter(m=>available.has(String(m.userData.elementId))).map(m=>({mesh:m,box:this.boxes.get(String(m.userData.elementId))!}));
+    return {minX:this.siteBounds.min.x+.5,maxX:this.siteBounds.max.x-.5,minZ:this.siteBounds.min.z+.5,maxZ:this.siteBounds.max.z-.5,
+      surface:(x,z)=>{
+        const key=`${x.toFixed(4)},${z.toFixed(4)}`;if(surfaces.has(key))return surfaces.get(key)!;
+        let height:number|null=null;
+        for(const f of floorBoxes)if(Math.abs(f.box.max.y-level)<=.2&&x-.23>=f.box.min.x&&x+.23<=f.box.max.x&&z-.23>=f.box.min.z&&z+.23<=f.box.max.z) {
+          const supported=[[0,0],[-.23,-.23],[.23,-.23],[-.23,.23],[.23,.23]].every(([dx,dz])=>{
+            this.ray.set(new THREE.Vector3(x+dx,f.box.max.y+.1,z+dz),new THREE.Vector3(0,-1,0));
+            const hit=this.ray.intersectObject(f.mesh,false)[0];return hit&&Math.abs(hit.point.y-f.box.max.y)<.04;
+          });
+          if(supported)height=Math.max(height??-Infinity,f.box.max.y);
+        }
+        if(height===null&&Math.abs(level)<.2&&(x<this.bounds.min.x-.25||x>this.bounds.max.x+.25||z<this.bounds.min.z-.25||z>this.bounds.max.z+.25))height=0;
+        surfaces.set(key,height);return height;
+      },clear:p=>this.routeBodyClear(p,occupied)&&![...this.crews].some(([resource,slots])=>slots.some((people,slot)=>people.some((_,member)=>{
+        const other=this.stagingPoint(resource,slot,member);return distance(other,home)>.1&&Math.abs(p[1]-other[1])<1.75&&Math.hypot(p[0]-other[0],p[2]-other[2])<.6;
+      })))};
+  }
+  private routeBodyClear(p:Point,occupied:Set<string>) {
+    const body=new THREE.Box3(new THREE.Vector3(p[0]-.28,p[1]+.16,p[2]-.28),new THREE.Vector3(p[0]+.28,p[1]+1.8,p[2]+.28));
+    if([...occupied].some(id=>this.boxes.get(id)?.intersectsBox(body)))return false;
+    if(p[1]<3&&[...this.layout.bays.values()].some(b=>p[0]-.3<b.envelope.maxX&&p[0]+.3>b.envelope.minX&&p[2]-.3<b.envelope.maxZ&&p[2]+.3>b.envelope.minZ))return false;
+    const cabin=this.layout.cabin,stock=this.layout.stock;
+    if(Math.abs(p[0]-cabin[0])<1.7&&Math.abs(p[2]-cabin[2])<2.5)return false;
+    if(p[0]>stock[0]-.8&&p[0]<stock[0]+2&&p[2]>stock[2]-.8&&p[2]<stock[2]+5.4)return false;
+    return true;
+  }
+  private contactAt(point:Point,targetId:string|null,box:THREE.Box3):Point|null {
+    const shoulder=new THREE.Vector3(point[0],point[1]+1,point[2]);
+    const aim=box.clampPoint(shoulder,new THREE.Vector3()).lerp(box.getCenter(new THREE.Vector3()),.002);
+    if(shoulder.distanceTo(aim)>1.3)return null;
+    if(!targetId)return aim.toArray() as Point;
+    const mesh=this.meshes.get(targetId);if(!mesh)return null;
+    this.ray.set(shoulder,aim.clone().sub(shoulder).normalize());
+    const hit=this.ray.intersectObject(mesh,false)[0];
+    return hit&&hit.distance<1.3?hit.point.toArray() as Point:null;
+  }
+  private routeTo(home:Point,destination:Point,occupied:Set<string>,start:number):WorkerRoute|null {
+    const finished=this.completedAt(start);
+    const ground=this.navigationWorld(occupied,0,home,finished);
+    if(Math.abs(destination[1])<.2) {
+      const points=findWalkRoute(home,destination,ground);if(points)return {points,modes:points.slice(1).map(()=>'walk'),basis:['mesh_support_and_body_clearance']};
+    }
+    for(const ramp of this.accessRamps)if(ramp.ready<=start&&Math.abs(ramp.top[1]-destination[1])<=.2) {
+      const before=findWalkRoute(home,ramp.base,ground);if(!before)continue;
+      const after=findWalkRoute(ramp.top,destination,this.navigationWorld(occupied,ramp.top[1],home,finished));if(!after)continue;
+      const clear=Array.from({length:30},(_,i)=>i/29).every(t=>this.routeBodyClear(ramp.base.map((v,k)=>v+(ramp.landing[k]-v)*t) as Point,occupied));
+      if(!clear)continue;
+      const points=[...before,ramp.landing,...after];return {points,modes:points.slice(1).map(()=>'walk'),basis:['mesh_support_and_body_clearance','synthetic_demo_proposed_access_steps']};
+    }
+    return null;
+  }
+  private planWorker(lease:Lease,member:number):WorkerTask {
+    const home=this.stagingPoint(lease.resource,lease.slot,member),completed=this.completedAt(lease.start);
+    // Reserve structures that appear before return as well: a route cannot close behind a worker.
+    const occupied=new Set([...completed,...this.completedAt(lease.end),...[...this.completion].filter(([,t])=>t>=lease.start&&t<=lease.end).map(([id])=>id),...lease.operation.target_ids]);
+    const ids=lease.operation.target_ids.filter(id=>this.boxes.has(id));
+    const targetId=ids.length?ids[member%ids.length]:null;
+    const target=targetId?this.boxes.get(targetId)!:this.targetBox(lease);
+    const name=targetId?this.model.elements.find(e=>e.id===targetId)?.name??targetId:'Условный участок подготовительных работ';
+    const candidates:{position:Point;base?:Point;top?:Point;entry?:Point;basis?:string;until?:number}[]=[];
+    const access=this.temporary?.accessFor(lease.operation.id,lease.start,member);
+    if(access)candidates.push({position:access.position.toArray() as Point,base:access.base.toArray() as Point,top:access.top.toArray() as Point,entry:access.entry.toArray() as Point,basis:access.basis,until:access.availableUntil});
+    const center=target.getCenter(new THREE.Vector3()),offset=(member%2?1:-1)*(.4+Math.floor(member/2)*.7);
+    for(const [x,z] of [[target.min.x-.55,center.z+offset],[target.max.x+.55,center.z+offset],[center.x+offset,target.min.z-.55],[center.x+offset,target.max.z+.55]]) {
+      const floor=this.support(x,z,target.max.y,completed);if(floor)candidates.push({position:[x,floor.y,z]});
+    }
+    let reason='Не найден непрерывный маршрут с опорой от места сбора до рабочего места и обратно.';
+    for(const candidate of candidates) {
+      const contact=this.contactAt(candidate.position,targetId,target);if(!contact){reason='Элемент вне досягаемости инструмента с доступной опоры.';continue;}
+      if(!this.reachableContact(candidate.position,contact,taskAction(lease.operation.kind).tool)){reason='Инструмент не достаёт до поверхности из доступной рабочей позы.';continue;}
+      if(!this.routeBodyClear(candidate.position,occupied))continue;
+      const route=this.routeTo(home,candidate.base??candidate.position,occupied,lease.start);if(!route)continue;
+      if(candidate.base&&candidate.top&&candidate.entry) {
+        if(candidate.until!<lease.end){reason='Подмости разбираются до возвращения работника.';continue;}
+        const extra=[candidate.base,candidate.top,candidate.entry,candidate.position];
+        const clear=extra.slice(1).every((b,i)=>Array.from({length:Math.ceil(distance(extra[i],b)/.12)+1},(_,n)=>n/Math.max(1,Math.ceil(distance(extra[i],b)/.12))).every(t=>this.routeBodyClear(extra[i].map((v,k)=>v+(b[k]-v)*t) as Point,occupied)));
+        if(!clear){reason='Лестница или выход с неё пересекает конструкцию.';continue;}
+        route.points.push(candidate.top,candidate.entry,candidate.position);route.modes.push('climb','walk','walk');route.basis.push(candidate.basis!);
+      }
+      const reserved=reserveWorkerTask(makeWorkerTask(lease,home,candidate.position,contact,targetId,name,route),[...this.workerTasks.values()]);
+      if(reserved)return reserved;
+      reason='Маршрут или рабочая позиция конфликтует с другой назначенной бригадой; свободное окно не найдено.';
+    }
+    return makeWorkerTask(lease,home,home,target.getCenter(new THREE.Vector3()).toArray() as Point,targetId,name,{points:[home],modes:[],basis:[]},reason);
+  }
+  private ensureWorkerPlans(tick:number) {
+    while(this.plannedWorkerLeases<this.workerLeases.length&&this.workerLeases[this.plannedWorkerLeases].start<=tick) {
+      const lease=this.workerLeases[this.plannedWorkerLeases++],people=this.crews.get(lease.resource)![lease.slot];
+      for(let member=0;member<people.length;member++) {
+        const key=`${lease.resource}/${lease.slot}/${lease.operation.id}/${member}`,task=this.planWorker(lease,member);
+        this.workerTasks.set(key,task);
+        if(!task.blocked){const geometry=this.ownGeometry(new THREE.BufferGeometry().setFromPoints(task.route.points.map(p=>new THREE.Vector3(p[0],p[1]+.06,p[2]))));
+          const material=new THREE.LineDashedMaterial({color:0x228b8d,dashSize:.3,gapSize:.2,transparent:true,opacity:.65});this.materials.add(material);
+          const line=new THREE.Line(geometry,material);line.computeLineDistances();line.visible=false;this.group.add(line);this.workerPaths.set(key,line);}
+      }
+    }
+  }
+  private reachableContact(point:Point,contact:Point,tool:WorkerTool) {
+    const lean=Math.max(.05,Math.min(1.2,(1.15-(contact[1]-point[1]))*1.1));
+    const heading=Math.atan2(contact[0]-point[0],contact[2]-point[2]);
+    const shoulder=new THREE.Vector3(-.25,.46,0).applyAxisAngle(new THREE.Vector3(1,0,0),lean);
+    shoulder.y+=.8-lean*.35;
+    shoulder.applyAxisAngle(new THREE.Vector3(0,1,0),heading).add(new THREE.Vector3(point[0],point[1]+.035,point[2]));
+    const reach=tool==='meter'?.08:tool==='trowel'?.15:tool==='hose'?.23:.17;
+    const length=shoulder.distanceTo(new THREE.Vector3(...contact))-reach;
+    return length>=.12&&length<=.56;
+  }
+  private aimWorkingHand(person:Person,contact:Point,tool:WorkerTool,stroke:number) {
+    person.root.updateMatrixWorld(true);
+    const shoulder=person.arms[0].getWorldPosition(new THREE.Vector3());
+    const direction=new THREE.Vector3(...contact).sub(shoulder).normalize();
+    const reach=tool==='meter'?.08:tool==='trowel'?.15:tool==='hose'?.23:.17;
+    const withdraw=tool==='hammer'?Math.max(0,Math.min(1,(stroke+1.5)/1.2))*.11:0;
+    const handWorld=new THREE.Vector3(...contact).addScaledVector(direction,-reach-withdraw);
+    const hand=person.body.worldToLocal(handWorld.clone()),start=person.arms[0].position;
+    const delta=hand.clone().sub(start),length=delta.length(),v=delta.normalize();
+    const perpendicular=new THREE.Vector3(0,-1,0).addScaledVector(v,v.y).normalize();
+    const cosine=Math.min(1,length/.56),sine=Math.sqrt(Math.max(0,1-cosine*cosine));
+    const upper=v.clone().multiplyScalar(cosine).addScaledVector(perpendicular,sine);
+    person.arms[0].quaternion.setFromUnitVectors(new THREE.Vector3(0,-1,0),upper);
+    const lower=hand.clone().sub(start).addScaledVector(upper,-.28).normalize().applyQuaternion(person.arms[0].quaternion.clone().invert());
+    person.forearms[0].quaternion.setFromUnitVectors(new THREE.Vector3(0,-1,0),lower);
+    person.root.updateMatrixWorld(true);
+    const toolObject=person.tools.get(tool)!;
+    const localDirection=direction.applyQuaternion(person.forearms[0].getWorldQuaternion(new THREE.Quaternion()).invert());
+    toolObject.quaternion.setFromUnitVectors(new THREE.Vector3(0,-1,0),localDirection);
   }
   private getCargo(lease: Lease) {
     if (this.cargo.has(lease.operation.id)) return this.cargo.get(lease.operation.id)!;
@@ -579,41 +703,41 @@ export class ConstructionSite {
       truck.gate.scale.y = .08;
       this.states.push({ id: `truck:${slot}`, resource: 'truck', slot, operationId: lease?.operation.id ?? null, active: Boolean(lease), phase: pose.phase, position: pose.position });
     }
+    this.ensureWorkerPlans(tick);
+    for(const path of this.workerPaths.values())path.visible=false;
+    for(const ramp of this.accessRamps)ramp.root.visible=ramp.ready<=tick;
     for (const [resource, slots] of this.crews) for (const [slot, people] of slots.entries()) {
-      const lease = activeLease(this.leases, resource, slot, tick);
-      const workers: NonNullable<SiteActorState['workers']> = [];
-      for (const [member, person] of people.entries()) {
-        // Capacity is a resource limit, not evidence that every idle worker is on site.
-        person.root.visible=Boolean(lease);
-        let point = this.stagingPoint(resource, slot, member), supportId: string | null = null, fallback = false;
-        let motion=workerMotion(undefined,tick,member,false,false);
-        if (lease) {
-          const spot = this.workSpot(lease, member);
-          motion=workerMotion(lease,tick,member,spot.start.some((v,i)=>Math.abs(v-spot.end[i])>.01),spot.fallback);
-          point = spot.end.map((value, index) => value + (spot.start[index] - value) * motion.travel) as Point;
-          supportId = spot.supportId; fallback = spot.fallback;
-          const occupied = new Set([...completed, ...lease.operation.target_ids]);
-          if (!this.clearBody(point, occupied)) { point = this.stagingPoint(resource, slot, member); supportId = null; fallback = true; }
+      const lease=activeLease(this.leases,resource,slot,tick);
+      const workers:NonNullable<SiteActorState['workers']>=[];
+      for(const [member,person] of people.entries()) {
+        const task=lease?this.workerTasks.get(`${resource}/${slot}/${lease.operation.id}/${member}`):undefined;
+        person.root.visible=Boolean(task);person.marker.visible=false;
+        for(const tool of person.tools.values()){tool.visible=false;tool.quaternion.identity();}
+        person.forearms.forEach(arm=>arm.quaternion.identity());
+        if(!task)continue;
+        const path=this.workerPaths.get(`${resource}/${slot}/${lease!.operation.id}/${member}`);if(path)path.visible=true;
+        const pose=sampleWorkerTask(task,tick,member),point=pose.position;
+        person.root.position.set(point[0],point[1]+.035,point[2]);
+        const heading=pose.phase==='climb'?[0,0,1]:pose.direction;
+        person.root.rotation.y=Math.atan2(heading[0],heading[2]);
+        person.body.rotation.x=pose.phase==='work'?Math.max(.05,Math.min(1.2,(1.15-(task.contact[1]-point[1]))*1.1)):0;
+        person.body.position.y=.8-person.body.rotation.x*.35;
+        person.legs.forEach((leg,i)=>leg.rotation.x=pose.walk*(i?-1:1));
+        person.arms.forEach((arm,i)=>{arm.quaternion.identity();arm.rotation.x=pose.phase==='climb'?-2+pose.walk*(i?-1:1):pose.arm*(i&&pose.phase!=='work'?-1:1);});
+        const tool=person.tools.get(task.tool)!;tool.visible=pose.phase!=='blocked';
+        if(pose.phase==='work') {
+          this.aimWorkingHand(person,task.contact,task.tool,pose.arm);
+          person.marker.visible=true;person.marker.position.set(...task.contact);
         }
-        const platform=lease?this.temporary?.platformFor(lease.operation.id,tick):null;
-        if(platform && member<2) {point=[platform.x+(member%2? .30:-.30),platform.y,platform.z];supportId='temporary-access';fallback=false;motion=workerMotion(lease,tick,member,false,false);}
-        // Reserve entire machinery corridors for people as well as moving vehicles.
-        const inLane=[...this.layout.bays.values()].some(b=>point[0]-.4<b.envelope.maxX&&point[0]+.4>b.envelope.minX&&point[2]-.4<b.envelope.maxZ&&point[2]+.4>b.envelope.minZ&&point[1]<3);
-        const occupiedByWorker=this.states.flatMap(s=>s.workers??[]).concat(workers).some(w=>w.visible&&Math.hypot(w.position[0]-point[0],w.position[2]-point[2])<.55&&Math.abs(w.position[1]-point[1])<1.7);
-        if(inLane||occupiedByWorker) {point=this.stagingPoint(resource,slot,member);supportId=null;fallback=true;}
-        if(fallback) {point=this.stagingPoint(resource,slot,member);supportId=null;motion=workerMotion(lease,tick,member,false,true);if(lease)this.warnings.set(`access:${resource}:${slot}`,'Бригада ожидает: свободный доступ к фронту не подтверждён. Время операции в расчётном графике не пересчитано.');}
-        person.root.position.set(point[0], point[1] + .035, point[2]);
-        const target = lease ? this.targetBox(lease).getCenter(new THREE.Vector3()) : new THREE.Vector3(point[0], 0, point[2] - 1);
-        person.root.rotation.y = Math.atan2(target.x - point[0], target.z - point[2]);
-        person.legs.forEach((leg, index) => { leg.rotation.x = motion.walk * (index ? 1 : -1); });
-        person.arms.forEach((arm, index) => { arm.rotation.x = motion.arm * (motion.walk && index ? -1 : 1); });
-        person.body.rotation.x=motion.lean;
-        person.tool.visible=Boolean(lease)&&!fallback&&!/inspect|survey|commission/.test(resource);
-        const surface = this.support(point[0], point[2], point[1] + .05, completed);
-        const supported = Boolean(platform || surface && Math.abs(surface.y - point[1]) < .05);
-        workers.push({ position: point, supportId, supported, fallback, visible:person.root.visible, action:motion.action, arm:motion.arm });
+        if(task.blocked)this.warnings.set(`worker:${resource}:${slot}:${member}`,`${task.targetName}: ${task.blocked} Назначение по графику не подтверждает выполнение работы.`);
+        workers.push({position:point,supportId:task.route.basis.includes('assumed_external_tower_ladder')?'temporary-access':null,
+          supported:!task.blocked,fallback:Boolean(task.blocked),visible:true,action:pose.action,arm:pose.arm,phase:pose.phase,
+          targetId:task.targetId,targetName:task.targetName,tool:task.tool,route:task.route.points,routeBasis:task.route.basis,
+          reason:task.blocked,contact:task.contact,workProgress:pose.progress});
       }
-      this.states.push({ id: `${resource}:${slot}`, resource, slot, operationId: lease?.operation.id ?? null, active: Boolean(lease), phase: lease ? workers.every((worker) => worker.fallback) ? 'сопровождение с площадки' : 'работа у фронта' : 'ожидание назначения', position: people[0].root.position.toArray() as Point, workers });
+      this.states.push({id:`${resource}:${slot}`,resource,slot,operationId:lease?.operation.id??null,active:Boolean(lease),
+        phase:workers.map(w=>w.action).filter((v,i,a)=>a.indexOf(v)===i).join(' / ')||'нет назначения',
+        position:people[0].root.position.toArray() as Point,workers});
     }
     for (const [slot, mixer] of this.mixers.entries()) {
       const lease = activeLease(this.leases, 'mixer', slot, tick);
@@ -663,7 +787,7 @@ export class ConstructionSite {
       excavationProxyVisible: Boolean(this.pit?.visible),
       spatialConflicts:structuredClone(this.spatialIssues),
       layoutBasis:'expandable_visual_site_not_surveyed',
-      truckRoadClearance: this.bounds.min.x - this.roadX, animationVersion: '0.5.0' };
+      truckRoadClearance: this.bounds.min.x - this.roadX, animationVersion: '0.6.0' };
   }
   dispose() {
     this.temporary?.dispose();

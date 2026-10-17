@@ -241,6 +241,16 @@ export class Viewer {
 
   siteState() { return this.site?.snapshot() ?? null; }
 
+  focusWorkerRoute(operationId:string) {
+    const workers=this.site?.states.filter(a=>a.operationId===operationId).flatMap(a=>a.workers??[])??[];
+    const points=workers.flatMap(w=>w.route.length?w.route:[w.position]);if(!points.length)return;
+    const bounds=new THREE.Box3().setFromPoints(points.map(p=>new THREE.Vector3(...p)));bounds.max.y+=1.8;
+    const center=bounds.getCenter(new THREE.Vector3()),size=bounds.getSize(new THREE.Vector3());
+    const distance=Math.max(8,size.length()*1.6)*Math.max(1,1/this.camera.aspect);
+    this.controls.target.copy(center);this.camera.position.copy(center).addScaledVector(new THREE.Vector3(1,.9,1.2).normalize(),distance);
+    this.camera.lookAt(center);this.controls.update();this.invalidate();
+  }
+
   focusTargets(ids: string[], azimuth = .8, elevation = .65) {
     const box = new THREE.Box3();
     for (const id of ids) { const mesh = this.meshes.get(id); if (mesh) box.union(new THREE.Box3().setFromObject(mesh)); }

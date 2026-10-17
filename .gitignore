@@ -63,3 +63,5 @@ Thumbs.db
 *.exe
 *.dll
 *.pdb
+
+integrations/cad-viewer/public/

@@ -12,21 +12,22 @@ const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElem
 let browserModel:ModelPackage|null=null, browserBinary:ArrayBuffer|null=null, browserRun:BrowserRun|null=null;
 const browserUrls:string[]=[];
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
+let workspaceMode: "view"|"simulate" = "view", cadFrame:HTMLIFrameElement|null=null;
 let project = new URL(location.href).searchParams.get('project') || '';
 let requestedModel = new URL(location.href).searchParams.get('model') || '';
 let requestedRun = new URL(location.href).searchParams.get('run') || '';
 let viewer: Viewer | null = null, model: ModelPackage | null = null, run: RunPackage | null = null, clock: PlaybackClock | null = null, frame = 0, last = 0, generation = 0, modelGeneration = 0;
 document.getElementById('app')!.innerHTML = `
-<header><a class="brand" id="memory-link" href="/">У<span>Увязка<small>Графики и моделирование</small></span></a><label>Проект<select id="projects" aria-label="Проект"></select></label><a id="back" href="/">База проекта ↗</a></header>
-<main><section class="intro"><span class="eyebrow">КОНСТРУКТИВНАЯ МОДЕЛЬ И ГРАФ РАБОТ</span><h1>От исходных данных к сценарию строительства</h1><p>Сценарий можно подготовить с агентом или автоматически при загрузке RVT. Здесь — модель, расчётный график и основания работ.</p></section>
+<header><a class="brand" id="memory-link" href="/">У<span>Увязка<small>DWG · RVT · IFC</small></span></a><label>Проект<select id="projects" aria-label="Проект"></select></label><a id="back" href="/">База проекта ↗</a><nav aria-label="Режим работы"><button id="mode-view" aria-pressed="true">Просмотр</button><button id="mode-simulate" aria-pressed="false">Симуляция</button></nav></header>
+<main><section class="intro"><div><span class="eyebrow">ИНЖЕНЕРНЫЙ ВЬЮВЕР</span><h1>Чертежи, модели и ход строительства</h1><p>DWG / DXF · RVT · IFC — локальная обработка в браузере</p></div><span class="local-badge">Файлы остаются у вас</span></section>
 <div class="notice">Расчёт сценария не утверждает инженерные решения. Время непрерывное, без смен и погоды; геометрия по документам может быть условной.</div>
 <div class="error" id="error" role="alert" hidden></div>
 <section class="controls"><label>Рассчитанный сценарий<select id="runs" aria-label="Рассчитанный сценарий"></select></label><label>Пространственная модель<select id="models" aria-label="Пространственная модель"></select></label><a id="csv" hidden>Выгрузить график CSV ↗</a><a id="journal" hidden>Журнал JSON ↗</a></section>
-<div class="metrics" id="metrics"></div>
-<div class="workspace"><section class="scene panel"><div class="panel-head"><h2>Модель и ход работ</h2><span id="geometry-kind"></span></div><div id="canvas"></div><div id="no-model">Модель пока не задана. График можно рассчитывать без геометрии.</div><div class="scene-tools"><label><input id="site" type="checkbox" checked>Площадка</label><label>Сцена<select id="scenes" aria-label="Сцена работ"><option value="">Выберите сцену</option></select></label><button id="cut">Разрез</button><button id="tour" aria-pressed="false">Автопоказ</button><button id="iso">Общий вид</button><button id="top">Сверху</button><button id="fit">Вписать</button><label><input id="show-complete" type="checkbox" checked>Вся модель</label></div><div class="playback"><button id="play" aria-label="Воспроизвести" disabled>▶</button><button id="rewind" aria-label="В начало" disabled>↶</button><input id="time" type="range" min="0" max="1" value="0" aria-label="Виртуальное время" disabled><span id="clock">0 мин</span><label>Скорость<select id="rate" aria-label="Скорость"><option value="10">10×</option><option value="60" selected>60×</option><option value="240">240×</option></select></label></div></section>
+<div class="metrics simulation-only" id="metrics"></div>
+<div class="workspace"><aside class="panel model-tree"><div class="panel-head"><h2>Структура модели</h2></div><div class="tree-tools"><label>Поиск элемента<input id="element-search" type="search" placeholder="Имя, класс или ID"></label><label>Этаж<select id="storey-filter"><option value="">Все этажи</option></select></label><button id="reset-visibility">Показать всё</button></div><div id="element-tree"></div></aside><section class="scene panel"><div class="panel-head"><h2 id="file-title">Модель / чертёж</h2><span id="geometry-kind"></span></div><div id="canvas"></div><div id="cad-host" hidden></div><div id="no-model">Модель пока не задана. График можно рассчитывать без геометрии.</div><div class="scene-tools"><label><input id="site" type="checkbox" checked>Площадка</label><label>Сцена<select id="scenes" aria-label="Сцена работ"><option value="">Выберите сцену</option></select></label><button id="cut">Разрез</button><button id="tour" aria-pressed="false">Автопоказ</button><button id="worker-route">Путь бригады</button><button id="iso">Общий вид</button><button id="top">Сверху</button><button id="fit">Вписать</button><label><input id="show-complete" type="checkbox" checked>Вся модель</label></div><div class="playback simulation-only"><button id="play" aria-label="Воспроизвести" disabled>▶</button><button id="rewind" aria-label="В начало" disabled>↶</button><input id="time" type="range" min="0" max="1" value="0" aria-label="Виртуальное время" disabled><span id="clock">0 мин</span><label>Скорость<select id="rate" aria-label="Скорость"><option value="1">1×</option><option value="10">10×</option><option value="60" selected>60×</option><option value="240">240×</option></select></label></div></section>
 <aside class="panel"><div class="panel-head"><h2 id="inspector-title">Состояние сценария</h2></div><div class="inspector" id="inspector"><p>Выберите сохранённый расчёт или загрузите RVT в локальной панели для автоматической подготовки сценария.</p></div><div class="inspector" id="resources"></div></aside></div>
-<section class="panel"><div class="panel-head"><h2>Расчётный график</h2><span>Зелёная отметка — критическая работа по связям, без ресурсных ограничений</span></div><div class="schedule-wrap"><table><thead><tr><th>Работа</th><th>Начало / конец, мин</th><th>Ход работ</th><th>Основание</th></tr></thead><tbody id="schedule"></tbody></table></div></section>
-<section class="panel notes"><h2>Допущения и покрытие</h2><div id="assumptions">Нет выбранного расчёта.</div><p>Каждый запуск связан с сохранённой ревизией модели и сценария. Расчёт не является фактом строительства.</p></section></main>`;
+<section class="panel schedule-panel simulation-only"><div class="panel-head"><h2>Расчётный график</h2><span>Зелёная отметка — критическая работа по связям, без ресурсных ограничений</span></div><div class="schedule-wrap"><table><thead><tr><th>Работа</th><th>Начало / конец, мин</th><th>Ход работ</th><th>Основание</th></tr></thead><tbody id="schedule"></tbody></table></div></section>
+<section class="panel notes simulation-only"><h2>Допущения и покрытие</h2><div id="assumptions">Нет выбранного расчёта.</div><p>Каждый запуск связан с сохранённой ревизией модели и сценария. Расчёт не является фактом строительства.</p></section></main>`;
 
 function path(route: string) {
   if(DEMO) { const [key,query='']=route.split('?');const q=new URLSearchParams(query);
@@ -50,10 +51,10 @@ try { viewer = new Viewer(el('canvas'), selectElement); } catch(e) { error('3D �
 el('canvas').addEventListener('viewer-error', ((e: CustomEvent<string>) => error(e.detail)) as EventListener);
 async function loadModel(id: string) {
   const token = ++modelGeneration; viewer?.setSite(null);
-  if (!id) { model = null; el('no-model').hidden = false; el('geometry-kind').textContent = 'Без геометрии'; viewer?.show(new Set<string>()); return; }
+  if (!id) { model = null; el('no-model').hidden = false; el('geometry-kind').textContent = 'Без геометрии'; viewer?.show(new Set<string>());renderModelTree();renderState();return; }
   const [pkg, binary] = browserModel?.model_id===id&&browserBinary ? [browserModel,browserBinary] : await Promise.all([api<ModelPackage>('model?model_id=' + encodeURIComponent(id)), fetch(path('geometry.bin?model_id=' + encodeURIComponent(id))).then(async r => {if(!r.ok) throw Error('Не удалось загрузить геометрию');return r.arrayBuffer();})]);
   if (token !== modelGeneration) return;
-  model = pkg; viewer?.load(pkg,binary); viewer?.setSourceColors(Boolean(pkg.federation)); viewer?.show(new Set(pkg.elements.filter(e => e.role === 'element').map(e=>e.id))); el('no-model').hidden = true;
+  model = pkg; el("file-title").textContent=pkg.source.filename; renderModelTree(); viewer?.load(pkg,binary); viewer?.setSourceColors(Boolean(pkg.federation)); viewer?.show(new Set(pkg.elements.filter(e => e.role === 'element').map(e=>e.id))); el('no-model').hidden = true;
   el('geometry-kind').textContent = pkg.source.schema === 'SyntheticDemo' ? 'Синтетическая сводная модель · АР + ОВ' : pkg.source.schema === 'DocumentSpatialModel' ? 'Условная геометрия по документам' : pkg.source.format==='rvt' ? 'RVT → IFC · экспериментальная геометрия' : 'Геометрия IFC'; renderState();
 }
 async function loadRun(id: string) {
@@ -76,6 +77,12 @@ async function loadRun(id: string) {
   const modelId = run.scenario.model_id || ''; el<HTMLSelectElement>('models').value = modelId; await loadModel(modelId); el<HTMLSelectElement>('scenes').innerHTML='<option value="">Выберите сцену</option>'+ (model?workScenes(run,model):[]).map((s,i)=>`<option value="${i}">${esc(s.title)}</option>`).join(''); renderState();
 }
 function renderState() {
+  if(workspaceMode==='view') {
+    viewer?.setSite(null);viewer?.setConstruction(null);el('resources').innerHTML='';
+    el('inspector-title').textContent=cadFrame?'Чертёж':'Свойства модели';
+    el('inspector').innerHTML=cadFrame?'<p>DWG / DXF: просмотр чертежа, масштабирование и слои.</p><p>Для строительной симуляции нужна модель с элементами и объёмами. Чертёж сам по себе их не подтверждает.</p>':model?`<p><strong>${esc(model.source.filename)}</strong></p><dl><dt>Элементов / с геометрией</dt><dd>${model.elements.length} / ${model.statistics.meshes}</dd><dt>Этажей</dt><dd>${model.storeys.length}</dd><dt>Источник</dt><dd>${esc(model.source.schema)}</dd></dl><p>Выберите элемент на модели или в структуре, чтобы увидеть свойства и количества.</p>`:'<p>Откройте DWG, DXF, RVT или IFC.</p>';
+    return;
+  }
   el('inspector-title').textContent = 'Состояние сценария';
   if (!run || !clock) {viewer?.setConstruction(null);el('inspector').innerHTML='<p>Модель открыта. Подготовьте сценарий кнопкой «Рассчитать» или с помощью агента.</p>'; return;}
   const tick = clock.time, state = projectState(run,tick);
@@ -83,12 +90,13 @@ function renderState() {
   if(model?.model_id===run.scenario.model_id) viewer?.setSite(el<HTMLInputElement>('site').checked?run:null,tick);
   el('clock').textContent = Math.floor(tick)+' мин'; el<HTMLInputElement>('time').value = String(tick);
   el('play').textContent=clock.playing?'Ⅱ':'▶'; el('play').setAttribute('aria-label',clock.playing?'Пауза':'Воспроизвести');
-  el('inspector').innerHTML=`<p><strong>${state.completed} / ${run.scenario.operations.length}</strong> работ завершено</p><h3>В работе</h3>${state.active.map(o=>`<p>${esc(o.name)}</p>`).join('')||'<p>Нет активных работ</p>'}<h3>Ожидают ресурсы</h3>${state.waiting.map(o=>`<p>${esc(o.name)}</p>`).join('')||'<p>Нет ожидающих работ</p>'}`;
+  el('inspector').innerHTML=`<p><strong>${state.completed} / ${run.scenario.operations.length}</strong> работ завершено по графику</p><h3>Назначения по графику</h3>${state.active.map(o=>`<p>${esc(o.name)}</p>`).join('')||'<p>Нет активных работ</p>'}<h3>Ожидают ресурсы</h3>${state.waiting.map(o=>`<p>${esc(o.name)}</p>`).join('')||'<p>Нет ожидающих работ</p>'}`;
   el('resources').innerHTML='<h3>Ресурсы</h3>'+run.scenario.resources.map(r=>`<label>${esc(r.name)}<strong>${state.resources.get(r.id)||0} / ${r.capacity}</strong><progress value="${state.resources.get(r.id)||0}" max="${r.capacity}"></progress></label>`).join('');
   const site=el<HTMLInputElement>('site').checked?viewer?.siteState():null;
   if(site) {
-    const working=site.actors.flatMap(a=>a.workers??[]).filter(w=>!w.fallback&&w.action!=='ожидание назначения');
-    el('inspector').innerHTML+=`<h3>На площадке</h3><p>Работают у фронта: ${working.length}. Ожидают доступа: ${site.actors.flatMap(a=>a.workers??[]).filter(w=>w.visible&&w.fallback).length}.</p><p>Показаны назначенные бригады. Свободный резерв учтён в ресурсах.</p>`;
+    const workers=site.actors.flatMap(a=>a.workers??[]).filter(w=>w.visible);
+    const count=(phases:string[])=>workers.filter(w=>phases.includes(w.phase)).length;
+    el('inspector').innerHTML+=`<h3>Действия работников</h3><p>Назначено: ${workers.length} · Подход / подъём: ${count(['approach','climb'])} · Работа у элемента: ${count(['work'])} · Уход: ${count(['depart'])} · Ожидание / блокировка: ${count(['waiting','blocked'])}.</p><p>Бирюзовая линия — маршрут. Жёлтая точка — место действия на элементе. Это проверка геометрии сценария, не подтверждение выполненных работ.</p><details><summary>Задания и доступ</summary>${workers.map(w=>`<p><strong>${esc(w.action)}</strong> — ${esc(w.targetName)}${w.targetId?' (#'+esc(w.targetId)+')':''}${w.reason?'<br>'+esc(w.reason):''}${w.routeBasis.some(b=>b.includes('assumed')||b.includes('proposed'))?'<br>Временный доступ — допущение сценария.':''}</p>`).join('')}</details>`;
     if(site.warnings.length)el('inspector').innerHTML+=`<details open><summary>Требуют решения: ${site.warnings.length}</summary>${site.warnings.map(w=>`<p>${esc(w.message)}</p>`).join('')}</details>`;
   }
   document.querySelectorAll<HTMLElement>('[data-operation]').forEach(row=>row.dataset.state=state.states.get(row.dataset.operation!)||'pending');
@@ -119,6 +127,15 @@ el('play').addEventListener('click',()=>{touring=false;el('tour').setAttribute('
 el('rewind').addEventListener('click',()=>{touring=false;el('tour').setAttribute('aria-pressed','false');if(clock){clock.playing=false;clock.seek(0);renderState();}});
 el('time').addEventListener('input',()=>{touring=false;el('tour').setAttribute('aria-pressed','false');if(clock){clock.playing=false;clock.seek(Number(el<HTMLInputElement>('time').value));renderState();}});
 el('rate').addEventListener('change',()=>{if(clock)clock.rate=Number(el<HTMLSelectElement>('rate').value);});
+el('worker-route').addEventListener('click',()=>{
+  if(!clock||!run||!model)return;
+  const selected=workScenes(run,model)[Number(el<HTMLSelectElement>('scenes').value)];
+  const actors=viewer?.siteState()?.actors.filter(a=>a.active&&(a.workers?.length??0)>0)??[];
+  const actor=actors.find(a=>a.operationId===selected?.operationId)??actors[0];if(!actor?.operationId)return;
+  touring=false;el('tour').setAttribute('aria-pressed','false');clock.seek(run.operation_states[actor.operationId].start);
+  clock.rate=10;el<HTMLSelectElement>('rate').value='10';clock.playing=true;last=0;cancelAnimationFrame(frame);
+  renderState();viewer?.focusWorkerRoute(actor.operationId);frame=requestAnimationFrame(animate);
+});
 el('show-complete').addEventListener('change',renderState);
 el('iso').addEventListener('click',()=>viewer?.fit('iso'));el('top').addEventListener('click',()=>viewer?.fit('top'));el('fit').addEventListener('click',()=>viewer?.fit());
 document.addEventListener('visibilitychange',()=>{last=0;});
@@ -126,7 +143,47 @@ el('site').addEventListener('change',()=>{renderState();viewer?.fit();});
 el('scenes').addEventListener('change',()=>{if(!run||!model||!clock)return;const i=el<HTMLSelectElement>('scenes').value;if(i==='')return;const s=workScenes(run,model)[Number(i)];touring=false;el('tour').setAttribute('aria-pressed','false');clock.playing=false;clock.seek((s.start+s.end)/2);renderState();viewer?.cutaway(s.cut??null);if(s.targetIds.length)viewer?.focusTargets(s.targetIds);else viewer?.fit();if(s.reference){viewer?.setConstruction(null);viewer?.setSite(null);}});
 let clipped=false;
 el('cut').addEventListener('click',()=>{clipped=!clipped;const bounds=viewer?.modelHeight();viewer?.cutaway(clipped&&bounds?(bounds.min+bounds.max)/2:null);el('cut').setAttribute('aria-pressed',String(clipped));});
-if(DEMO){document.querySelector('.intro p')!.textContent='Откройте свой IFC или RVT, рассчитайте сценарий на своём устройстве и посмотрите ход работ в 3D.';const downloads=document.createElement('a');downloads.href='./downloads/';downloads.textContent='Скачать Увязку · RVT без Revit ↗';el('back').before(downloads);document.body.classList.add('public-demo');document.querySelector('h1')!.textContent='График строительства в 3D';el('memory-link').innerHTML='У<span>Увязка<small>Публичное демо · IFCCS 0.5</small></span>';el<HTMLAnchorElement>('memory-link').href='https://github.com/proovcme/uvyazka';document.querySelector('.notice')!.textContent='Синтетическая учебная модель. Сроки и технологии предварительные. «Автопоказ» проведёт по сценам и сократит ожидания при просмотре. Свой файл обрабатывается в браузере и не отправляется на сервер.';}
+document.body.classList.add('viewer-app');document.body.dataset.mode='view';
+if(DEMO){const downloads=document.createElement('a');downloads.href='./downloads/';downloads.textContent='Скачать / исходники';el('back').before(downloads);el('back').hidden=true;document.body.classList.add('public-demo');el<HTMLAnchorElement>('memory-link').href='https://github.com/proovcme/uvyazka';document.querySelector('.notice')!.textContent='Учебная модель. Откройте свой файл для просмотра или перейдите в «Симуляцию», чтобы изучить сценарий строительства.';}
+function setMode(mode:'view'|'simulate') {
+  if(mode==='simulate'&&cadFrame){error('DWG открыт как чертёж. Для симуляции загрузите IFC или RVT с геометрией и рассчитайте сценарий.');return;}
+  workspaceMode=mode;document.body.dataset.mode=mode;
+  el('mode-view').setAttribute('aria-pressed',String(mode==='view'));el('mode-simulate').setAttribute('aria-pressed',String(mode==='simulate'));
+  if(clock)clock.playing=false;touring=false;last=0;cancelAnimationFrame(frame);el('tour').setAttribute('aria-pressed','false');
+  if(mode==='simulate')viewer?.show(new Set(model?.elements.filter(e=>e.role==='element').map(e=>e.id)??[]));
+  renderState();if(mode==='view'){viewer?.show(new Set(model?.elements.filter(e=>e.role==='element').map(e=>e.id)??[]));viewer?.fit();}
+}
+el('mode-view').onclick=()=>setMode('view');el('mode-simulate').onclick=()=>setMode('simulate');
+function renderModelTree() {
+  const storey=el<HTMLSelectElement>('storey-filter');storey.replaceChildren(new Option('Все этажи',''),...(model?.storeys??[]).map(s=>new Option(s.name,s.id)));
+  renderElements();
+}
+function renderElements() {
+  const query=el<HTMLInputElement>('element-search').value.toLowerCase(),floor=el<HTMLSelectElement>('storey-filter').value;
+  const items=(model?.elements??[]).filter(e=>e.role==='element'&&(!floor||e.storey_id===floor)&&(`${e.name} ${e.class} ${e.id}`).toLowerCase().includes(query));
+  el('element-tree').innerHTML=`<p>${items.length} элементов${items.length>300?' · первые 300':''}</p>`+items.slice(0,300).map(e=>`<button class="element-item" data-id="${esc(e.id)}"><strong>${esc(e.name||e.id)}</strong><small>${esc(e.class)} · ${esc(e.id)}</small></button>`).join('');
+}
+el('element-search').oninput=renderElements;el('storey-filter').onchange=()=>{renderElements();if(workspaceMode==='view'){const floor=el<HTMLSelectElement>('storey-filter').value;const ids=(model?.elements??[]).filter(e=>e.role==='element'&&(!floor||e.storey_id===floor)).map(e=>e.id);viewer?.show(new Set(ids));viewer?.focusTargets(ids);}};
+el('reset-visibility').onclick=()=>{el<HTMLSelectElement>('storey-filter').value='';el<HTMLInputElement>('element-search').value='';renderElements();viewer?.show(new Set(model?.elements.filter(e=>e.role==='element').map(e=>e.id)??[]));viewer?.fit();};
+el('element-tree').onclick=event=>{const id=(event.target as HTMLElement).closest<HTMLElement>('[data-id]')?.dataset.id;if(id){selectElement(id);viewer?.focusTargets([id]);}};
+let cadPending:((reason?:string)=>void)|null=null;
+function closeCad(){cadPending?.('Загрузка отменена');cadPending=null;cadFrame?.remove();cadFrame=null;el('cad-host').hidden=true;el('canvas').hidden=false;document.body.classList.remove('cad-open');el<HTMLButtonElement>('mode-simulate').disabled=false;}
+async function openCad(file:File) {
+  closeCad();setMode('view');el('canvas').hidden=true;el('cad-host').hidden=false;el('no-model').hidden=true;document.body.classList.add('cad-open');
+  el<HTMLButtonElement>('mode-simulate').disabled=true;el('file-title').textContent=file.name;el('geometry-kind').textContent='DWG / DXF · чертёж';
+  const iframe=document.createElement('iframe');iframe.title='Просмотр DWG / DXF';iframe.src='./cad/';cadFrame=iframe;el('cad-host').append(iframe);renderState();
+  await new Promise<void>((resolve,reject)=>{
+    const job=crypto.randomUUID();const finish=(reason?:string)=>{clearTimeout(timer);removeEventListener('message',receive);cadPending=null;reason?reject(Error(reason)):resolve();};
+    const receive=(event:MessageEvent)=>{if(event.origin!==location.origin||event.source!==iframe.contentWindow||event.data?.channel!=='uvyazka-cad')return;
+      if(event.data.kind==='ready')iframe.contentWindow?.postMessage({channel:'uvyazka-cad',kind:'open',job,file},location.origin);
+      if(event.data.job!==job)return;
+      if(event.data.kind==='error')finish(event.data.message);
+      if(event.data.kind==='opened'){el('element-tree').textContent=`Слои: ${event.data.layers.length}. Прочитано объектов модели: ${event.data.entityCount}. ${event.data.entityCount?"Переключайте слои над чертежом.":"Геометрия модели не получена; возможен неподдерживаемый состав DWG."}`;finish();}
+    };
+    const timer=setTimeout(()=>finish('Движок DWG не ответил за 120 секунд. Попробуйте меньший файл.'),120000);cadPending=finish;addEventListener('message',receive);
+  });
+}
+
 function browserDownload(kind:string,data:RunPackage) {
   let text=JSON.stringify(data,null,2),mime='application/json';
   if(kind==='csv'){
@@ -136,8 +193,9 @@ function browserDownload(kind:string,data:RunPackage) {
   const url=URL.createObjectURL(new Blob([text],{type:mime}));browserUrls.push(url);el<HTMLAnchorElement>(kind).download=kind==='csv'?'uvyazka-schedule.csv':'uvyazka-run.json';return url;
 }
 if(DEMO)browserPanel({
-  reset:()=>{++generation;++modelGeneration;project='browser-local';el<HTMLSelectElement>('projects').innerHTML='<option>Локальный файл в браузере</option>';el<HTMLSelectElement>('runs').innerHTML='<option>Сценарий не рассчитан</option>';el<HTMLSelectElement>('models').innerHTML='<option>Чтение модели</option>';el<HTMLSelectElement>('scenes').innerHTML='<option value="">Выберите сцену</option>';document.querySelector('.notice')!.textContent='Свой файл обрабатывается в браузере и не отправляется на сервер. Сценарий предварительный: технология, выработка и связи требуют проверки.';browserModel=null;browserBinary=null;browserRun=null;for(const url of browserUrls)URL.revokeObjectURL(url);browserUrls.length=0;for(const key of ['projects','models','runs'])el<HTMLSelectElement>(key).disabled=true;void loadRun('');void loadModel('');},
+  drawing:openCad, cancelDrawing:closeCad,
+  reset:()=>{closeCad();setMode('view');el('error').hidden=true;el('element-tree').innerHTML='';++generation;++modelGeneration;project='browser-local';el<HTMLSelectElement>('projects').innerHTML='<option>Локальный файл в браузере</option>';el<HTMLSelectElement>('runs').innerHTML='<option>Сценарий не рассчитан</option>';el<HTMLSelectElement>('models').innerHTML='<option>Чтение модели</option>';el<HTMLSelectElement>('scenes').innerHTML='<option value="">Выберите сцену</option>';document.querySelector('.notice')!.textContent='Свой файл обрабатывается в браузере и не отправляется на сервер. Сценарий предварительный: технология, выработка и связи требуют проверки.';browserModel=null;browserBinary=null;browserRun=null;for(const url of browserUrls)URL.revokeObjectURL(url);browserUrls.length=0;for(const key of ['projects','models','runs'])el<HTMLSelectElement>(key).disabled=true;void loadRun('');void loadModel('');},
   model:(pkg,binary)=>{browserModel=pkg;browserBinary=binary;el<HTMLSelectElement>('models').innerHTML=`<option value="${esc(pkg.model_id)}">${esc(pkg.source.filename)}</option>`;void loadModel(pkg.model_id).catch(error);},
-  run:(data)=>{browserRun=data;for(const url of browserUrls)URL.revokeObjectURL(url);browserUrls.length=0;el<HTMLSelectElement>('runs').innerHTML=`<option value="${esc(data.run_id)}">${esc(data.scenario.name||'Браузерный расчёт')}</option>`;void loadRun(data.run_id).catch(error);}
+  run:(data)=>{setMode('simulate');browserRun=data;for(const url of browserUrls)URL.revokeObjectURL(url);browserUrls.length=0;el<HTMLSelectElement>('runs').innerHTML=`<option value="${esc(data.run_id)}">${esc(data.scenario.name||'Браузерный расчёт')}</option>`;void loadRun(data.run_id).catch(error);}
 });
-void (async()=>{try{const r=await fetch(DEMO?'./demo/projects.json':'/api/projects');const d=await r.json();el<HTMLSelectElement>('projects').innerHTML=d.projects.map((p:{id:string;name:string})=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');project=project||d.default_project;if(project){el<HTMLSelectElement>('projects').value=project;await loadProject(project);}else error('Сначала зарегистрируйте проект или запустите uvyazka demo.');}catch(e){error(e);}})();
+void (async()=>{try{const r=await fetch(DEMO?'./demo/projects.json':'/api/projects');const d=await r.json();if(project==='browser-local')return;el<HTMLSelectElement>('projects').innerHTML=d.projects.map((p:{id:string;name:string})=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');project=project||d.default_project;if(project){el<HTMLSelectElement>('projects').value=project;await loadProject(project);}else error('Сначала зарегистрируйте проект или запустите uvyazka demo.');}catch(e){error(e);}})();

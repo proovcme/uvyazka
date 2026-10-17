@@ -71,7 +71,7 @@ export class PlaybackClock {
   constructor(duration: number) { this.duration=duration; }
   seek(tick: number) { this.time = Math.min(this.duration, Math.max(0, tick)); }
   advance(realSeconds: number) {
-    if (this.playing) this.seek(this.time + Math.max(0, realSeconds) * this.rate);
+    if (this.playing) this.seek(this.time + Math.max(0, realSeconds) * this.rate / 60);
     if (this.time >= this.duration) this.playing = false;
     return this.time;
   }

@@ -2,14 +2,18 @@
 
 [Открыть демо](https://locia.work/uvyazka/).
 
-Это отдельная сборка того же вьювера. Можно открыть собственный IFC/RVT или
+Это отдельная сборка того же вьювера. Можно открыть собственный DWG/DXF/IFC/RVT или
 готовый учебный пример. Rust WASM конвертирует RVT с сохранёнными сетками,
 web-ifc читает модель, Pyodide выполняет тот же Python-планировщик и движок
 симуляции. Тяжёлые операции идут в workers с отменой. VPS раздаёт статические
 файлы: пользовательская модель на сервер не отправляется. Revit, MCP,
 ИИ-клиент и серверная база для этого пути не нужны.
 
-Доступны выбор базового/усиленного сценария, множитель доступности ресурсов,
+По умолчанию открыт «Просмотр»; расчёт и проигрывание находятся в «Симуляции».
+DWG/DXF открываются отдельным CAD-приложением со слоями; расчёт по линиям не выполняется.
+[Покрытие форматов и проверки](VIEWER.md).
+
+Для IFC/RVT доступны выбор базового/усиленного сценария, множитель доступности ресурсов,
 выдержка бетона, повторный расчёт, проигрывание, CSV, журнал JSON, диагностика
 и скачивание IFC из RVT. После первого расчёта повторный расчёт работает без сети
 в той же вкладке. Перезагрузка страницы или отмена worker потребует загрузить
@@ -39,6 +43,7 @@ uv sync --extra all --extra authoring
 cd web
 npm ci
 cd ..
+npm --prefix integrations/cad-viewer ci
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.129 --locked
 uv run python tools/build_browser_runtime.py
@@ -50,7 +55,7 @@ uv run python tools/build_demo_site.py
 `uv run python -m http.server 8774 --directory .uvyazka-build/public-site`
 и откройте `http://127.0.0.1:8774/uvyazka/`.
 В каталог публикации должны попасть только index.html, assets,
-THREE-LICENSE.txt, demo, runtime, downloads и release.json; служебный соседний
+THREE-LICENSE.txt, demo, cad, runtime, downloads и release.json; служебный соседний
 synthetic-cache не публикуется. Страница downloads объясняет установку
 локального инструмента и ограничения публичного демо.
 
@@ -74,3 +79,8 @@ style-src 'self' 'unsafe-inline' для вычисляемых полос гра
 На locia.work демо развёрнуто отдельно от основного приложения сайта.
 Для локальной проверки с такими же заголовками используйте
 `uv run python tools/serve_browser_demo.py` (порт 8779).
+
+Для `/uvyazka/cad/*` нужен отдельный маршрут с `frame-ancestors 'self'`
+и `X-Frame-Options: SAMEORIGIN`; корневая страница сохраняет запрет встраивания.
+Исходники CAD и лицензии публикуются в `cad/sources.html`. Обычный unsafe-eval
+не разрешается: сборка проверяет и исправляет две фабрики Emscripten.

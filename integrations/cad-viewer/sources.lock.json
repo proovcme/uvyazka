@@ -1,0 +1,32 @@
+[
+  {
+    "name": "NotoSans.ttf",
+    "url": "https://raw.githubusercontent.com/notofonts/noto-fonts/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf",
+    "sha256": "b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5"
+  },
+  {
+    "name": "OFL.txt",
+    "url": "https://raw.githubusercontent.com/notofonts/noto-fonts/main/LICENSE",
+    "sha256": "0dab92d0544f7b233403f14b84a663bdbfa746982eda629e7f4f9ffe1b036feb"
+  },
+  {
+    "name": "cad-viewer-source.tar.gz",
+    "url": "https://codeload.github.com/mlightcad/cad-viewer/tar.gz/300a41537cd55ea86e1b376e1b287561776138cf",
+    "sha256": "5469206843beb963dbc7f001f11fcc53a672ec53e0933227690d7b7ca680bf87"
+  },
+  {
+    "name": "realdwg-web-source.tar.gz",
+    "url": "https://codeload.github.com/mlightcad/realdwg-web/tar.gz/708755c79624005ee2a68366a2ebe9120cd423dc",
+    "sha256": "b650c1c9fa85a145c0d5874517bd11a7081b955a39d413f3b3bbc38cc4b824b7"
+  },
+  {
+    "name": "libredwg-web-source.tar.gz",
+    "url": "https://codeload.github.com/mlightcad/libredwg-web/tar.gz/53137eeb1fe54e400bfd77a7ad8e21bc373cc998",
+    "sha256": "0f48a8234cfa4e4bf8a3f88beae96ccece45bcbb0c6c8a3ef0e620557f5cc279"
+  },
+  {
+    "name": "jsmn-source.tar.gz",
+    "url": "https://codeload.github.com/zserge/jsmn/tar.gz/85695f3d5903b1cd5b4030efe50db3b4f5f3c928",
+    "sha256": "715610f7fdbaf6aa2d90b1f3d10cc6b9e89cfb58eab74fb4c057b12fd913f993"
+  }
+]

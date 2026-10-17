@@ -1,8 +1,12 @@
 include plugin.json mcp.json server_entry.py
 include AGENTS.md
 include uv.lock
-recursive-include tools *.py *.ps1 *.json
+recursive-include tools *.py *.ps1 *.json *.mjs
 recursive-include integrations *.rs *.toml *.lock *.md *.json *.csv
+include integrations/cad-viewer/*.ts integrations/cad-viewer/*.mjs integrations/cad-viewer/*.html integrations/cad-viewer/*.css integrations/cad-viewer/LICENSE
+prune integrations/cad-viewer/node_modules
+prune integrations/cad-viewer/public
+prune integrations/cad-viewer/dist
 include integrations/rvt-rs/LICENSE integrations/rvt-rs/NOTICE
 recursive-include integrations/browser-runtime *.txt
 prune integrations/rvt-rs/target

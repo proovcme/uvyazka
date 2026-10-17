@@ -19,6 +19,7 @@ test('actual machine meshes remain disjoint at simultaneous work and after backw
     let blocked=0;
     for(const tick of [0,5,12,25,42,55,70,85,96,100,55]) {
       site.update(tick);
+      for(const actor of site.snapshot().actors)for(const worker of actor.workers??[])assert.equal(worker.visible,actor.active,'only assigned workers should be rendered');
       blocked+=site.snapshot().spatialConflicts.length;
       assert.deepEqual(site.equipmentContacts(new Set()),[],`capacity ${count}, tick ${tick}`);
     }

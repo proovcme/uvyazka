@@ -16,7 +16,7 @@ interface Truck { root: THREE.Group; wheels: THREE.Mesh[]; load: THREE.Group; ga
 interface WorkSpot { start: Point; end: Point; supportId: string | null; fallback: boolean }
 export interface SiteActorState {
   id: string; resource: string; slot: number; operationId: string | null; active: boolean; phase: string;
-  position: Point; workers?: { position: Point; supportId: string | null; supported: boolean; fallback: boolean; action: string; arm: number }[];
+  position: Point; workers?: { position: Point; supportId: string | null; supported: boolean; fallback: boolean; visible: boolean; action: string; arm: number }[];
   equipment?: { type: string; boomLength: number; boomAngle: number; deployed: number; tip: Point; loadMassKg: null; status: string };
 }
 
@@ -583,6 +583,8 @@ export class ConstructionSite {
       const lease = activeLease(this.leases, resource, slot, tick);
       const workers: NonNullable<SiteActorState['workers']> = [];
       for (const [member, person] of people.entries()) {
+        // Capacity is a resource limit, not evidence that every idle worker is on site.
+        person.root.visible=Boolean(lease);
         let point = this.stagingPoint(resource, slot, member), supportId: string | null = null, fallback = false;
         let motion=workerMotion(undefined,tick,member,false,false);
         if (lease) {
@@ -597,7 +599,7 @@ export class ConstructionSite {
         if(platform && member<2) {point=[platform.x+(member%2? .30:-.30),platform.y,platform.z];supportId='temporary-access';fallback=false;motion=workerMotion(lease,tick,member,false,false);}
         // Reserve entire machinery corridors for people as well as moving vehicles.
         const inLane=[...this.layout.bays.values()].some(b=>point[0]-.4<b.envelope.maxX&&point[0]+.4>b.envelope.minX&&point[2]-.4<b.envelope.maxZ&&point[2]+.4>b.envelope.minZ&&point[1]<3);
-        const occupiedByWorker=this.states.flatMap(s=>s.workers??[]).concat(workers).some(w=>Math.hypot(w.position[0]-point[0],w.position[2]-point[2])<.55&&Math.abs(w.position[1]-point[1])<1.7);
+        const occupiedByWorker=this.states.flatMap(s=>s.workers??[]).concat(workers).some(w=>w.visible&&Math.hypot(w.position[0]-point[0],w.position[2]-point[2])<.55&&Math.abs(w.position[1]-point[1])<1.7);
         if(inLane||occupiedByWorker) {point=this.stagingPoint(resource,slot,member);supportId=null;fallback=true;}
         if(fallback) {point=this.stagingPoint(resource,slot,member);supportId=null;motion=workerMotion(lease,tick,member,false,true);if(lease)this.warnings.set(`access:${resource}:${slot}`,'Бригада ожидает: свободный доступ к фронту не подтверждён. Время операции в расчётном графике не пересчитано.');}
         person.root.position.set(point[0], point[1] + .035, point[2]);
@@ -609,7 +611,7 @@ export class ConstructionSite {
         person.tool.visible=Boolean(lease)&&!fallback&&!/inspect|survey|commission/.test(resource);
         const surface = this.support(point[0], point[2], point[1] + .05, completed);
         const supported = Boolean(platform || surface && Math.abs(surface.y - point[1]) < .05);
-        workers.push({ position: point, supportId, supported, fallback, action:motion.action, arm:motion.arm });
+        workers.push({ position: point, supportId, supported, fallback, visible:person.root.visible, action:motion.action, arm:motion.arm });
       }
       this.states.push({ id: `${resource}:${slot}`, resource, slot, operationId: lease?.operation.id ?? null, active: Boolean(lease), phase: lease ? workers.every((worker) => worker.fallback) ? 'сопровождение с площадки' : 'работа у фронта' : 'ожидание назначения', position: people[0].root.position.toArray() as Point, workers });
     }

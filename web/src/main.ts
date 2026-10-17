@@ -88,7 +88,7 @@ function renderState() {
   const site=el<HTMLInputElement>('site').checked?viewer?.siteState():null;
   if(site) {
     const working=site.actors.flatMap(a=>a.workers??[]).filter(w=>!w.fallback&&w.action!=='ожидание назначения');
-    el('inspector').innerHTML+=`<h3>На площадке</h3><p>Работают у фронта: ${working.length}. Ожидают доступа: ${site.actors.flatMap(a=>a.workers??[]).filter(w=>w.fallback).length}.</p>`;
+    el('inspector').innerHTML+=`<h3>На площадке</h3><p>Работают у фронта: ${working.length}. Ожидают доступа: ${site.actors.flatMap(a=>a.workers??[]).filter(w=>w.visible&&w.fallback).length}.</p><p>Показаны назначенные бригады. Свободный резерв учтён в ресурсах.</p>`;
     if(site.warnings.length)el('inspector').innerHTML+=`<details open><summary>Требуют решения: ${site.warnings.length}</summary>${site.warnings.map(w=>`<p>${esc(w.message)}</p>`).join('')}</details>`;
   }
   document.querySelectorAll<HTMLElement>('[data-operation]').forEach(row=>row.dataset.state=state.states.get(row.dataset.operation!)||'pending');

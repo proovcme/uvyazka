@@ -55,7 +55,7 @@
   },
   {
     "name": "wall-window.ifc",
-    "url": "https://raw.githubusercontent.com/buildingsmart-community/Community-Sample-Test-Files/7ddf57a201f88a0c213d5322b02ed15e94a60a40/IFC%204.0.2.1%20%28IFC%204%29/ISO%20Spec%20archive/wall-with-opening-and-window.ifc",
+    "url": "https://media.githubusercontent.com/media/buildingsmart-community/Community-Sample-Test-Files/7ddf57a201f88a0c213d5322b02ed15e94a60a40/IFC%204.0.2.1%20%28IFC%204%29/ISO%20Spec%20archive/wall-with-opening-and-window.ifc",
     "sha256": "f1cfe45b18968f2edb925549219f3d62331246c84c48770b20cfd0ce66307351",
     "size": 12586
   }

@@ -1498,7 +1498,7 @@ wheels = [
 
 [[package]]
 name = "uvyazka"
-version = "0.3.0a8"
+version = "0.3.0a9"
 source = { editable = "." }
 
 [package.optional-dependencies]

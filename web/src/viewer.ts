@@ -22,6 +22,7 @@ export class Viewer {
   private ground?: THREE.Mesh;
   private selected?: string;
   private highlight?: THREE.Box3Helper;
+  private edges = new Map<string, THREE.LineSegments<THREE.EdgesGeometry, THREE.LineBasicMaterial>>();
   private xray = false;
   private sourceColors = false;
   private construction: Map<string, ConstructionState> | null = null;
@@ -39,10 +40,10 @@ export class Viewer {
     this.onPick = onPick;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setClearColor(0xe9edeb, 0);
+    this.renderer.setClearColor(0x12181d, 0);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.3;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.localClippingEnabled = true;
@@ -57,7 +58,7 @@ export class Viewer {
     this.controls.addEventListener('change', this.invalidate);
     this.root.rotation.x = -Math.PI / 2; // IFC Z-up -> Three.js Y-up, once.
     this.scene.add(this.root);
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x879389, 2.1));
+    this.scene.add(new THREE.HemisphereLight(0xe7edf4, 0x53606d, 2.1));
     const sun = new THREE.DirectionalLight(0xfff5df, 3);
     sun.position.set(18, 28, 18);
     sun.castShadow = true;
@@ -108,6 +109,8 @@ export class Viewer {
     this.clearModel();
     this.model = pkg;
     this.currentElements = pkg.elements;
+    // Bound edge extraction work on large imports; meshes beyond the budget retain solid geometry.
+    let edgeBudget = 600_000;
     for (const element of pkg.elements) {
       const data = element.mesh;
       if (!data) continue;
@@ -132,6 +135,11 @@ export class Viewer {
       mesh.castShadow = element.role === 'element';
       mesh.receiveShadow = true;
       mesh.visible = element.role === 'element';
+      if(element.role==='element' && data.index_count<=Math.min(edgeBudget,150_000)) {
+        const edges=new THREE.LineSegments(new THREE.EdgesGeometry(geometry,25),new THREE.LineBasicMaterial({color:0x586877,transparent:true,opacity:.25,depthWrite:false}));
+        mesh.add(edges);this.edges.set(element.id,edges);edgeBudget-=data.index_count;
+        materials.forEach(material=>{material.polygonOffset=true;material.polygonOffsetFactor=1;material.polygonOffsetUnits=1;});
+      }
       this.root.add(mesh);
       this.meshes.set(element.id, mesh);
     }
@@ -141,12 +149,12 @@ export class Viewer {
     this.bounds.setFromPoints([convert(pkg.coordinate_system.bounds_min_m), convert(pkg.coordinate_system.bounds_max_m)]);
     const size = this.bounds.getSize(new THREE.Vector3());
     const span = Math.max(size.x, size.z, 5);
-    this.grid = new THREE.GridHelper(Math.ceil(span * 2.4), 28, 0xb8c2bd, 0xd2dad4);
-    this.grid.position.y = -0.04;
+    this.grid = new THREE.GridHelper(Math.ceil(span * 2.4), 28, 0x37434d, 0x253039);
+    this.grid.position.set(this.bounds.getCenter(new THREE.Vector3()).x,this.bounds.min.y-.04,this.bounds.getCenter(new THREE.Vector3()).z);
     this.scene.add(this.grid);
-    this.ground = new THREE.Mesh(new THREE.PlaneGeometry(span * 5, span * 5), new THREE.ShadowMaterial({ color: 0x576852, opacity: 0.17 }));
+    this.ground = new THREE.Mesh(new THREE.PlaneGeometry(span * 5, span * 5), new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.3 }));
     this.ground.rotation.x = -Math.PI / 2;
-    this.ground.position.y = -0.025;
+    this.ground.position.copy(this.grid.position);this.ground.position.y=this.bounds.min.y-.025;
     this.ground.receiveShadow = true;
     this.scene.add(this.ground);
     const sun = this.scene.children.find((item) => item instanceof THREE.DirectionalLight && item.castShadow) as THREE.DirectionalLight;
@@ -210,10 +218,10 @@ export class Viewer {
     }
     const mesh = id ? this.meshes.get(id) : undefined;
     if (mesh) {
-      this.highlight = new THREE.Box3Helper(new THREE.Box3().setFromObject(mesh), new THREE.Color(0xc78012));
+      this.highlight = new THREE.Box3Helper(new THREE.Box3().setFromObject(mesh), new THREE.Color(0xefb65e));
       this.scene.add(this.highlight);
     }
-    this.invalidate();
+    this.refreshPresentation();
   }
 
   setXray(active: boolean, elements: BimElement[]) {
@@ -268,6 +276,7 @@ export class Viewer {
     for (const mesh of this.meshes.values()) for (const material of mesh.material) {
       material.clippingPlanes = planes; material.clipShadows = true; material.needsUpdate = true;
     }
+    for(const edge of this.edges.values()){edge.material.clippingPlanes=planes;edge.material.needsUpdate=true;}
     this.invalidate();
   }
 
@@ -297,13 +306,15 @@ export class Viewer {
           const source=this.model?.federation?.members.findIndex(member=>member.instance_id===element.source_instance_id)??-1;
           if(source>=0)material.color.set([0xc9b792,0x5794b9,0x77a28a,0xa47991][source%4]);
         }
-        if (state === 'active') material.color.set(0xd7a44a);
-        const alpha = state === 'future' && this.showFuture ? 0.12 : state === 'active' ? 0.8 : this.xray && element.role === 'element' ? Math.min(opacity, 0.25) : opacity;
+        if (state === 'active' || this.selected===element.id) material.color.set(0xefb65e);
+        const alpha = state === 'future' && this.showFuture ? (this.edges.has(element.id)?.035:.12) : state === 'active' ? 0.85 : this.xray && element.role === 'element' ? Math.min(opacity, 0.2) : opacity;
         material.transparent = alpha < 1;
         material.opacity = alpha;
         material.depthWrite = alpha >= 1;
         material.needsUpdate = true;
       });
+      const edges=this.edges.get(element.id);
+      if(edges){edges.material.opacity=state==='future'?.5:.3;edges.material.color.set(this.selected===element.id||state==='active'?0xefb65e:state==='future'?0x8c9ba8:0x40505c);}
     }
     this.invalidate();
   }
@@ -311,6 +322,8 @@ export class Viewer {
   private clearModel() {
     this.site?.dispose(); this.site = undefined; this.clipHeight = null;
     this.select(null);
+    for(const edge of this.edges.values()){edge.geometry.dispose();edge.material.dispose();}
+    this.edges.clear();
     for (const mesh of this.meshes.values()) {
       mesh.geometry.dispose();
       for (const material of mesh.material) material.dispose();

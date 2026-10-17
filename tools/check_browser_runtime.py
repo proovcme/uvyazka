@@ -98,7 +98,10 @@ def main():
             expected2=SimulationEngine(scenario2).run();expected2.update(project_id='browser-local',cpm=cpm(scenario2))
             assert expected2==offline,f'{path.name}: offline recomputation differs'
             context.set_offline(False)
-            page.locator('#site').uncheck();page.locator('#fit').click()
+            page.locator('.view-options > summary').click()
+            page.locator('#site').uncheck()
+            page.locator('.view-options > summary').click()
+            page.locator('#fit').click()
             page.locator('#canvas').scroll_into_view_if_needed()
             page.screenshot(path=str(args.out/(path.name+'.png')),full_page=False)
             results.append({'file':path.name,'source_sha256':imported['source']['sha256'],'import':imported['statistics'],'bounds':[imported['coordinate_system']['bounds_min_m'],imported['coordinate_system']['bounds_max_m']],

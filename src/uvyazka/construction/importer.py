@@ -17,7 +17,7 @@ import ifcopenshell.util.unit as units
 import numpy as np
 from .quantities import explicit_quantities, mesh_quantities
 
-IMPORTER_VERSION = "0.4.0"
+IMPORTER_VERSION = "0.4.1"
 CONTRACT_VERSION = "0.1.0"
 
 
@@ -130,6 +130,13 @@ def import_model(source_path: str, output_path: str, source_name: str | None = N
     model = ifcopenshell.open(str(source))
     schema = ifcopenshell.ifcopenshell_wrapper.schema_by_name(model.schema_identifier)
     projects = model.by_type("IfcProject")
+    # IfcOpenShell 0.8.5 and 0.9.0.post1 silently fall back to unit factor 1
+    # when an IFC4 has both IfcProject and IfcProjectLibrary (multiple contexts).
+    # Reading UnitsInContext in Python does not configure the geometry kernel.
+    # Refuse this native path instead of mislabelling millimetres as metres.
+    contexts = projects if model.schema == 'IFC2X3' else model.by_type('IfcContext')
+    if len(projects) != 1 or len(contexts) != 1:
+        raise ValueError('Неоднозначный контекст единиц геометрического движка: нужен один IfcProject без дополнительных IfcContext/IfcProjectLibrary. Масштаб native-геометрии не подтверждён; используйте браузерный импорт или отдельный согласованный IFC.')
     if not projects or not projects[0].UnitsInContext or not any(getattr(unit, "UnitType", None) == "LENGTHUNIT" for unit in projects[0].UnitsInContext.Units):
         raise ValueError("В IFC не определены единицы длины проекта. Масштаб модели нельзя установить достоверно.")
     scale = units.calculate_unit_scale(model)

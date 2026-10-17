@@ -73,3 +73,10 @@ buildingSMART International**, из [Community Sample Test Files](https://github
 Статическое демо locia.work/uvyazka использует сгенерированные кодом учебные
 АР и ОВ: 22 условных элемента. Реальных чертежей, адресов, файлов заказчика,
 проектной базы и доступа к локальным MCP в нём нет.
+
+## Браузерная обработка
+
+web-ifc 0.0.78 и Pyodide 314.0.7 зафиксированы в web/package-lock.json.
+WASM, Python-ядро и лицензии раздаются с того же сайта; CDN и API моделей
+не используются. [Происхождение runtime](../integrations/browser-runtime/README.md).
+Исходники собственных workers, IFC-адаптера и RVT-моста включены в sdist.

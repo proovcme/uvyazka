@@ -11,7 +11,7 @@ from .packages import site_package
 
 from .simulation import validate_scenario
 from . import mep
-from .revit_metadata import phase_context, phase_status
+from .phases import phase_context, phase_status
 from .access import access_packages
 
 PLANNER_VERSION = "0.5.0"

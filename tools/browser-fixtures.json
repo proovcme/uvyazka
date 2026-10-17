@@ -1,0 +1,62 @@
+[
+  {
+    "name": "RE1-Architecture.ifc",
+    "url": "https://raw.githubusercontent.com/Drshelden/IFC-ECS/9e8b37175a0fba1397f7011aeee917fe52de7623/data/RE1/RE1-Architecture.ifc",
+    "sha256": "a9b5d36677aa6a8bb91b77d8bc354ed9028a7ca3e9e2491a47ba14cfd8e26200",
+    "size": 1677715
+  },
+  {
+    "name": "RE1-Architecture.rvt",
+    "url": "https://raw.githubusercontent.com/Drshelden/IFC-ECS/9e8b37175a0fba1397f7011aeee917fe52de7623/data/RE1/RE1-Architecture.rvt",
+    "sha256": "4a78bdd68e7f4dd7806060db07c222da9a810e20b3f303c17a443294b91c8ce4",
+    "size": 6627328
+  },
+  {
+    "name": "RE1-Electrical.ifc",
+    "url": "https://raw.githubusercontent.com/Drshelden/IFC-ECS/9e8b37175a0fba1397f7011aeee917fe52de7623/data/RE1/RE1-Electrical.ifc",
+    "sha256": "c7002a10c8e10ab2fca64ff61dcf38db04da652924f65ce53c2064827dfa9e16",
+    "size": 8441543
+  },
+  {
+    "name": "RE1-Electrical.rvt",
+    "url": "https://raw.githubusercontent.com/Drshelden/IFC-ECS/9e8b37175a0fba1397f7011aeee917fe52de7623/data/RE1/RE1-Electrical.rvt",
+    "sha256": "9875e765c9f47893808c47b845a8379b8777b92510e3e0284f763cb457c9630b",
+    "size": 13438976
+  },
+  {
+    "name": "RE1-Mechanical.ifc",
+    "url": "https://raw.githubusercontent.com/Drshelden/IFC-ECS/9e8b37175a0fba1397f7011aeee917fe52de7623/data/RE1/RE1-Mechanical.ifc",
+    "sha256": "9e56cf7246ce86ef73646dd588a1efb8a4756e5e102b30e28b3b58577a454db0",
+    "size": 220068
+  },
+  {
+    "name": "RE1-Mechanical.rvt",
+    "url": "https://raw.githubusercontent.com/Drshelden/IFC-ECS/9e8b37175a0fba1397f7011aeee917fe52de7623/data/RE1/RE1-Mechanical.rvt",
+    "sha256": "d559720177aa0ec435133f804e7c45d60da2deb9d5585bb3d55f4830139c014b",
+    "size": 3379200
+  },
+  {
+    "name": "RE1-Plumbing.ifc",
+    "url": "https://raw.githubusercontent.com/Drshelden/IFC-ECS/9e8b37175a0fba1397f7011aeee917fe52de7623/data/RE1/RE1-Plumbing.ifc",
+    "sha256": "294490b222632509779910345f27a4eeda3645956138a593298c241495f7b8b6",
+    "size": 500852
+  },
+  {
+    "name": "RE1-Plumbing.rvt",
+    "url": "https://raw.githubusercontent.com/Drshelden/IFC-ECS/9e8b37175a0fba1397f7011aeee917fe52de7623/data/RE1/RE1-Plumbing.rvt",
+    "sha256": "03689df2aa426031a216e65051b9f19d3265d6fe96884dd47373b17435f9e54c",
+    "size": 3481600
+  },
+  {
+    "name": "Duplex_A.ifc",
+    "url": "https://media.githubusercontent.com/media/buildingsmart-community/Community-Sample-Test-Files/7ddf57a201f88a0c213d5322b02ed15e94a60a40/IFC%202.3.0.1%20%28IFC%202x3%29/Duplex%20Apartment/Duplex_A_20110907.ifc",
+    "sha256": "b347a2c8aa8fff6db896a4417a9c50c22ac0ccd7c5cfc22b99b8d29336c606ed",
+    "size": 2380763
+  },
+  {
+    "name": "wall-window.ifc",
+    "url": "https://raw.githubusercontent.com/buildingsmart-community/Community-Sample-Test-Files/7ddf57a201f88a0c213d5322b02ed15e94a60a40/IFC%204.0.2.1%20%28IFC%204%29/ISO%20Spec%20archive/wall-with-opening-and-window.ifc",
+    "sha256": "f1cfe45b18968f2edb925549219f3d62331246c84c48770b20cfd0ce66307351",
+    "size": 12586
+  }
+]

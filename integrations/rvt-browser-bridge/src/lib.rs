@@ -55,7 +55,18 @@ mod web {
             return Err(JsValue::from_str("Browser RVT input must be 1–64 MiB"));
         }
         let result = super::convert_bytes(bytes.to_vec()).map_err(|e| JsValue::from_str(&e))?;
-        serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
+        // Keep the large intermediate IFC entity graph inside WASM. Only the
+        // STEP file and diagnostics cross the worker boundary. JSON-compatible
+        // maps are ordinary JS objects, including provenance dictionaries.
+        let payload = serde_json::json!({
+            "schema_version": result.schema_version, "status": result.status,
+            "diagnostics": result.export.diagnostics, "saved_meshes": result.saved_meshes,
+            "saved_mesh_error": result.saved_mesh_error, "quality_error": result.quality_error,
+            "ifc_step": result.ifc_step
+        });
+        use serde::Serialize;
+        payload.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 }
 

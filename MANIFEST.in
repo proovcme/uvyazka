@@ -1,9 +1,10 @@
 include plugin.json mcp.json server_entry.py
 include AGENTS.md
 include uv.lock
-recursive-include tools *.py *.ps1
+recursive-include tools *.py *.ps1 *.json
 recursive-include integrations *.rs *.toml *.lock *.md *.json *.csv
 include integrations/rvt-rs/LICENSE integrations/rvt-rs/NOTICE
+recursive-include integrations/browser-runtime *.txt
 prune integrations/rvt-rs/target
 prune integrations/rvt-metadata-reader/target
 recursive-include skills *.md
@@ -15,4 +16,6 @@ recursive-include src/uvyazka/resources *.json
 recursive-include src/uvyazka/viewer *
 recursive-include web *.ts *.css *.html *.json *.mjs *.txt
 prune web/node_modules
+prune web/public/runtime
+prune integrations/rvt-browser-bridge/target
 prune web/test-results

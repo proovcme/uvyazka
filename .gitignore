@@ -52,6 +52,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 node_modules/
+web/public/runtime/
 dist/
 build/
 .DS_Store

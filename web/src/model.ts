@@ -59,6 +59,7 @@ export interface ModelPackage {
   federation?: { members: ModelMember[]; note: string };
   revit?: RevitPhases;
   phase_sources?: Record<string, RevitPhases>;
+  systems?: {id:string;name:string;class:string;member_ids:string[];connectivity_verified:false}[];
 }
 export interface RevitPhases { status: string; phases: { id: string; name: string; order: number | null }[]; phase_order_known?: boolean }
 export interface ModelMember { model_id: string; instance_id: string; label: string; offset_m: number[]; rotation_deg: number }

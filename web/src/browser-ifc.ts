@@ -66,8 +66,9 @@ export function measureMesh(vertices: number[], indices: number[]) {
   return result;
 }
 
-export async function importIfc(api: any, data: Uint8Array, filename: string, sha256: string, schemas: Record<string, Schema>, progress: (text: string)=>void, converted=false): Promise<{model: ModelPackage; binary: ArrayBuffer}> {
-  const handle=api.OpenModel(data,{COORDINATE_TO_ORIGIN:false,MEMORY_LIMIT:512*1024*1024,CIRCLE_SEGMENTS:24});
+export async function importIfc(api: any, data: Uint8Array, filename: string, sha256: string, schemas: Record<string, Schema>, progress: (text: string)=>void, converted=false,memoryMiB=1024): Promise<{model: ModelPackage; binary: ArrayBuffer}> {
+  if(![512,1024,2048].includes(memoryMiB))throw Error('Недопустимый бюджет памяти IFC-декодера');
+  const handle=api.OpenModel(data,{COORDINATE_TO_ORIGIN:false,MEMORY_LIMIT:memoryMiB*1024*1024,CIRCLE_SEGMENTS:24});
   if(handle<0)throw Error('IFC не открыт: неподдерживаемый формат или повреждённый файл');
   try {
     const schema=api.GetModelSchema(handle),hierarchy=schemas[schema];
@@ -86,7 +87,6 @@ export async function importIfc(api: any, data: Uint8Array, filename: string, sh
     for(const code of api.GetIfcEntityList(handle)) {
       const chain=hierarchy[type(code)];if(!chain?.includes('IfcProduct'))continue;
       const vector=api.GetLineIDsWithType(handle,code);
-      if(byId.size+vector.size()>10000)throw Error('Браузерный предел: 10 000 объектов. Используйте локальные инструменты.');
       for(let i=0;i<vector.size();i++) {
         const id=vector.get(i),row=read(id),role=chain.includes('IfcFeatureElement')?'feature':chain.includes('IfcElement')?'element':chain.includes('IfcSpace')?'space':chain.includes('IfcSpatialElement')||chain.includes('IfcSpatialStructureElement')?'spatial':'other';
         byId.set(id,{id:String(id),step_id:id,global_id:value(row.GlobalId)||'',class:chain[0],hierarchy:chain,name:value(row.Name)||'#'+id,role,storey_id:null,predefined_type:value(row.PredefinedType)||null,materials:[],property_sets:{},quantity_sets:{},quantities:{},measured_quantities:{},source:{kind:'explicit',file_sha256:sha256,step_id:id},mesh:null,geometry_error:null});
@@ -143,15 +143,15 @@ export async function importIfc(api: any, data: Uint8Array, filename: string, sh
     }
     // Undo web-ifc's fixed IFC Z-up -> Y-up transform; keep our contract Z-up.
     api.SetGeometryTransformation(handle,[1,0,0,0,0,0,1,0,0,-1,0,0,0,0,0,1]);
-    const meshes=new Map<string,{vertices:number[];indices:number[]}>();let totalBytes=0;
-    api.StreamAllMeshes(handle,(flat:any,index:number,total:number)=>{
+    const meshes=new Map<string,{vertices:number[];indices:number[]}>();
+    const geometryVisited=new Set<number>();progress('Геометрия: чтение сеток');
+    api.StreamAllMeshes(handle,(flat:any)=>{
       const e=byId.get(flat.expressID);if(!e)return;
       const vertices:number[]=[],indices:number[]=[],styles:any[]=[],groups:any[]=[];
       for(let g=0;g<flat.geometries.size();g++){
         const placed=flat.geometries.get(g),geometry=api.GetGeometry(handle,placed.geometryExpressID);
         try {
           const points=api.GetVertexArray(geometry.GetVertexData(),geometry.GetVertexDataSize()),faces=api.GetIndexArray(geometry.GetIndexData(),geometry.GetIndexDataSize()),t=placed.flatTransformation,offset=vertices.length/3,start=indices.length;
-          totalBytes+=points.length*4/2+faces.length*4;if(totalBytes>128*1024*1024)throw Error('Геометрия превысила браузерный предел 128 MiB');
           for(let i=0;i<points.length;i+=6){const x=points[i],y=points[i+1],z=points[i+2];const v=[t[0]*x+t[4]*y+t[8]*z+t[12],t[1]*x+t[5]*y+t[9]*z+t[13],t[2]*x+t[6]*y+t[10]*z+t[14]];if(!v.every(Number.isFinite))throw Error('Неконечные координаты IFC');vertices.push(...v);}
           for(const face of faces){if(face>=points.length/6)throw Error('Некорректный индекс треугольника');indices.push(face+offset);}
           const c=placed.color;styles.push({name:'IFC style',color:[c.x,c.y,c.z],opacity:c.w});groups.push({start,count:faces.length,material_index:styles.length-1});
@@ -163,11 +163,15 @@ export async function importIfc(api: any, data: Uint8Array, filename: string, sh
         if(e.geometry_evidence?.quantity_eligible!==false)e.measured_quantities=measureMesh(vertices,indices);
         meshes.set(e.id,{vertices,indices});
       }
-      if(index%100===0)progress(`Геометрия: ${index+1} / ${total}`);
+      geometryVisited.add(flat.expressID);
+      if(geometryVisited.size%100===0)progress(`Геометрия: обработано ${geometryVisited.size} объектов, ${meshes.size} с сетками`);
     },true);
+    progress(`Геометрия: обработано ${geometryVisited.size} объектов, ${meshes.size} с сетками`);
     const visible=elements.filter(e=>e.mesh&&e.role==='element');
     if(!visible.length)throw Error('Не получена геометрия физических элементов IFC');
-    const low=([0,1,2].map(i=>Math.min(...visible.map(e=>e.mesh!.bbox_min_m[i])))) as Vec3,high=([0,1,2].map(i=>Math.max(...visible.map(e=>e.mesh!.bbox_max_m[i])))) as Vec3,origin:Vec3=[(low[0]+high[0])/2,(low[1]+high[1])/2,low[2]];
+    const low:Vec3=[Infinity,Infinity,Infinity],high:Vec3=[-Infinity,-Infinity,-Infinity];
+    for(const e of visible)for(let i=0;i<3;i++){low[i]=Math.min(low[i],e.mesh!.bbox_min_m[i]);high[i]=Math.max(high[i],e.mesh!.bbox_max_m[i]);}
+    const origin:Vec3=[(low[0]+high[0])/2,(low[1]+high[1])/2,low[2]];
     let byteLength=0;for(const e of elements)if(e.mesh){e.mesh.position_byte_offset=byteLength;byteLength+=e.mesh.vertex_count*12;e.mesh.index_byte_offset=byteLength;byteLength+=e.mesh.index_count*4;}
     const binary=new ArrayBuffer(byteLength);
     for(const e of elements){if(e.mesh){const raw=meshes.get(e.id)!;new Float32Array(binary,e.mesh.position_byte_offset,raw.vertices.length).set(raw.vertices.map((n,i)=>n-origin[i%3]));new Uint32Array(binary,e.mesh.index_byte_offset,raw.indices.length).set(raw.indices);}else if(e.role==='element'){e.geometry_error='No tessellated body';warn(e.id,'geometry_missing','Объект прочитан без геометрии и исключён из геометрического планирования');}}

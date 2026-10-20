@@ -4,7 +4,15 @@ use rvt::{RevitFile, walker::WalkerLimits};
 use rvt::ifc::{ExportQualityMode, ExportResult, RvtDocExporter, saved_meshes, recount_exported, write_step};
 use serde::Serialize;
 
-pub const MAX_BROWSER_RVT_BYTES: usize = 64 * 1024 * 1024;
+// Match the reader's technical limit rather than imposing the former demo cap.
+pub const MAX_BROWSER_RVT_BYTES: usize = rvt::reader::DEFAULT_MAX_FILE_BYTES as usize;
+
+fn validate_input_size(size: usize) -> Result<(), String> {
+    if size == 0 || size > MAX_BROWSER_RVT_BYTES {
+        return Err("RVT input must be non-empty and within the reader's 2 GiB limit; browser memory may be exhausted earlier".into());
+    }
+    Ok(())
+}
 
 #[derive(Debug, Serialize)]
 pub struct BrowserConversion {
@@ -18,9 +26,7 @@ pub struct BrowserConversion {
 }
 
 pub fn convert_bytes(bytes: Vec<u8>) -> Result<BrowserConversion, String> {
-    if bytes.is_empty() || bytes.len() > MAX_BROWSER_RVT_BYTES {
-        return Err("Browser RVT input must be 1–64 MiB; larger models require local tools".into());
-    }
+    validate_input_size(bytes.len())?;
     let mut file = RevitFile::open_bytes(bytes).map_err(|e| e.to_string())?;
     let mode = ExportQualityMode::Geometry;
     let mut export = RvtDocExporter
@@ -51,9 +57,7 @@ mod web {
     #[wasm_bindgen(js_name = convertRvtBytes)]
     pub fn convert_rvt_bytes(bytes: &[u8]) -> Result<JsValue, JsValue> {
         // Guard before copying data across the JS/WASM boundary a second time.
-        if bytes.is_empty() || bytes.len() > super::MAX_BROWSER_RVT_BYTES {
-            return Err(JsValue::from_str("Browser RVT input must be 1–64 MiB"));
-        }
+        super::validate_input_size(bytes.len()).map_err(|e| JsValue::from_str(&e))?;
         let result = super::convert_bytes(bytes.to_vec()).map_err(|e| JsValue::from_str(&e))?;
         // Keep the large intermediate IFC entity graph inside WASM. Only the
         // STEP file and diagnostics cross the worker boundary. JSON-compatible
@@ -78,5 +82,12 @@ mod tests {
     fn rejects_empty_and_non_cfb_input() {
         assert!(convert_bytes(vec![]).is_err());
         assert!(convert_bytes(b"Not an RVT container".to_vec()).is_err());
+    }
+
+    #[test]
+    fn input_size_above_former_demo_limit_reaches_reader() {
+        assert!(validate_input_size(65 * 1024 * 1024).is_ok());
+        assert!(validate_input_size(512 * 1024 * 1024).is_ok());
+        assert!(validate_input_size(MAX_BROWSER_RVT_BYTES + 1).is_err());
     }
 }

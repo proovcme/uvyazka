@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from pathlib import Path
 import sys
@@ -31,7 +32,7 @@ from uvyazka.core import Workspace
 from uvyazka.server import build_server
 with tempfile.TemporaryDirectory() as directory:
     server = build_server(Workspace(Path(directory)/'state'))
-    assert len(asyncio.run(server.list_tools())) == 48
+    assert len(asyncio.run(server.list_tools())) == 56
     asyncio.run(server.call_tool('construction_schema', {}))
     asyncio.run(server.call_tool('rvt_converter_status', {}))
 '''
@@ -41,6 +42,59 @@ with tempfile.TemporaryDirectory() as directory:
     async def test_official_stdio_client_and_observation(self):
         await asyncio.wait_for(self.check_protocol(), timeout=60)
 
+    async def test_drawing_work_survives_stdio_restart_and_returns_image(self):
+        try:
+            import pymupdf
+        except ImportError:
+            self.skipTest("readers extra not installed")
+        from uvyazka.ingest import scan
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root/"sources"; source.mkdir()
+            with pymupdf.open() as pdf:
+                page = pdf.new_page(width=300, height=300)
+                page.draw_rect((30, 50, 130, 150))
+                pdf.save(source/"plan.pdf")
+            workspace = Workspace(root/"state")
+            workspace.create_project("drawing", "Synthetic", source)
+            scan(workspace, "drawing")
+            doc = workspace.find_documents("drawing")["documents"][0]
+            scope = {"project_id": "drawing"}
+            source_args = {**scope, "doc_id": doc["doc_id"], "sha256": doc["sha256"]}
+            params = StdioServerParameters(command=sys.executable, args=["-m", "uvyazka.server"],
+                env={**os.environ, "UVYAZKA_HOME": str(workspace.home), "PYTHONUTF8": "1"})
+            # These are separate server processes, not two handles to in-memory state.
+            for phase in (0, 1):
+                async with stdio_client(params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        async def call(name, **args):
+                            result = await session.call_tool(name, {**scope, **args})
+                            self.assertFalse(result.isError, (name, result))
+                            return result
+                        if phase == 0:
+                            await call("inspect_measurement_sheet", doc_id=doc["doc_id"], sha256=doc["sha256"])
+                            await call("save_drawing_view", view={
+                                "id": "plan", "doc_id": doc["doc_id"], "sha256": doc["sha256"], "page_number": 1,
+                                "region": [10, 10, 290, 290], "name": "Plan", "kind": "plan",
+                                "measurement_basis": "planar", "reason": "Synthetic view"},
+                                expected_revision=0, request_id="view")
+                            await call("calibrate_drawing_view", view_id="plan", expected_view_revision=1,
+                                expected_calibration_revision=0, points=[[30, 50], [130, 50]],
+                                length_m=10, basis="Known 10 m dimension", request_id="scale")
+                            await call("measure_drawing_view", view_id="plan", view_revision=1,
+                                calibration_revision=1, items=[{"id": "edge", "name": "Edge", "kind": "length",
+                                "points": [[30, 50], [130, 50]], "basis": "wall_face", "reason": "Visible edge"}],
+                                request_id="measure")
+                        else:
+                            result = await call("get_drawing_measurements", kind="measurement")
+                            data = json.loads(next(c.text for c in result.content if c.type == "text"))
+                            self.assertEqual(data["items"][0]["value"], 10)
+                            self.assertEqual(data["items"][0]["stale_reasons"], [])
+                            result = await call("render_drawing_measurements", **{k:v for k,v in source_args.items() if k != "project_id"},
+                                                view_id="plan", measurement_ids=["edge"])
+                            self.assertTrue(any(c.type == "image" and c.mimeType == "image/png" for c in result.content))
+
     async def check_protocol(self):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td) / "state"; workspace = Workspace(home); create_demo(workspace)
@@ -49,7 +103,7 @@ with tempfile.TemporaryDirectory() as directory:
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    self.assertEqual(len(listed.tools), 48)
+                    self.assertEqual(len(listed.tools), 56)
                     by_name = {tool.name: tool for tool in listed.tools}
                     self.assertTrue(by_name["read_evidence"].annotations.readOnlyHint)
                     self.assertFalse(by_name["record_observations"].annotations.readOnlyHint)

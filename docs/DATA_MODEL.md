@@ -170,4 +170,16 @@ rvt_data_requests той же базы объекта. Отчёты общего
 Сохранённые значения не объявляются вычисленными строками/итогами Revit.
 [Процесс, происхождение и ограничения](RVT_DATA.md).
 
-Всего 48 инструментов; никакой из них не изменяет исходный DWG/RVT.
+## Измерения PDF: ещё 8 инструментов
+
+`inspect_measurement_sheet`, `save_drawing_view`, `calibrate_drawing_view`,
+`measure_drawing_view`, `get_drawing_measurements`,
+`recalculate_drawing_measurements`, `review_drawing_measurements`,
+`render_drawing_measurements` работают с той же базой выбранного проекта.
+
+`drawing_records(kind,id,revision,payload)` хранит версии вида, калибровки
+и измерения; `drawing_requests` — результаты повторяемых операций.
+Числа измерений не выдаются за буквальные наблюдения из текста PDF.
+[Координаты, статусы, история и ограничения](MEASUREMENTS.md).
+
+Всего 56 инструментов; они не изменяют исходный PDF/DWG/RVT.

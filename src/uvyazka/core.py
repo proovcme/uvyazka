@@ -147,8 +147,14 @@ class Workspace:
             counts["pages"] = db.execute("select count(*) from pages p join documents d on d.doc_id=p.doc_id and d.sha256=p.sha256 and d.parser_revision=p.parser_revision where d.index_status='text_indexed'").fetchone()[0]
             counts["facts"] = db.execute("select count(*) from facts where active=1").fetchone()[0]
             coverage = {r[0]: r[1] for r in db.execute("select index_status,count(*) from documents group by index_status")}
+            drawing_counts = {}
+            if db.execute("select 1 from sqlite_master where name='drawing_records'").fetchone():
+                drawing_counts = {r[0]: r[1] for r in db.execute(
+                    "select kind,count(distinct id) from drawing_records group by kind")}
         questions = sum(c["status"] != "matches" for c in self.get_reconciliation(project_id)["checks"])
         return {"project": project, "snapshot": meta, "counts": counts, "coverage": coverage, "questions": questions,
+                "drawing_work": {"counts": drawing_counts, "resume_tool": "get_drawing_measurements",
+                                 "note": "Recorded work only; read records for source freshness, unresolved questions and revisions."},
                 "limitations": ["Text indexing is not a complete numerical or engineering audit.", "Observations are unconfirmed; source metadata matches do not approve a revision.", "RVT/IFC extraction and scheduling have separate coverage; OCR and automatic approved POS/PPR generation are not implemented."]}
 
     def source_record(self, project_id: str, doc_id: str) -> tuple[dict, Path]:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "uvyazka"
-version = "0.3.0a9"
+version = "0.3.0a10"
 description = "Local project memory, evidence and MCP tools for construction project teams"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,6 +37,6 @@ uvyazka = ["ui/*", "resources/*.json", "viewer/*", "viewer/assets/*"]
 "share/uvyazka/skills/aec-develop-ppr/references" = ["skills/aec-develop-ppr/references/technology-cards.md"]
 "share/uvyazka/skills/aec-project-change-impact" = ["skills/aec-project-change-impact/SKILL.md"]
 "share/uvyazka/skills/aec-project-reader" = ["skills/aec-project-reader/SKILL.md"]
-"share/uvyazka/skills/aec-project-reader/references" = ["skills/aec-project-reader/references/data-model.md", "skills/aec-project-reader/references/reading-order.md"]
+"share/uvyazka/skills/aec-project-reader/references" = ["skills/aec-project-reader/references/data-model.md", "skills/aec-project-reader/references/reading-order.md", "skills/aec-project-reader/references/view-measurements.md"]
 "share/uvyazka/skills/aec-project-reconcile" = ["skills/aec-project-reconcile/SKILL.md"]
 "share/uvyazka/skills/aec-project-reconcile/references" = ["skills/aec-project-reconcile/references/reconciliation-rules.md"]

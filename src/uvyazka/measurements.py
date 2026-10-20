@@ -156,23 +156,8 @@ class Measurements:
             return result
 
     def pdf(self, doc_id, sha256):
-        record, path = self.workspace.source_record(self.project_id, doc_id)
-        if record["sha256"] != sha256 or path.suffix.lower() != ".pdf":
-            raise ValueError("Choose the registered current PDF hash")
-        if not path.is_file() or not 0 < path.stat().st_size <= 64*1024*1024:
-            raise ValueError("PDF unavailable or exceeds 64 MiB")
-        data = path.read_bytes()
-        if hashlib.sha256(data).hexdigest() != sha256:
-            raise ValueError("Source changed; scan and review the new revision")
-        try:
-            import pymupdf
-        except ImportError as exc:
-            raise ValueError("Install uvyazka[readers] for PDF measurements") from exc
-        pdf = pymupdf.open(stream=data, filetype="pdf")
-        if pdf.needs_pass:
-            pdf.close()
-            raise ValueError("Encrypted PDF requires a readable source")
-        return pdf
+        from .pdf_source import open_pdf
+        return open_pdf(self.workspace, self.project_id, doc_id, sha256)
 
     @staticmethod
     def page(pdf, page_number):

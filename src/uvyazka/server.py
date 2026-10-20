@@ -86,6 +86,8 @@ def build_server(workspace: Workspace | None = None):
     register_rvt_data(mcp,memory)
     from .measurement_tools import register_tools as register_measurements
     register_measurements(mcp, memory)
+    from .document_table_tools import register_tools as register_document_tables
+    register_document_tables(mcp, memory)
     return mcp
 
 

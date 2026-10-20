@@ -17,8 +17,8 @@ def validate():
     plugin = json.loads((ROOT / "plugin.json").read_text(encoding="utf-8"))
     mcp = json.loads((ROOT / "mcp.json").read_text(encoding="utf-8"))
     assert package["project"]["name"] == plugin["name"] == "uvyazka"
-    assert package["project"]["version"] == "0.3.0a11"
-    assert plugin["version"] == "0.3.0-alpha.11"
+    assert package["project"]["version"] == "0.3.0a12"
+    assert plugin["version"] == "0.3.0-alpha.12"
     assert '"' + package["project"]["version"] + '"' in (ROOT / "src/uvyazka/__init__.py").read_text(encoding="utf-8")
     assert plugin["extensions"]["com.openai"]["requires_local_executor"] is True
     assert len(plugin["extensions"]["com.openai"]["interface"]["shortDescription"]) <= 30
@@ -63,6 +63,12 @@ def validate():
     packaged_skills = {Path(f).as_posix() for files in package["tool"]["setuptools"]["data-files"].values() for f in files}
     actual_skills = {p.relative_to(ROOT).as_posix() for p in (ROOT / "skills").rglob("*") if p.is_file()}
     assert actual_skills == packaged_skills, "Wheel must contain every canonical skill resource"
+    vendor = ROOT / "src/uvyazka/_vendor/les_list"
+    provenance = json.loads((vendor / "provenance.json").read_text(encoding="utf-8"))
+    assert provenance["commit"] == "f6bedb34eff75c2d47e772810220ff738183f804"
+    assert provenance["license"] == "MIT"
+    assert "Copyright (c) 2026 OVC" in (vendor / "LICENSE.txt").read_text(encoding="utf-8")
+    assert {"LICENSE.txt", "provenance.json"} <= set(package["tool"]["setuptools"]["package-data"]["uvyazka._vendor.les_list"])
     print("Package structure OK: 6 skills, 3 reference cards, stdio manifest, client templates, resource mapping")
 
 

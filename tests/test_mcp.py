@@ -25,14 +25,14 @@ import asyncio, importlib.abc, sys, tempfile
 from pathlib import Path
 class BlockBIM(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'numpy','ifcopenshell','ezdxf','PIL'}:
+        if fullname.split('.')[0] in {'numpy','ifcopenshell','ezdxf','PIL','pymupdf','fitz'}:
             raise ModuleNotFoundError(fullname)
 sys.meta_path.insert(0, BlockBIM())
 from uvyazka.core import Workspace
 from uvyazka.server import build_server
 with tempfile.TemporaryDirectory() as directory:
     server = build_server(Workspace(Path(directory)/'state'))
-    assert len(asyncio.run(server.list_tools())) == 56
+    assert len(asyncio.run(server.list_tools())) == 60
     asyncio.run(server.call_tool('construction_schema', {}))
     asyncio.run(server.call_tool('rvt_converter_status', {}))
 '''
@@ -41,6 +41,50 @@ with tempfile.TemporaryDirectory() as directory:
 
     async def test_official_stdio_client_and_observation(self):
         await asyncio.wait_for(self.check_protocol(), timeout=60)
+
+    async def test_document_tables_survive_stdio_restart(self):
+        try:
+            import pymupdf
+        except ImportError:
+            self.skipTest("readers extra not installed")
+        from uvyazka.ingest import scan
+        from test_document_tables import grid
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); source = root/"sources"; source.mkdir()
+            with pymupdf.open() as pdf:
+                page = pdf.new_page(width=400,height=300)
+                page.insert_font(fontname="fixture",fontbuffer=pymupdf.Font("cjk").buffer)
+                grid(page,20,50,[["Номер помещения","Наименование","Площадь, м2"],
+                                ["201","Архив","0"],["202","Склад","3–5"]],[100,100,100])
+                pdf.save(source/"rooms.pdf")
+            workspace = Workspace(root/"state")
+            workspace.create_project("tables","Synthetic",source); scan(workspace,"tables")
+            doc = workspace.find_documents("tables")["documents"][0]
+            src = {"doc_id":doc["doc_id"],"sha256":doc["sha256"]}
+            params = StdioServerParameters(command=sys.executable,args=["-m","uvyazka.server"],
+                env={**os.environ,"UVYAZKA_HOME":str(workspace.home),"PYTHONUTF8":"1"})
+            for phase in (0,1):
+                with (root/f"stderr-{phase}.log").open("w+") as errlog:
+                    async with stdio_client(params,errlog=errlog) as (read,write):
+                        async with ClientSession(read,write) as session:
+                            await session.initialize()
+                            async def call(name,**args):
+                                result = await session.call_tool(name,{"project_id":"tables",**args})
+                                self.assertFalse(result.isError,(name,result))
+                                return json.loads(next(c.text for c in result.content if c.type=="text"))
+                            if phase==0:
+                                indexed = await call("index_document_tables",**src)
+                                self.assertEqual(indexed["pages"][0]["catalogued_tables"],1)
+                                key = (await call("find_project_tables",query="Архив"))["items"][0]["table_id"]
+                            else:
+                                structure = await call("get_document_structure",**src)
+                                self.assertEqual(structure["coverage"]["indexed_pages"],1)
+                                result = await call("read_project_table",table_id=key,offset=1,limit=2)
+                                self.assertEqual(result["rows"][0]["cells"][2]["text"],"0")
+                                self.assertEqual(result["normalization_candidates"][0]["area_m2"],0)
+                                self.assertIsNone(result["normalization_candidates"][1]["area_m2"])
+                    errlog.seek(0)
+                    self.assertNotIn("Failed to parse JSONRPC",errlog.read())
 
     async def test_drawing_work_survives_stdio_restart_and_returns_image(self):
         try:
@@ -103,7 +147,7 @@ with tempfile.TemporaryDirectory() as directory:
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    self.assertEqual(len(listed.tools), 56)
+                    self.assertEqual(len(listed.tools), 60)
                     by_name = {tool.name: tool for tool in listed.tools}
                     self.assertTrue(by_name["read_evidence"].annotations.readOnlyHint)
                     self.assertFalse(by_name["record_observations"].annotations.readOnlyHint)

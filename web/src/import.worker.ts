@@ -1,9 +1,10 @@
 import { importIfc } from './browser-ifc';
+import {documentCache} from './rvt-document-cache';
 
 const worker=self as unknown as {onmessage:((event:MessageEvent)=>void)|null;postMessage:(value:unknown,transfer?:Transferable[])=>void};
 worker.onmessage=async({data})=>{
   const {job,buffer,filename,base,memoryMiB=1024}=data;
-  let stage='Проверка файла',conversion:any=null;
+  let stage='Проверка файла',conversion:any=null,documentAvailable=false;
   const progress=(text:string,nextStage=stage,details?:unknown)=>{stage=nextStage;worker.postMessage({job,kind:'progress',stage,text,details});};
   try {
     if(![512,1024,2048].includes(memoryMiB))throw Error('Недопустимый бюджет памяти IFC-декодера');
@@ -16,6 +17,22 @@ worker.onmessage=async({data})=>{
       progress('Загрузка RVT-декодера · файл остаётся в браузере','RVT-движок');
       const module=await import(/* @vite-ignore */base+'runtime/rvt/uvyazka_rvt_browser.js');
       await module.default({module_or_path:base+'runtime/rvt/uvyazka_rvt_browser_bg.wasm'});
+      progress('Чтение видов, листов и спецификаций RVT','Документ RVT');
+      try {
+        let cache:Awaited<ReturnType<typeof documentCache>>|undefined;
+        try {cache=await documentCache();}catch(error){worker.postMessage({job,kind:'document-cache-error',message:String(error)});}
+        try {
+          let document;try {document=await cache?.get(sourceHash);}catch(error){worker.postMessage({job,kind:'document-cache-error',message:String(error)});}
+          const cached=!!document;
+          if(!document)document=module.extractRvtDocument(bytes);
+          document.source={filename,sha256:sourceHash,size_bytes:sourceSize};
+          // Publish before saving: a quota error must not discard usable data.
+          worker.postMessage({job,kind:'document',document,cached});documentAvailable=true;
+          if(!cached&&document.status!=='partial')try {await cache?.put(sourceHash,document);}catch(error){worker.postMessage({job,kind:'document-cache-error',message:String(error)});}
+        }finally{cache?.close();}
+      } catch(error) {
+        worker.postMessage({job,kind:'document-error',message:String(error)});
+      }
       progress('Конверсия RVT и чтение сохранённых сеток','RVT → IFC');
       conversion=module.convertRvtBytes(bytes);
       if(!conversion.ifc_step)throw Error(conversion.quality_error||'RVT: пригодная геометрия не получена');
@@ -33,7 +50,8 @@ worker.onmessage=async({data})=>{
     worker.postMessage({job,kind:'imported',model,binary,conversion,convertedIfc},[binary,...(convertedIfc?[convertedIfc]:[])]);
   } catch(error) {
     if(conversion)delete conversion.ifc_step;
-    worker.postMessage({job,kind:'error',message:error instanceof Error?error.message:String(error),
+    const message=error instanceof WebAssembly.RuntimeError?'Внутренний сбой движка на этапе «'+stage+'».'+(documentAvailable?' Прочитанный каталог остаётся в «Виды и таблицы».':''):error instanceof Error?error.message:String(error);
+    worker.postMessage({job,kind:'error',message,
       details:{stage,stack:error instanceof Error?error.stack:undefined,conversion,memory_budget_mib:memoryMiB}});
   }
 };

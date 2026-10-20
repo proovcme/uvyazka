@@ -3,13 +3,14 @@ import type { RunPackage } from './simulation';
 import { journalPanel } from './import-journal-panel';
 import { filePolicy } from './import-journal';
 import type { ImportRun } from './import-journal';
+import type {RvtDocument} from './rvt-document';
 
 export type BrowserRun=RunPackage & {cpm:{duration_minutes:number;operations:Record<string,{critical:boolean}>}};
-export function browserPanel(callbacks:{reset:()=>void;drawing:(file:File)=>Promise<void>;cancelDrawing:()=>void;model:(model:ModelPackage,binary:ArrayBuffer)=>void|Promise<void>;run:(run:BrowserRun)=>void|Promise<void>}) {
+export function browserPanel(callbacks:{reset:()=>void;openDocument:()=>void;document:(data:RvtDocument|null,message?:string)=>void;drawing:(file:File)=>Promise<void>;cancelDrawing:()=>void;model:(model:ModelPackage,binary:ArrayBuffer)=>void|Promise<void>;run:(run:BrowserRun)=>void|Promise<void>}) {
   const section=document.createElement('section');section.className='panel browser-import';section.innerHTML=`
 <h2>Открыть файл</h2>
 <p>Файл остаётся на вашем устройстве. Для RVT и IFC прежний порог размера снят; большие модели требуют больше памяти. DWG/DXF до 64 MiB. Чтение RVT экспериментальное; Revit и агент не нужны.</p>
-<div class="browser-actions"><label>DWG / RVT / IFC<input id="browser-file" type="file" accept=".dwg,.dxf,.rvt,.ifc"></label><button id="browser-cancel" disabled>Отменить</button><button id="browser-demo">Учебный пример</button><button id="browser-log">Журнал обработки</button></div>
+<div class="browser-actions"><label>DWG / RVT / IFC<input id="browser-file" type="file" accept=".dwg,.dxf,.rvt,.ifc"></label><button id="browser-cancel" disabled>Отменить</button><button id="browser-demo">Учебный пример</button><button id="browser-log">Журнал обработки</button><button id="browser-document">Виды и таблицы</button></div>
 <p id="browser-status" role="status" aria-live="polite">Выберите файл или изучите готовый пример ниже.</p>
 <details><summary>Память и большие модели</summary><label>Бюджет IFC-декодера<select id="browser-memory"><option value="512">512 MiB</option><option value="1024" selected>1 GiB</option><option value="2048">2 GiB</option></select></label><p>Это бюджет IFC-движка, а не всей вкладки. RVT, промежуточный IFC и 3D требуют дополнительной памяти. Технический предел RVT-читателя — 2 GiB входного файла; успешное чтение такого размера не гарантируется.</p></details>
 <div class="browser-actions simulation-only"><label>Ресурсы<select id="browser-variant"><option value="base">Базовые</option><option value="reinforced">Усиленные</option></select></label><label>Доступность ресурсов<select id="browser-capacity"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option></select></label><label>Выдержка бетона, суток<input id="browser-curing" type="number" min="1" max="365" value="28"></label><button id="browser-plan" disabled>Рассчитать сценарий</button></div>
@@ -18,7 +19,7 @@ export function browserPanel(callbacks:{reset:()=>void;drawing:(file:File)=>Prom
   document.getElementById('import-host')!.append(section);
   const el=<T extends HTMLElement=HTMLElement>(id:string)=>section.querySelector<T>('#'+id)!;
   const log=journalPanel(),journal=log.journal;
-  el('browser-log').onclick=log.open;
+  el('browser-log').onclick=log.open;el('browser-document').onclick=callbacks.openDocument;
   const logButton=document.createElement('button');logButton.id='open-import-log';logButton.textContent='Журнал';logButton.onclick=log.open;
   document.getElementById('status-details')!.after(logButton);
   const base=new URL('.',location.href).href;
@@ -58,7 +59,16 @@ export function browserPanel(callbacks:{reset:()=>void;drawing:(file:File)=>Prom
       importer.onmessageerror=()=>{if(job===active)fail('Не удалось получить данные от worker.');};
       importer.onmessage=async({data})=>{
         if(data.job!==active)return;
-        if(data.kind==='source')journal.source(jobRun,data.sha256);
+        if(data.kind==='document'){
+          callbacks.document(data.document);
+          journal.event(jobRun,data.document.status==='partial'?'warning':'info','Каталог видов и таблиц прочитан',{cached:!!data.cached,records:data.document.records.length,status:data.document.status,error:data.document.error,clipped_records:data.document.clipped_records});
+        }
+        else if(data.kind==='document-cache-error'){journal.event(jobRun,'warning','Кеш каталога недоступен; прочитанные данные можно скачать JSON',{message:data.message});}
+        else if(data.kind==='document-error'){
+          callbacks.document(null,'Каталог RVT не прочитан: '+data.message);
+          journal.event(jobRun,'warning','Не удалось прочитать каталог RVT; геометрия обрабатывается отдельно',{message:data.message});
+        }
+        else if(data.kind==='source')journal.source(jobRun,data.sha256);
         else if(data.kind==='progress'){journal.progress(jobRun,data.stage||'Импорт',data.text,data.details);status(data.text);}
         else if(data.kind==='error')fail('Не удалось открыть: '+data.message,data.details);
         else if(data.kind==='imported'){

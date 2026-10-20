@@ -3,6 +3,8 @@
 use rvt::{RevitFile, walker::WalkerLimits};
 use rvt::ifc::{ExportQualityMode, ExportResult, RvtDocExporter, saved_meshes, recount_exported, write_step};
 use serde::Serialize;
+mod document;
+pub use document::extract_document;
 
 // Match the reader's technical limit rather than imposing the former demo cap.
 pub const MAX_BROWSER_RVT_BYTES: usize = rvt::reader::DEFAULT_MAX_FILE_BYTES as usize;
@@ -53,6 +55,15 @@ pub fn convert_bytes(bytes: Vec<u8>) -> Result<BrowserConversion, String> {
 #[cfg(target_arch = "wasm32")]
 mod web {
     use wasm_bindgen::prelude::*;
+    use serde::Serialize;
+
+    #[wasm_bindgen(js_name = extractRvtDocument)]
+    pub fn extract_rvt_document(bytes: &[u8]) -> Result<JsValue, JsValue> {
+        super::validate_input_size(bytes.len()).map_err(|e| JsValue::from_str(&e))?;
+        let result = super::extract_document(bytes.to_vec()).map_err(|e| JsValue::from_str(&e))?;
+        result.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
 
     #[wasm_bindgen(js_name = convertRvtBytes)]
     pub fn convert_rvt_bytes(bytes: &[u8]) -> Result<JsValue, JsValue> {

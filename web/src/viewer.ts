@@ -171,6 +171,7 @@ export class Viewer {
   }
 
   fit(direction: 'iso' | 'top' | 'front' = 'iso', selectedOnly = false) {
+    this.camera.up.set(0,1,0);
     if (this.bounds.isEmpty()) return;
     let bounds = this.site?.group.visible ? this.site.siteBounds : this.bounds;
     const mesh = this.selected ? this.meshes.get(this.selected) : null;
@@ -193,6 +194,24 @@ export class Viewer {
     this.camera.updateProjectionMatrix();
     this.controls.update();
     this.invalidate();
+  }
+
+  /** Reconstruct orientation only: native view directions are unitless Z-up.
+   * Origin/scale/crop/visibility are deliberately not inferred. */
+  orient(direction:[number,number,number],up:[number,number,number]) {
+    if(this.bounds.isEmpty())return;
+    const axis=new THREE.Vector3(direction[0],direction[2],-direction[1]).normalize();
+    const vertical=new THREE.Vector3(up[0],up[2],-up[1]).normalize();
+    const right=vertical.clone().cross(axis).normalize();vertical.copy(axis).cross(right).normalize();
+    const center=this.bounds.getCenter(new THREE.Vector3()),size=this.bounds.getSize(new THREE.Vector3());
+    const tangent=Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2));let distance=1;
+    for(const x of [-.5,.5])for(const y of [-.5,.5])for(const z of [-.5,.5]){
+      const corner=new THREE.Vector3(size.x*x,size.y*y,size.z*z),depth=corner.dot(axis);
+      distance=Math.max(distance,depth+Math.abs(corner.dot(right))/(tangent*this.camera.aspect),depth+Math.abs(corner.dot(vertical))/tangent);
+    }
+    this.camera.up.copy(vertical);this.controls.target.copy(center);
+    this.camera.position.copy(center).addScaledVector(axis,distance*1.08);this.camera.lookAt(center);
+    this.camera.updateProjectionMatrix();this.controls.update();this.invalidate();
   }
 
   show(ids: Set<string>) {

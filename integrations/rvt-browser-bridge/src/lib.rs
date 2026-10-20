@@ -101,4 +101,21 @@ mod tests {
         assert!(validate_input_size(512 * 1024 * 1024).is_ok());
         assert!(validate_input_size(MAX_BROWSER_RVT_BYTES + 1).is_err());
     }
+
+    #[test]
+    fn generic_field_reader_rejects_impossible_utf16_lengths_without_advancing() {
+        use rvt::{formats::FieldType, walker::{read_field_by_type, InstanceField}};
+        for count in [u32::MAX, 0x7ffffffe, 0x80000000, 100] {
+            let input=count.to_le_bytes();let mut cursor=0;
+            assert!(matches!(read_field_by_type(&input,&mut cursor,&FieldType::String),InstanceField::Bytes(_)));
+            assert_eq!(cursor,0);
+        }
+        let mut cursor=0;
+        let input=[2,0,0,0,0x10,0x04,0x11,0x04];
+        assert!(matches!(read_field_by_type(&input,&mut cursor,&FieldType::String),InstanceField::String(s) if s=="АБ"));
+        assert_eq!(cursor,input.len());
+        let mut cursor=0;
+        assert!(matches!(read_field_by_type(&[],&mut cursor,&FieldType::Primitive{kind:1,size:0}),InstanceField::Bytes(_)));
+        assert_eq!(cursor,0);
+    }
 }

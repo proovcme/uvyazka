@@ -615,7 +615,7 @@ pub fn read_field_by_type(
         FieldType::Primitive { kind, size } => {
             let n = *size as usize;
             let slice = rem();
-            if slice.len() < n {
+            if slice.len() < n || (*kind == 0x01 && slice.is_empty()) {
                 return InstanceField::Bytes(slice.to_vec());
             }
             match (*kind, *size) {
@@ -681,14 +681,18 @@ pub fn read_field_by_type(
                 return InstanceField::Bytes(slice.to_vec());
             }
             let char_count = u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]) as usize;
-            let byte_count = char_count.saturating_mul(2);
-            if slice.len() < 4 + byte_count {
+            // wasm32 usize is 32-bit: saturation followed by +4 used to
+            // wrap, pass the length check and panic on slice[4..3]. Treat
+            // impossible/truncated lengths as undecoded bytes on every target.
+            let Some(end) = char_count.checked_mul(2).and_then(|n| n.checked_add(4)) else {
                 return InstanceField::Bytes(slice.to_vec());
-            }
-            let utf16_bytes = &slice[4..4 + byte_count];
+            };
+            let Some(utf16_bytes) = slice.get(4..end) else {
+                return InstanceField::Bytes(slice.to_vec());
+            };
             // Decode as UTF-16LE. encoding_rs is already in deps.
             let (text, _, had_errors) = encoding_rs::UTF_16LE.decode(utf16_bytes);
-            *cursor += 4 + byte_count;
+            *cursor += end;
             if had_errors {
                 // Fall back to raw bytes when encoding failed.
                 InstanceField::Bytes(utf16_bytes.to_vec())

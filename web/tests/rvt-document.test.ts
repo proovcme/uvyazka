@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {category,identifier,linked,schedule,sheetPlacements,viewOrientation,scheduleCsv} from '../src/rvt-document.ts';
+import {category,identifier,linked,schedule,sheetPlacements,viewOrientation,scheduleCsv,scheduleGrids,savedCellState} from '../src/rvt-document.ts';
 import type {NativeRecord} from '../src/rvt-document.ts';
+import type {SavedCell} from '../src/rvt-document.ts';
 function record(class_name='DBViewSchedule'):NativeRecord{return {identity:{element_id:12},class_name,kind:'schedule',status:'complete',source:{},graph:{objects:[{class_name,fields:{}}],edges:[]}};}
 function fixture(){const r=record(),g=r.graph!;g.objects[0].fields={m_pSchema:{offset:10,pointer_token:1},m_pData:{offset:11,pointer_token:1}};
  g.objects.push({class_name:'ScheduleSchema',fields:{m_pFields:[{offset:20,pointer_token:1}],m_fieldIds:[{m_id:7}]}},{class_name:'ScheduleField',fields:{m_columnHeading:'Количество',m_hidden:false}},{class_name:'ScheduleData',fields:{m_SectionData:[{offset:30,pointer_token:1}]}},{class_name:'TableSectionData',fields:{m_index:1,m_tableCells:[{offset:40,pointer_token:1}]}},{class_name:'TableRowCellData',fields:{m_arrCells:[{offset:50,pointer_token:1}]}},{class_name:'TableCellData',fields:{m_row:3,m_column:2,m_text:'=1+1'}},{class_name:'TableCellData',fields:{m_text:'unrelated'}});
@@ -17,4 +18,19 @@ test('sheet includes schedule owner links and excludes its own viewport',()=>{
  p.graph!.objects[0].fields={m_ownerDBViewId:{m_id:12},m_scheduleId:{m_id:99}};
  own.graph!.objects[0].fields={m_dbViewId:{m_id:12},m_dbDrawingId:{m_id:999}};
  assert.deepEqual(sheetPlacements(s,[p,own]),[p]);
+});
+test('saved grid preserves sparse coordinates, sections, conflicts and unpositioned evidence',()=>{
+ const base=schedule(fixture()).cells[0];
+ const cell=(section:number,row:number|null,column:number|null,text:string|null):SavedCell=>({...base,section,row,column,text});
+ const input=[cell(1,1000000000,1000000000,'large'),cell(1,0,2,'a'),cell(1,0,2,'b'),cell(1,null,2,'unknown'),cell(1,-1,2,'invalid'),cell(0,0,2,'heading')];
+ const grids=scheduleGrids(input);
+ assert.equal(grids.length,2);assert.deepEqual(grids[0].rows,[0,1000000000]);assert.deepEqual(grids[0].columns,[2,1000000000]);
+ assert.equal(grids[0].cells.size,2);assert.deepEqual(grids[0].cells.get('0:2'),input.slice(1,3));assert.deepEqual(grids[0].unpositioned,input.slice(3,5));
+ assert.equal(grids[1].cells.get('0:2')?.[0].text,'heading');
+});
+test('cell states distinguish absent evidence, unreadable text, saved empty text, zero and conflicts',()=>{
+ const base=schedule(fixture()).cells[0];
+ assert.equal(savedCellState([]),'missing');assert.equal(savedCellState([{...base,text:null}]),'unreadable');
+ assert.equal(savedCellState([{...base,text:''}]),'empty');assert.equal(savedCellState([{...base,text:'0'}]),'text');
+ assert.equal(savedCellState([base,{...base}]),'conflict');
 });

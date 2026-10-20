@@ -6,12 +6,14 @@ import shutil
 import subprocess
 import zipfile
 import ifcopenshell
+from setup_rvt import verify_source
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULES = ['__init__', 'simulation', 'critical_path', 'planner', 'production',
            'packages', 'mep', 'access', 'quantities', 'phases']
 
 def build(skip_rust=False):
+    verify_source()
     target = ROOT / '.uvyazka-build/browser-runtime'
     target.mkdir(parents=True, exist_ok=True)
     crate = ROOT / 'integrations/rvt-browser-bridge'

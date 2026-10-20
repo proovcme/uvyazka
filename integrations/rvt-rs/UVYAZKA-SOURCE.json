@@ -688,7 +688,8 @@
     },
     {
       "path": "src/walker.rs",
-      "sha256": "0662796748a05c72c1acf2a7aef4c774d28541edeaa2b91a1a0edc0c778d813a"
+      "sha256": "4f0d379beab061b2ad2a090e29a6ec0f0dfed6c7259aaba6b4396f53590facf9",
+      "upstream_sha256": "0662796748a05c72c1acf2a7aef4c774d28541edeaa2b91a1a0edc0c778d813a"
     },
     {
       "path": "src/writer.rs",
@@ -717,6 +718,13 @@
         "src/partition_mep_systems.rs",
         "src/partition_schema_mvp.rs",
         "src/ifc/mod.rs"
+      ]
+    },
+    {
+      "id": "uvyazka-wasm-field-bounds-v1",
+      "description": "Checked UTF-16 length arithmetic and slice bounds on WASM32; reject zero-byte boolean fields without panic. Invalid fields remain raw bytes.",
+      "files": [
+        "src/walker.rs"
       ]
     }
   ]

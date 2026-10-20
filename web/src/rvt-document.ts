@@ -59,3 +59,19 @@ export function sheetPlacements(sheet:NativeRecord,records:NativeRecord[]):Nativ
 }
 export function csvCell(v:unknown):string{let text=v==null?'':String(v);if(/^[=+@\-\t\r]/.test(text))text="'"+text;return '"'+text.replaceAll('"','""')+'"';}
 export function scheduleCsv(r:NativeRecord):string{return '\ufeff'+[['Секция','Строка (исходная)','Колонка (исходная)','Сохранённый текст','Путь в записи'],...schedule(r).cells.map(c=>[c.section,c.row,c.column,c.text,JSON.stringify(c.path)])].map(row=>row.map(csvCell).join(',')).join('\r\n');}
+
+export type SavedCell=ReturnType<typeof schedule>['cells'][number];
+export interface SavedGrid {section:unknown;rows:number[];columns:number[];cells:Map<string,SavedCell[]>;unpositioned:SavedCell[]}
+/** Sparse index: no missing cells are invented, duplicate addresses survive. */
+export function scheduleGrids(cells:SavedCell[]):SavedGrid[]{
+ const groups=new Map<string,SavedGrid>();
+ for(const cell of cells){const key=JSON.stringify(cell.section)??'unknown';let grid=groups.get(key);if(!grid){grid={section:cell.section,rows:[],columns:[],cells:new Map(),unpositioned:[]};groups.set(key,grid);}
+  if(cell.row===null||cell.column===null||!Number.isSafeInteger(cell.row)||!Number.isSafeInteger(cell.column)||cell.row<0||cell.column<0){grid.unpositioned.push(cell);continue;}
+  const address=`${cell.row}:${cell.column}`,existing=grid.cells.get(address)??[];existing.push(cell);grid.cells.set(address,existing);
+ }
+ for(const grid of groups.values()){const rows=new Set<number>(),columns=new Set<number>();for(const entries of grid.cells.values()){rows.add(entries[0].row!);columns.add(entries[0].column!);}grid.rows=[...rows].sort((a,b)=>a-b);grid.columns=[...columns].sort((a,b)=>a-b);}
+ return [...groups.values()];
+}
+export function savedCellState(cells:SavedCell[]):'missing'|'conflict'|'unreadable'|'empty'|'text'{
+ if(!cells.length)return 'missing';if(cells.length>1)return 'conflict';if(cells[0].text===null)return 'unreadable';return cells[0].text===''?'empty':'text';
+}

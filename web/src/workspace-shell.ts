@@ -18,7 +18,7 @@ export const workspaceShell=`
 <header class="app-header">
  <a class="brand" id="memory-link" href="/" aria-label="Увязка — база проекта">увязка</a>
  <div class="file-heading"><h1 id="file-title">Загрузка модели…</h1><span id="geometry-kind"></span></div>
- <nav class="mode-switch" aria-label="Режим работы"><button id="mode-view" aria-pressed="true">Модель</button><button id="mode-simulate" aria-pressed="false">Симуляция</button></nav>
+ <nav class="mode-switch" aria-label="Режим работы"><button id="mode-view" aria-pressed="true">Модель</button><button id="mode-simulate" aria-pressed="false">Симуляция</button><a id="measurement-link" href="/measurements/" hidden>Лист и измерения ↗</a></nav>
  <div class="header-actions"><a id="back" href="/">База проекта</a><button id="open-file" aria-label="Открыть файл" title="Открыть файл">${icon('open')}<span>Открыть</span></button></div>
 </header>
 <main>

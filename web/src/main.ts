@@ -106,6 +106,8 @@ function renderState() {
 async function loadProject(id:string) {
   ++generation; ++modelGeneration; touring=false;el('tour').setAttribute('aria-pressed','false'); if(clock) clock.playing=false; project=id; el('error').hidden=true;
   el<HTMLAnchorElement>('back').href=DEMO?'/':'/?project='+encodeURIComponent(id); if(DEMO)el('back').textContent='locia.work ↗'; if(!DEMO)el<HTMLAnchorElement>('memory-link').href=el<HTMLAnchorElement>('back').href;
+  el('measurement-link').hidden=DEMO;
+  if(!DEMO)el<HTMLAnchorElement>('measurement-link').href='/measurements/?project='+encodeURIComponent(id);
   history.replaceState(null,'','?project='+encodeURIComponent(id));
   const key=project; const [models,runs]=await Promise.all([api<{items:{model_id:string;name:string}[]}>('models'),api<{items:{run_id:string;scenario_id:string;scenario_revision:number;duration_minutes:number;name?:string}[]}>('runs')]); if(key!==project)return;
   el<HTMLSelectElement>('models').innerHTML='<option value="">Без геометрии</option>'+models.items.map(m=>`<option value="${esc(m.model_id)}">${esc(m.name)}</option>`).join('');

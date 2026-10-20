@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Лист и измерения — Увязка</title><link rel="stylesheet" href="/measurements.css">
+<script type="module" src="/measurements.js"></script></head>
+<body>
+<header class="topbar"><a id="back" class="brand" href="/">У<span>↔</span>вязка</a>
+<span class="divider"></span><strong>Лист и измерения</strong>
+<label class="project-label">Проект <select id="project" aria-label="Проект"></select></label>
+<a id="model-link" href="/simulation/">Модель и симуляция ↗</a></header>
+<main class="desk">
+<aside class="sources">
+<span class="eyebrow">01 / ИСТОЧНИК</span>
+<h1>Чертёж.<br>Вид. Контур.</h1>
+<p class="muted">Каждое число — с местом на листе и своим масштабом.</p>
+<form id="find-docs"><label for="query">Найти документ</label><div class="input-action"><input id="query" placeholder="Имя файла или шифр"><button>Найти</button></div></form>
+<label for="document">PDF проекта</label><select id="document"><option value="">Выберите PDF</option></select>
+<div class="row"><button id="prev-docs">←</button><small id="doc-count"></small><button id="next-docs">→</button></div>
+<form id="open-page" class="row"><label for="page">Страница</label><input id="page" type="number" min="1" step="1" value="1"><button>Открыть</button></form>
+<div class="section-label"><span class="eyebrow">02 / ВИДЫ</span><button id="reload" title="Получить изменения агента">Обновить</button></div>
+<label for="views">Сохранённый вид</label><select id="views"><option value="">Весь лист</option></select>
+<div class="row"><button id="prev-views">←</button><small id="view-count"></small><button id="next-views">→</button></div>
+<button id="new-view" class="wide">＋ Выделить новый вид</button>
+<div id="source-info" class="source-info">Откройте зарегистрированный PDF или выберите вид, сохранённый агентом.</div>
+<div class="local-note"><span class="dot"></span>База проекта на этом компьютере<p>MCP и браузер читают одни записи. Исходный PDF остаётся неизменным.</p></div>
+</aside>
+<section class="drawing" aria-label="Чертёж">
+<div class="drawing-toolbar"><div class="mode-tools" role="group" aria-label="Инструменты">
+<button data-mode="inspect" aria-pressed="true">Просмотр</button><button data-mode="calibration" aria-pressed="false">Контрольный размер</button><button data-mode="length" aria-pressed="false">Длина</button><button data-mode="area" aria-pressed="false">Площадь</button></div>
+<label class="zoom-label">Масштаб экрана <select id="zoom"><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option><option value="3">300%</option></select></label></div>
+<p id="instruction" class="instruction">Выберите PDF проекта. Затем выделите отдельный вид и задайте контрольный размер.</p>
+<div id="viewport" class="viewport"><div id="paper" hidden>
+<img id="sheet" alt="Исходный лист с сохранёнными измерениями" draggable="false">
+<svg id="overlay" role="img" aria-label="Выбранные точки контура"></svg></div>
+<div id="blank" class="blank"><span>↔</span><h2>От листа к проверяемому числу</h2><p>Два вида на одном листе могут иметь разные масштабы.<br>Выберите источник слева, чтобы начать.</p></div></div>
+<div class="drawing-footer"><span id="frame-info">Координаты сохраняются относительно исходного PDF</span><span>Синий — контроль · янтарный — измерения</span></div>
+</section>
+<aside class="inspector">
+<span class="eyebrow">03 / ИЗМЕРЕНИЕ</span><h2 id="edit-title">Основание результата</h2>
+<p id="calibration-info" class="calibration-info">Масштаб вида ещё не задан.</p>
+<details id="editor"><summary>Основание и точки</summary><form id="save-form">
+<label for="name">Название вида или измерения</label><input id="name" maxlength="2000" placeholder="Например, пол помещения 101">
+<label for="basis">Что измеряем / основание</label><input id="basis" maxlength="2000" placeholder="По внутренним граням стен">
+<div id="control-field" hidden><label for="length">Контрольный размер, м</label><input id="length" type="number" step="any" min="0" placeholder="Например, 6"></div>
+<label for="reason">Комментарий к записи</label><textarea id="reason" rows="2" maxlength="2000" placeholder="Почему выбран этот контур или размер"></textarea>
+<div class="row"><button type="button" id="undo">Убрать точку</button><button type="button" id="clear">Очистить</button></div>
+<p id="point-count" class="muted">Точек: 0</p>
+<details class="precise"><summary>Точки точно, в координатах PDF</summary><label for="coordinates">По одной паре x, y на строку</label><textarea id="coordinates" rows="4" placeholder="30, 60&#10;130, 60"></textarea><button type="button" id="apply-coordinates">Применить точки</button></details>
+<button id="save" class="primary wide" disabled>Сохранить в проект</button>
+</form></details>
+<p id="message" role="status" aria-live="polite"></p><button id="retry" class="wide" hidden>Повторить тот же запрос</button>
+<div class="section-label"><h2>Сохранено в виде</h2><span id="record-count"></span></div>
+<p class="muted">Расчёт и отметка агента не означают инженерное принятие.</p>
+<div id="records"></div><div class="row"><button id="prev-records">←</button><span id="record-page"></span><button id="next-records">→</button></div>
+</aside>
+</main>
+<dialog id="history"><div class="row"><h2>История измерения</h2><button id="close-history">Закрыть</button></div><div id="history-body"></div><button id="more-history" hidden>Следующие ревизии</button></dialog>
+</body></html>

@@ -26,7 +26,7 @@ function locatorName(l) {
   return 'Строка: ' + (l.line || l.row || '—');
 }
 let current = '', projects = [], facts = [], checks = [], status = {}, view = 'overview', offset = 0, timer, generation = 0, resultGeneration = 0;
-const routes = {overview:'Обзор проекта',facts:'Все показатели',rooms:'Помещения',capacity:'ТУ и мощности',quantities:'Объёмы и материалы',finance:'Финансы',checks:'Сопоставления',coordination:'Увязка разделов',rvt:'Загрузить RVT',simulation:'График и модель',documents:'Документы',search:'Поиск по тексту',portfolio:'Все проекты'};
+const routes = {overview:'Обзор проекта',facts:'Все показатели',rooms:'Помещения',capacity:'ТУ и мощности',quantities:'Объёмы и материалы',finance:'Финансы',checks:'Сопоставления',coordination:'Увязка разделов',rvt:'Загрузить RVT',simulation:'График и модель',measurements:'Лист и измерения',documents:'Документы',search:'Поиск по тексту',portfolio:'Все проекты'};
 function url(path) { const u = new URL(path, location.origin); u.searchParams.set('project_id', current); return u.pathname + u.search; }
 async function api(path) { const r = await fetch(path === '/api/projects' ? path : url(path)); const d = await r.json(); if (!r.ok) throw Error(d.error); return d; }
 function badge(s) { return `<span class="badge ${esc(s)}">${esc(statusNames[s] || s)}</span>`; }
@@ -52,6 +52,9 @@ async function route() {
   $('#navigation').innerHTML = Object.entries(routes).map(([key,title]) => `<a href="#${key}" class="nav-item ${key === view ? 'active' : ''}">${esc(title)}</a>`).join('');
   $('#section-select').innerHTML = Object.entries(routes).map(([key,title]) => `<option value="${key}" ${key === view ? 'selected' : ''}>${esc(title)}</option>`).join('');
   if(view==='rvt'){await window.UvyazkaRvt.mount(current,$('#view'));return;}
+  if(view==='measurements'){
+    $('#view').innerHTML=panel('Измерения по отдельным видам',`<div class="detail-info"><p>Выберите PDF, выделите вид, задайте контрольный размер и обведите длину или площадь. Контуры, источники и ревизии сохраняются в той же базе, с которой работает агент.</p><a class="button" href="/measurements/?project=${encodeURIComponent(current)}">Открыть лист и измерения →</a><p>Смена масштаба требует явного пересчёта. Числа без актуального основания помечаются вопросом.</p></div>`);return;
+  }
   if (view === 'portfolio') {
     $('#view').innerHTML = panel('Реестр проектов', `<div class="table-wrap"><table><thead><tr><th>Объект</th><th>Документы</th><th>Наблюдения</th><th></th></tr></thead><tbody>${projects.map(p => `<tr><td>${esc(p.name)}<span class="fact-id">${esc(p.id)} · ${esc(p.location)}</span></td><td>${p.counts?.documents ?? '—'}</td><td>${p.counts?.facts ?? '—'}</td><td><button class="source-button" data-project="${esc(p.id)}">Открыть →</button></td></tr>`).join('')}</tbody></table></div>`); return;
   }

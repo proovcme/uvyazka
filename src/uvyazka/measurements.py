@@ -112,7 +112,10 @@ def geometry(kind, points, box):
 
 
 class Measurements:
-    def __init__(self, workspace, project_id):
+    def __init__(self, workspace, project_id, actor="agent"):
+        if actor not in {"agent", "user"}:
+            raise ValueError("Unknown measurement actor")
+        self.actor = actor
         self.workspace, self.project_id = workspace, project_id
         self.path = workspace.db_path(project_id)
         with connection(self.path) as db:
@@ -128,14 +131,14 @@ class Measurements:
             raise ValueError("Unknown " + kind + ": " + key)
         return None
 
-    @staticmethod
-    def append(db, kind, value):
+    def append(self, db, kind, value):
+        value["created_by"] = self.actor
         db.execute("insert into drawing_records values(?,?,?,?)",
                    (kind, value["id"], value["revision"], encode(value)))
 
     def mutate(self, request_id, payload, action):
         identifier(request_id)
-        serialized = encode(payload).encode()
+        serialized = encode(payload if self.actor == "agent" else [self.actor, payload]).encode()
         if len(serialized) > 1024*1024:
             raise ValueError("Mutation payload exceeds 1 MiB")
         fingerprint = hashlib.sha256(serialized).hexdigest()
@@ -242,7 +245,7 @@ class Measurements:
                     "orientation_degrees": finite(view.get("orientation_degrees", 0)),
                     "revision": expected_revision+1, "coordinate_system": COORDINATES,
                     "original_page_rotation": rotation, "created_at": now(),
-                    "interpretation_status": "agent_proposed"}
+                    "interpretation_status": self.actor + "_proposed"}
             self.append(db, "view", item)
             return {"view": item, "effect": "New view revision requires its own calibration. Previous results remain in history."}
         return self.mutate(request_id, ["save_view", view, expected_revision], action)
@@ -273,7 +276,7 @@ class Measurements:
             value = {"id": view_id, "revision": expected_calibration_revision+1,
                      "view_revision": view["revision"], "points": vertices, "length_m": real,
                      "metres_per_point": real/length, "basis": text(basis, "basis"),
-                     "status": "agent_proposed", "method": "uniform_two_point",
+                     "status": self.actor + "_proposed", "method": "uniform_two_point",
                      "created_at": now(), "limitations": "Uniform planar scale only; no distortion or broken-view correction."}
             self.append(db, "calibration", value)
             return {"calibration": value, "effect": "Dependent measurements require explicit recalculation; historical values are retained."}
@@ -457,14 +460,15 @@ class Measurements:
                                        color=(.9, .15, .1) if stale else (1, .6, 0), width=1.2)
                     for p in points:
                         page.draw_circle(p, 1.6, color=(.1, .2, .3), fill=(1, .7, .1))
-                    label = f"{key}: {item['value']:.6g} {item['unit']}" + (" STALE" if stale else " UNREVIEWED")
+                    label_key = key if len(key) <= 18 else key[:18] + "..."
+                    label = f"{label_key}: {item['value']:.6g} {item['unit']}" + (" STALE" if stale else " UNREVIEWED")
                     page.insert_text(points[0]+(2, -3), label, fontsize=7, color=(.15, .2, .25))
                     rendered.append({"id": key, "revision": item["revision"], "stale": stale})
                 if cal and cal["view_revision"] == view["revision"]:
                     control = [pymupdf.Point(p) for p in cal["points"]]
                     page.draw_line(*control, color=(0, .45, .75), width=1.2)
                     page.insert_text(control[0]+(2, 12),
-                        f"Control {cal['length_m']:.6g} m / calibration {cal['revision']} / AGENT",
+                        f"Control {cal['length_m']:.6g} m / calibration {cal['revision']} / {cal.get('created_by', 'agent').upper()}",
                         fontsize=7, color=(0, .35, .65))
             elif measurement_ids:
                 raise ValueError("Select a view to overlay measurements")

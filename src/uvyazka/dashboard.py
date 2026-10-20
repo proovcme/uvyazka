@@ -29,11 +29,17 @@ def make_handler(workspace: Workspace):
                 return self.send({"error": "Loopback host required"}, status=403)
             request = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(request.query).items()}
             try:
+                from .measurement_http import serve_get as measurement_get
+                if measurement_get(self, workspace, uploads.token, request.path, q):return
                 if serve_get(self,uploads,request.path,q):return
                 from .construction.http import serve_route
                 if serve_route(self, workspace, request.path, q):
                     return
                 static = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"), "/rvt.js": ("rvt.js", "text/javascript"), "/style.css": ("style.css", "text/css")}
+                static.update({"/measurements/": ("measurements.html", "text/html"),
+                               "/measurements.js": ("measurements.js", "text/javascript"),
+                               "/measurement-coordinates.js": ("measurement-coordinates.js", "text/javascript"),
+                               "/measurements.css": ("measurements.css", "text/css")})
                 if request.path in static:
                     name, mime = static[request.path]
                     return self.send((STATIC / name).read_bytes(), mime + "; charset=utf-8")
@@ -85,19 +91,24 @@ def make_handler(workspace: Workspace):
             if self.headers.get('Host') not in {f'127.0.0.1:{self.server.server_port}',f'localhost:{self.server.server_port}'}:
                 return self.send({'error':'Loopback host required'},status=403)
             request=urlparse(self.path)
-            if request.path!='/api/rvt/upload':
+            measurement = request.path.startswith('/api/measurements/')
+            if request.path!='/api/rvt/upload' and not measurement:
                 return self.send({"error": "Use explicit MCP tools for observations"}, status=405)
             origin=self.headers.get('Origin')
             if (origin and origin!='http://'+self.headers['Host']) or not hmac.compare_digest(self.headers.get('X-Uvyazka-Token',''),uploads.token):
-                return self.send({'error':'Open the local dashboard before uploading'},status=403)
+                return self.send({'error':'Open the local dashboard before writing'},status=403)
             try:
+                if measurement:
+                    from .measurement_http import serve_post
+                    query={k:v[0] for k,v in parse_qs(request.query).items()}
+                    return serve_post(self, workspace, request.path, query.get('project_id',''))
                 if self.headers.get('Content-Type')!='application/octet-stream':raise ValueError('Raw RVT upload required')
                 if self.headers.get('Transfer-Encoding'):raise ValueError('Content-Length required')
                 query={k:v[0] for k,v in parse_qs(request.query).items()}
                 self.connection.settimeout(60)
                 result=uploads.receive(query.get('project_id',''),query.get('filename',''),int(self.headers.get('Content-Length','0')),self.rfile,query.get('simulate')=='1')
                 self.send(result,status=202)
-            except (ValueError,OSError) as error:self.send({'error':str(error)},status=400)
+            except (ValueError,KeyError,TypeError,OSError) as error:self.send({'error':str(error)},status=400)
 
         def log_message(self, *args):
             pass

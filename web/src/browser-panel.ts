@@ -61,7 +61,7 @@ export function browserPanel(callbacks:{reset:()=>void;openDocument:()=>void;doc
         if(data.job!==active)return;
         if(data.kind==='document'){
           callbacks.document(data.document);
-          journal.event(jobRun,data.document.status==='partial'?'warning':'info','Каталог видов и таблиц прочитан',{cached:!!data.cached,records:data.document.records.length,status:data.document.status,error:data.document.error,clipped_records:data.document.clipped_records});
+          journal.event(jobRun,data.document.status==='partial'||data.document.schedule_data?.status==='partial'?'warning':'info','Каталог видов и таблиц прочитан',{cached:!!data.cached,records:data.document.records.length,status:data.document.status,error:data.document.error,clipped_records:data.document.clipped_records,schedule_parameters:data.document.schedule_data?{records:data.document.schedule_data.records.length,status:data.document.schedule_data.status,error:data.document.schedule_data.error}:undefined});
         }
         else if(data.kind==='document-cache-error'){journal.event(jobRun,'warning','Кеш каталога недоступен; прочитанные данные можно скачать JSON',{message:data.message});}
         else if(data.kind==='document-error'){

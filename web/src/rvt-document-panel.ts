@@ -1,3 +1,4 @@
+import {schedulePreviewPanel} from './rvt-schedule-panel';
 import {category,fields,recordName,schedule,scheduleCsv,sheetPlacements,identifier,viewOrientation,scheduleGrids,savedCellState} from './rvt-document';
 import type {RvtDocument,NativeRecord} from './rvt-document';
 const labels:Record<string,string>={all:'Всё содержимое',views:'Планы и разрезы','3d':'3D-виды',sheets:'Листы',schedules:'Спецификации',templates:'Шаблоны',placements:'Размещения',other:'Другие виды'};
@@ -23,6 +24,7 @@ export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>vo
   if(!record.graph)host.append(node('p','Граф этой записи не прочитан. Пустое содержимое не означает отсутствие данных в RVT.'));
   const exportButton=node('button','Запись JSON');exportButton.onclick=()=>download(JSON.stringify({source:data?.source,record},null,2),'application/json',`rvt-${record.identity.element_id}.json`);host.append(exportButton);
   if(record.kind==='schedule'){
+   if(data)schedulePreviewPanel(host,record,data,download);
    const s=schedule(record);const note=node('p','Сохранённые ячейки RVT. Тело спецификации не вычислено: формулы, фильтры, группировка и итоги Revit пока не воспроизводятся.');note.className='rvt-notice';host.append(note);
    const csv=node('button','Ячейки CSV');csv.disabled=!s.cells.length;csv.onclick=()=>download(scheduleCsv(record),'text/csv',`rvt-schedule-${record.identity.element_id}.csv`);host.append(csv);
    const definition=node('details'),definitionTitle=node('summary',`Поля спецификации · ${s.columns.length}`);definition.append(definitionTitle);host.append(definition);

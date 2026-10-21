@@ -25,10 +25,18 @@ worker.onmessage=async({data})=>{
           let document;try {document=await cache?.get(sourceHash);}catch(error){worker.postMessage({job,kind:'document-cache-error',message:String(error)});}
           const cached=!!document;
           if(!document)document=module.extractRvtDocument(bytes);
+          if(!cached&&document.records.some((r:any)=>r.kind==='schedule')){
+            // Keep the catalogue even if parameter extraction fails.
+            document.source={filename,sha256:sourceHash,size_bytes:sourceSize};
+            worker.postMessage({job,kind:'document',document,cached:false});documentAvailable=true;
+            progress('Чтение параметров экземпляров и типов RVT','Параметры RVT');
+            try {document.schedule_data=module.extractRvtScheduleData(bytes);document.schedule_data.source_sha256=sourceHash;}
+            catch(error){document.schedule_data={status:'partial',records:[],scope:['FamilyInstance','FamilySymbol'],error:String(error),source_sha256:sourceHash};}
+          }
           document.source={filename,sha256:sourceHash,size_bytes:sourceSize};
           // Publish before saving: a quota error must not discard usable data.
           worker.postMessage({job,kind:'document',document,cached});documentAvailable=true;
-          if(!cached&&document.status!=='partial')try {await cache?.put(sourceHash,document);}catch(error){worker.postMessage({job,kind:'document-cache-error',message:String(error)});}
+          if(!cached&&document.status!=='partial'&&document.schedule_data?.status!=='partial')try {await cache?.put(sourceHash,document);}catch(error){worker.postMessage({job,kind:'document-cache-error',message:String(error)});}
         }finally{cache?.close();}
       } catch(error) {
         worker.postMessage({job,kind:'document-error',message:String(error)});

@@ -5,6 +5,12 @@ import type {ImportRun,JournalStorage} from '../src/import-journal.ts';
 function memory():JournalStorage & {records:Map<string,ImportRun>} {
   const records=new Map<string,ImportRun>();return {records,load:async()=>[...records.values()].map(r=>structuredClone(r)),save:async run=>{records.set(run.id,structuredClone(run));}};
 }
+test('partial document import is persisted as partial, not success or cancellation',async()=>{
+ const store=memory(),journal=new ImportJournal(store,'tab'),run=journal.begin('import','synthetic.rvt',100);
+ journal.finish(run,'partial','Каталог доступен, геометрия не прочитана',{readable_document:true});
+ journal.finish(run,'cancelled','late event');await journal.flush();
+ const restored=new ImportJournal(store,'tab');await restored.restore();assert.equal(restored.runs[0].state,'partial');assert.equal(restored.runs[0].warnings,1);
+});
 test('large RVT/IFC files get a warning, not the former demo rejection',()=>{
   for(const name of ['project.rvt','project.IFC'])for(const size of [65,129,512]){
     const result=filePolicy(name,size*1024**2);assert.equal(result.error,undefined);assert.ok(result.warning);

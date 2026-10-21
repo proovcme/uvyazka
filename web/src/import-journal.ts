@@ -1,5 +1,5 @@
 export type LogLevel = 'info'|'warning'|'error';
-export type RunState = 'running'|'completed'|'failed'|'cancelled'|'interrupted';
+export type RunState = 'running'|'completed'|'partial'|'failed'|'cancelled'|'interrupted';
 export interface LogEvent {at:string;elapsed_ms:number;level:LogLevel;stage:string;message:string;details?:unknown}
 export interface ImportRun {
   id:string;owner:string;operation:'import'|'simulation';filename:string;size_bytes:number;

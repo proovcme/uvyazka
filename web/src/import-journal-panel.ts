@@ -1,6 +1,6 @@
 import {ImportJournal,browserJournalStorage,textReport} from './import-journal';
 import type {ImportRun} from './import-journal';
-const stateLabel={running:'В работе',completed:'Завершено',failed:'Ошибка',cancelled:'Отменено',interrupted:'Прервано'};
+const stateLabel={running:'В работе',completed:'Завершено',partial:'Открыто частично',failed:'Ошибка',cancelled:'Отменено',interrupted:'Прервано'};
 export function journalPanel(){
   const dialog=document.createElement('dialog');dialog.className='processing-journal';dialog.id='processing-journal';dialog.setAttribute('aria-labelledby','processing-title');
   dialog.innerHTML=`<div class="panel-head"><h2 id="processing-title">Журнал обработки</h2><button id="processing-close" aria-label="Закрыть журнал">✕</button></div>

@@ -1,6 +1,7 @@
 import {schedulePreviewPanel} from './rvt-schedule-panel';
 import {category,fields,recordName,schedule,scheduleCsv,sheetPlacements,identifier,viewOrientation,scheduleGrids,savedCellState} from './rvt-document';
 import type {RvtDocument,NativeRecord} from './rvt-document';
+import {hasReadableDocument,documentErrorMessage} from './rvt-import-result';
 const labels:Record<string,string>={all:'Всё содержимое',views:'Планы и разрезы','3d':'3D-виды',sheets:'Листы',schedules:'Спецификации',templates:'Шаблоны',placements:'Размещения',other:'Другие виды'};
 const node=<K extends keyof HTMLElementTagNameMap>(tag:K,text?:string)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
 export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>void){
@@ -75,7 +76,7 @@ export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>vo
   host.append(node('small',`Найдено: ${rows.length}`));for(const r of rows.slice(0,shown)){const b=node('button');b.setAttribute('aria-pressed',String(r===selected));b.append(node('span',recordName(r)),node('small',`${labels[category(r)]} · #${r.identity.element_id}`));b.onclick=()=>show(r);host.append(b);}get('rvt-more').hidden=rows.length<=shown;
  }
  get('rvt-more').onclick=()=>{shown+=100;list();};for(const id of ['rvt-search','rvt-kind'])get(id).oninput=()=>{shown=100;selected=null;get('rvt-record-detail').replaceChildren(node('p','Выберите запись в каталоге.'));list();};
- function set(next:RvtDocument|null,message='Загрузите RVT, чтобы прочитать виды, листы и таблицы.') {data=next;selected=null;geometry=false;get<HTMLButtonElement>('rvt-whole').disabled=true;get<HTMLButtonElement>('rvt-export').disabled=!data;get('rvt-record-detail').replaceChildren(node('p','Выберите запись в каталоге.'));get('rvt-document-status').textContent=data?`${data.source?.filename??'RVT'} · ${data.records.length} записей · ${data.status==='partial'?'Прочитано частично':'Каталог прочитан'}${data.error?' · '+data.error:''} · Полнота документа не подтверждена. Каталог кешируется в этом браузере по SHA-256.`:message;list();}
+ function set(next:RvtDocument|null,message='Загрузите RVT, чтобы прочитать виды, листы и таблицы.') {data=next;selected=null;geometry=false;get<HTMLButtonElement>('rvt-whole').disabled=true;get<HTMLButtonElement>('rvt-export').disabled=!data;get('rvt-record-detail').replaceChildren(node('p',hasReadableDocument(data)?'Выберите запись в каталоге.':'Читаемые записи не получены. Это не подтверждение отсутствия видов и таблиц в файле.'));get('rvt-document-status').textContent=data?`${data.source?.filename??'RVT'} · ${data.records.length} записей · ${!hasReadableDocument(data)?'Каталог недоступен':data.status==='partial'?'Прочитано частично':'Каталог прочитан'}${data.error?' · '+documentErrorMessage(data.error):''} · Полнота документа не подтверждена.`:message;list();}
  set(null);
  return {set,geometryReady:(ready:boolean)=>{geometry=ready;get<HTMLButtonElement>('rvt-whole').disabled=!ready;if(selected)show(selected);},open:()=>dialog.showModal()};
 }

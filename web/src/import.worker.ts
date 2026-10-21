@@ -1,10 +1,12 @@
 import { importIfc } from './browser-ifc';
 import {documentCache} from './rvt-document-cache';
+import {rvtImportFailure} from './rvt-import-result';
+import type {RvtDocument} from './rvt-document';
 
 const worker=self as unknown as {onmessage:((event:MessageEvent)=>void)|null;postMessage:(value:unknown,transfer?:Transferable[])=>void};
 worker.onmessage=async({data})=>{
   const {job,buffer,filename,base,memoryMiB=1024}=data;
-  let stage='Проверка файла',conversion:any=null,documentAvailable=false;
+  let stage='Проверка файла',conversion:any=null,rvtDocument:RvtDocument|null=null;
   const progress=(text:string,nextStage=stage,details?:unknown)=>{stage=nextStage;worker.postMessage({job,kind:'progress',stage,text,details});};
   try {
     if(![512,1024,2048].includes(memoryMiB))throw Error('Недопустимый бюджет памяти IFC-декодера');
@@ -28,14 +30,14 @@ worker.onmessage=async({data})=>{
           if(!cached&&document.records.some((r:any)=>r.kind==='schedule')){
             // Keep the catalogue even if parameter extraction fails.
             document.source={filename,sha256:sourceHash,size_bytes:sourceSize};
-            worker.postMessage({job,kind:'document',document,cached:false});documentAvailable=true;
+            rvtDocument=document;worker.postMessage({job,kind:'document',document,cached:false});
             progress('Чтение параметров экземпляров и типов RVT','Параметры RVT');
             try {document.schedule_data=module.extractRvtScheduleData(bytes);document.schedule_data.source_sha256=sourceHash;}
             catch(error){document.schedule_data={status:'partial',records:[],scope:['FamilyInstance','FamilySymbol'],error:String(error),source_sha256:sourceHash};}
           }
           document.source={filename,sha256:sourceHash,size_bytes:sourceSize};
           // Publish before saving: a quota error must not discard usable data.
-          worker.postMessage({job,kind:'document',document,cached});documentAvailable=true;
+          rvtDocument=document;worker.postMessage({job,kind:'document',document,cached});
           if(!cached&&document.status!=='partial'&&document.schedule_data?.status!=='partial')try {await cache?.put(sourceHash,document);}catch(error){worker.postMessage({job,kind:'document-cache-error',message:String(error)});}
         }finally{cache?.close();}
       } catch(error) {
@@ -58,7 +60,11 @@ worker.onmessage=async({data})=>{
     worker.postMessage({job,kind:'imported',model,binary,conversion,convertedIfc},[binary,...(convertedIfc?[convertedIfc]:[])]);
   } catch(error) {
     if(conversion)delete conversion.ifc_step;
-    const message=error instanceof WebAssembly.RuntimeError?'Внутренний сбой движка на этапе «'+stage+'».'+(documentAvailable?' Прочитанный каталог остаётся в «Виды и таблицы».':''):error instanceof Error?error.message:String(error);
+    const message=error instanceof Error?error.message:String(error);
+    if(/\.rvt$/i.test(filename)){
+      const result=rvtImportFailure(message,rvtDocument,conversion);
+      worker.postMessage({job,...result,details:{...result.details,stage,stack:error instanceof Error?error.stack:undefined,memory_budget_mib:memoryMiB}});return;
+    }
     worker.postMessage({job,kind:'error',message,
       details:{stage,stack:error instanceof Error?error.stack:undefined,conversion,memory_budget_mib:memoryMiB}});
   }

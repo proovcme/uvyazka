@@ -4,9 +4,10 @@ import { journalPanel } from './import-journal-panel';
 import { filePolicy } from './import-journal';
 import type { ImportRun } from './import-journal';
 import type {RvtDocument} from './rvt-document';
+import {hasReadableDocument} from './rvt-import-result';
 
 export type BrowserRun=RunPackage & {cpm:{duration_minutes:number;operations:Record<string,{critical:boolean}>}};
-export function browserPanel(callbacks:{reset:()=>void;openDocument:()=>void;document:(data:RvtDocument|null,message?:string)=>void;drawing:(file:File)=>Promise<void>;cancelDrawing:()=>void;model:(model:ModelPackage,binary:ArrayBuffer)=>void|Promise<void>;run:(run:BrowserRun)=>void|Promise<void>}) {
+export function browserPanel(callbacks:{reset:()=>void;openDocument:()=>void;noGeometry:(filename:string,message:string)=>void;document:(data:RvtDocument|null,message?:string)=>void;drawing:(file:File)=>Promise<void>;cancelDrawing:()=>void;model:(model:ModelPackage,binary:ArrayBuffer)=>void|Promise<void>;run:(run:BrowserRun)=>void|Promise<void>}) {
   const section=document.createElement('section');section.className='panel browser-import';section.innerHTML=`
 <h2>Открыть файл</h2>
 <p>Файл остаётся на вашем устройстве. Для RVT и IFC прежний порог размера снят; большие модели требуют больше памяти. DWG/DXF до 64 MiB. Чтение RVT экспериментальное; Revit и агент не нужны.</p>
@@ -33,6 +34,7 @@ export function browserPanel(callbacks:{reset:()=>void;openDocument:()=>void;doc
   };
   const fail=(message:string,details?:unknown)=>{if(run)journal.finish(run,'failed',message,details);stop();status(message+' · подробности в журнале');};
   const download=(id:string,data:Blob,name:string)=>{const old=urls.get(id);if(old)URL.revokeObjectURL(old);const url=URL.createObjectURL(data);urls.set(id,url);const a=el<HTMLAnchorElement>(id);a.href=url;a.download=name;a.hidden=false;};
+  const diagnosticReport=(report:unknown)=>{el('browser-diagnostics').hidden=false;section.querySelector('pre')!.textContent=JSON.stringify(report,null,2);download('browser-report',new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),'uvyazka-diagnostics.json');};
   el('browser-cancel').onclick=()=>{callbacks.cancelDrawing();stop('Отменено пользователем.');status('Обработка отменена. События сохранены в журнале.');};
   el('browser-demo').onclick=async()=>{stop('Переход к учебному примеру.');await journal.flush();location.href=base;};
   el<HTMLInputElement>('browser-file').onchange=async()=>{
@@ -61,7 +63,7 @@ export function browserPanel(callbacks:{reset:()=>void;openDocument:()=>void;doc
         if(data.job!==active)return;
         if(data.kind==='document'){
           callbacks.document(data.document);
-          journal.event(jobRun,data.document.status==='partial'||data.document.schedule_data?.status==='partial'?'warning':'info','Каталог видов и таблиц прочитан',{cached:!!data.cached,records:data.document.records.length,status:data.document.status,error:data.document.error,clipped_records:data.document.clipped_records,schedule_parameters:data.document.schedule_data?{records:data.document.schedule_data.records.length,status:data.document.schedule_data.status,error:data.document.schedule_data.error}:undefined});
+          journal.event(jobRun,data.document.status==='partial'||data.document.schedule_data?.status==='partial'?'warning':'info',hasReadableDocument(data.document)?'Каталог видов и таблиц прочитан':'Читаемые записи каталога не получены',{cached:!!data.cached,records:data.document.records.length,status:data.document.status,error:data.document.error,clipped_records:data.document.clipped_records,schedule_parameters:data.document.schedule_data?{records:data.document.schedule_data.records.length,status:data.document.schedule_data.status,error:data.document.schedule_data.error}:undefined});
         }
         else if(data.kind==='document-cache-error'){journal.event(jobRun,'warning','Кеш каталога недоступен; прочитанные данные можно скачать JSON',{message:data.message});}
         else if(data.kind==='document-error'){
@@ -70,7 +72,17 @@ export function browserPanel(callbacks:{reset:()=>void;openDocument:()=>void;doc
         }
         else if(data.kind==='source')journal.source(jobRun,data.sha256);
         else if(data.kind==='progress'){journal.progress(jobRun,data.stage||'Импорт',data.text,data.details);status(data.text);}
-        else if(data.kind==='error')fail('Не удалось открыть: '+data.message,data.details);
+        else if(data.kind==='error'){
+          diagnosticReport({filename:file.name,sha256:jobRun.sha256,outcome:'failed',message:data.message,...data.details});
+          if(/\.rvt$/i.test(file.name))callbacks.noGeometry(file.name,data.message);
+          fail(/\.rvt$/i.test(file.name)?data.message:'Не удалось открыть: '+data.message,data.details);
+        }
+        else if(data.kind==='partial'){
+          diagnosticReport({filename:file.name,sha256:jobRun.sha256,outcome:'partial',message:data.message,...data.details});
+          journal.finish(jobRun,'partial',data.message,data.details);stop();status(data.message);
+          callbacks.noGeometry(file.name,data.message);
+          document.querySelector<HTMLDialogElement>('#file-dialog')!.close();callbacks.openDocument();
+        }
         else if(data.kind==='imported'){
           importer?.terminate();importer=null;
           const s=data.model.statistics,report={source:data.model.source,statistics:s,systems:data.model.systems,diagnostics:data.model.diagnostics,conversion:data.conversion};

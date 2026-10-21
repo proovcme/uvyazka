@@ -25,7 +25,7 @@ export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>vo
   const exportButton=node('button','Запись JSON');exportButton.onclick=()=>download(JSON.stringify({source:data?.source,record},null,2),'application/json',`rvt-${record.identity.element_id}.json`);host.append(exportButton);
   if(record.kind==='schedule'){
    if(data)schedulePreviewPanel(host,record,data,download);
-   const s=schedule(record);const note=node('p','Сохранённые ячейки RVT. Тело спецификации не вычислено: формулы, фильтры, группировка и итоги Revit пока не воспроизводятся.');note.className='rvt-notice';host.append(note);
+   const s=schedule(record);const note=node('p','Ниже — сохранённые ячейки RVT, без пересчёта. Сверочная ведомость выше строится отдельно; формулы, нативные фильтры и точное оформление Revit пока не воспроизводятся.');note.className='rvt-notice';host.append(note);
    const csv=node('button','Ячейки CSV');csv.disabled=!s.cells.length;csv.onclick=()=>download(scheduleCsv(record),'text/csv',`rvt-schedule-${record.identity.element_id}.csv`);host.append(csv);
    const definition=node('details'),definitionTitle=node('summary',`Поля спецификации · ${s.columns.length}`);definition.append(definitionTitle);host.append(definition);
    if(s.columns.length)table(definition,['Порядок в RVT','ID','Заголовок','Скрыто','Параметр'],s.columns.map(c=>[c.order,c.id,c.properties.m_columnHeading,typeof c.properties.m_hidden==='boolean'?(c.properties.m_hidden?'Да':'Нет'):null,identifier(c.properties.m_paramElemId)]));

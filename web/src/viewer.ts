@@ -1,6 +1,9 @@
+import {sectionPlane} from './section';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { BimElement, ModelPackage } from './model';
+import type {SurfacePoint} from './spatial-measurements';
+import type {Vec3} from './model';
 import { validatePackage } from './model';
 import { ConstructionSite } from './site';
 import type { RunPackage } from './simulation';
@@ -29,7 +32,18 @@ export class Viewer {
   private showFuture = false;
   private site?: ConstructionSite;
   private model?: ModelPackage;
-  private clipHeight: number | null = null;
+  private clipPlanes: THREE.Plane[] = [];
+  private measureHandler: ((point:SurfacePoint)=>void)|null = null;
+  private measurementOverlay?:THREE.Line;
+  setMeasureHandler(handler:((point:SurfacePoint)=>void)|null){this.measureHandler=handler;this.renderer.domElement.style.cursor=handler?'crosshair':'';}
+  showMeasurement(points:Vec3[]){
+    if(this.measurementOverlay){this.scene.remove(this.measurementOverlay);for(const child of this.measurementOverlay.children)if(child instanceof THREE.Points)(child.material as THREE.Material).dispose();this.measurementOverlay.geometry.dispose();(this.measurementOverlay.material as THREE.Material).dispose();this.measurementOverlay=undefined;}
+    if(points.length&&this.model){const o=this.model.coordinate_system.render_origin_m;
+      const vertices=points.map(p=>new THREE.Vector3(p[0]-o[0],p[2]-o[2],-(p[1]-o[1])));
+      if(vertices.length===1)vertices.push(vertices[0].clone().add(new THREE.Vector3(0,.04,0)));
+      this.measurementOverlay=new THREE.Line(new THREE.BufferGeometry().setFromPoints(vertices),new THREE.LineBasicMaterial({color:0xefb65e,depthTest:false}));this.measurementOverlay.renderOrder=100;const dots=new THREE.Points(this.measurementOverlay.geometry,new THREE.PointsMaterial({color:0xffd482,size:7,sizeAttenuation:false,depthTest:false}));dots.renderOrder=101;this.measurementOverlay.add(dots);this.scene.add(this.measurementOverlay);
+    }this.invalidate();
+  }
   private currentElements: BimElement[] = [];
   private observer: ResizeObserver;
   private frame = 0;
@@ -83,12 +97,13 @@ export class Viewer {
       const rect = canvas.getBoundingClientRect();
       this.raycaster.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), this.camera);
       const targets = [...this.meshes.values()].filter((mesh) => mesh.visible);
-      const hit = this.raycaster.intersectObjects(targets, false).find((hit) => this.clipHeight === null || hit.point.y <= this.clipHeight);
+      const hit = this.raycaster.intersectObjects(targets, false).find((hit) => this.clipPlanes.every(plane=>plane.distanceToPoint(hit.point)>=-1e-7));
+      if(this.measureHandler){if(hit&&this.model){const o=this.model.coordinate_system.render_origin_m;this.measureHandler({element_id:String(hit.object.userData.elementId),point_m:[hit.point.x+o[0],-hit.point.z+o[1],hit.point.y+o[2]],triangle_index:hit.faceIndex??null});}return;}
       this.onPick(hit ? String(hit.object.userData.elementId) : null);
     });
     canvas.addEventListener('keydown', (event) => {
       if (event.key.toLowerCase() === 'f') { event.preventDefault(); this.fit(); }
-      if (event.key === 'Escape') this.onPick(null);
+      if (event.key === 'Escape') {this.onPick(null);this.host.dispatchEvent(new CustomEvent('measurement-cancel'));}
     });
     canvas.addEventListener('webglcontextlost', (event) => {
       event.preventDefault();
@@ -290,12 +305,24 @@ export class Viewer {
   }
 
   cutaway(height: number | null) {
-    this.clipHeight = height;
-    const planes = height === null ? [] : [new THREE.Plane(new THREE.Vector3(0, -1, 0), height)];
-    for (const mesh of this.meshes.values()) for (const material of mesh.material) {
-      material.clippingPlanes = planes; material.clipShadows = true; material.needsUpdate = true;
-    }
+    this.applyClip(height===null?[]:[new THREE.Plane(new THREE.Vector3(0,-1,0),height)]);
+  }
+  section(axis:'X'|'Y'|'Z',fraction:number,reverse=false){
+    if(!this.model)return;
+    const plane=sectionPlane(this.model.coordinate_system,axis,fraction,reverse);
+    this.applyClip([new THREE.Plane(new THREE.Vector3(...plane.normal),plane.constant)]);return plane.value;
+  }
+  sectionBox(selectedOnly=false){
+    const mesh=this.selected?this.meshes.get(this.selected):null;
+    if(selectedOnly&&!mesh)return false;
+    const box=selectedOnly?new THREE.Box3().setFromObject(mesh!).expandByScalar(.05):this.bounds.clone();
+    this.applyClip([new THREE.Plane(new THREE.Vector3(1,0,0),-box.min.x),new THREE.Plane(new THREE.Vector3(-1,0,0),box.max.x),new THREE.Plane(new THREE.Vector3(0,1,0),-box.min.y),new THREE.Plane(new THREE.Vector3(0,-1,0),box.max.y),new THREE.Plane(new THREE.Vector3(0,0,1),-box.min.z),new THREE.Plane(new THREE.Vector3(0,0,-1),box.max.z)]);return true;
+  }
+  private applyClip(planes:THREE.Plane[]){
+    this.clipPlanes=planes;
+    for(const mesh of this.meshes.values())for(const material of mesh.material){material.clippingPlanes=planes;material.clipShadows=true;material.needsUpdate=true;}
     for(const edge of this.edges.values()){edge.material.clippingPlanes=planes;edge.material.needsUpdate=true;}
+    if(this.highlight){const materials=Array.isArray(this.highlight.material)?this.highlight.material:[this.highlight.material];for(const m of materials){m.clippingPlanes=planes;m.needsUpdate=true;}}
     this.invalidate();
   }
 
@@ -339,7 +366,7 @@ export class Viewer {
   }
 
   private clearModel() {
-    this.site?.dispose(); this.site = undefined; this.clipHeight = null;
+    this.site?.dispose(); this.site = undefined; this.clipPlanes = [];this.showMeasurement([]);
     this.select(null);
     for(const edge of this.edges.values()){edge.geometry.dispose();edge.material.dispose();}
     this.edges.clear();

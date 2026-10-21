@@ -1,3 +1,6 @@
+import {federate} from './federation';
+import type {SceneMember} from './federation';
+import {spatialPanel} from './spatial-panel';
 import { workspaceShell, icon } from './workspace-shell';
 import {timelineRows,timeLabel} from './timeline';
 import type {TimelineUnit} from './timeline';
@@ -20,6 +23,9 @@ const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp
 let selectedId:string|null=null;
 let workspaceMode: "view"|"simulate" = "view", cadFrame:HTMLIFrameElement|null=null;
 let project = new URL(location.href).searchParams.get('project') || '';
+let measurementProject=project||'browser-local';
+let sceneMembers:SceneMember[]=[],loadedBinary:ArrayBuffer|null=null;
+let sceneVersion=0;
 let requestedModel = new URL(location.href).searchParams.get('model') || '';
 let requestedRun = new URL(location.href).searchParams.get('run') || '';
 let viewer: Viewer | null = null, model: ModelPackage | null = null, run: RunPackage | null = null, clock: PlaybackClock | null = null, frame = 0, last = 0, generation = 0, modelGeneration = 0;
@@ -51,14 +57,15 @@ function selectElement(id: string | null) {
   el('inspector').innerHTML = `<span class="eyebrow">${esc(e.class)}</span><dl><dt>ID</dt><dd>${esc(e.id)}</dd><dt>Этаж</dt><dd>${esc(model?.storeys.find(s=>s.id===e.storey_id)?.name||'Не задан')}</dd><dt>Материалы</dt><dd>${esc(e.materials.join(', ') || 'Не заданы')}</dd></dl>${renderSets(e.quantity_sets)}${renderSets(e.property_sets)}<details><summary>Идентификаторы и источник</summary><dl><dt>GlobalId</dt><dd>${esc(e.global_id||'Не задан')}</dd></dl><pre>${esc(JSON.stringify(e.source,null,2))}</pre></details>`;
 }
 try { viewer = new Viewer(el('canvas'), selectElement); } catch(e) { error('3D недоступно; график и расчёты остаются доступны. ' + String(e)); }
+const spatial=spatialPanel(viewer,()=>model,()=>measurementProject,error);
 el('canvas').addEventListener('viewer-error', ((e: CustomEvent<string>) => error(e.detail)) as EventListener);
 async function loadModel(id: string) {
-  const token = ++modelGeneration; selectedId=null;viewer?.select(null); viewer?.setSite(null);clipped=false;el('cut-controls').hidden=true;el('cut').setAttribute('aria-pressed','false');el('xray').setAttribute('aria-pressed','false');
-  if (!id) { model = null;el('file-title').textContent='Модель не выбрана'; el('no-model').hidden = false; el('geometry-kind').textContent = 'Без геометрии'; viewer?.show(new Set<string>());renderModelTree();renderState();return; }
+  const token = ++modelGeneration; spatial.reset();selectedId=null;viewer?.select(null); viewer?.setSite(null);clipped=false;el('cut-controls').hidden=true;el('cut').setAttribute('aria-pressed','false');el('xray').setAttribute('aria-pressed','false');
+  if (!id) { model = null;loadedBinary=null;el('file-title').textContent='Модель не выбрана'; el('no-model').hidden = false; el('geometry-kind').textContent = 'Без геометрии'; viewer?.show(new Set<string>());renderModelTree();renderState();return; }
   const [pkg, binary] = browserModel?.model_id===id&&browserBinary ? [browserModel,browserBinary] : await Promise.all([api<ModelPackage>('model?model_id=' + encodeURIComponent(id)), fetch(path('geometry.bin?model_id=' + encodeURIComponent(id))).then(async r => {if(!r.ok) throw Error('Не удалось загрузить геометрию');return r.arrayBuffer();})]);
   if (token !== modelGeneration) return;
-  model = pkg; el("workspace-status").textContent=`${pkg.statistics.physical_elements} элементов · ${pkg.storeys.length} уровней${pkg.source.schema==='SyntheticDemo'?' · Учебная модель':''}`; el("file-title").textContent=pkg.source.filename; renderModelTree(); viewer?.load(pkg,binary); viewer?.setSourceColors(false); viewer?.show(new Set(pkg.elements.filter(e => e.role === 'element').map(e=>e.id))); el('no-model').hidden = true;
-  el('geometry-kind').textContent = pkg.source.schema === 'SyntheticDemo' ? 'Синтетическая сводная модель · АР + ОВ' : pkg.source.schema === 'DocumentSpatialModel' ? 'Условная геометрия по документам' : pkg.source.format==='rvt' ? 'RVT → IFC · экспериментальная геометрия' : 'Геометрия IFC'; renderState();
+  model = pkg;loadedBinary=binary; el("workspace-status").textContent=`${pkg.statistics.physical_elements} элементов · ${pkg.storeys.length} уровней${pkg.source.schema==='SyntheticDemo'?' · Учебная модель':''}`; el("file-title").textContent=pkg.source.filename; renderModelTree(); viewer?.load(pkg,binary); viewer?.setSourceColors(false); viewer?.show(new Set(pkg.elements.filter(e => e.role === 'element'&&sceneVisible(e.source_instance_id)).map(e=>e.id))); el('no-model').hidden = true;
+  el('geometry-kind').textContent = pkg.source.schema === 'SyntheticDemo' ? 'Синтетическая сводная модель · АР + ОВ' : pkg.source.schema === 'DocumentSpatialModel' ? 'Условная геометрия по документам' : pkg.federation ? 'Сводная геометрия · совмещение требует проверки' : pkg.source.format==='rvt' ? 'RVT → IFC · экспериментальная геометрия' : 'Геометрия IFC'; renderState();
 }
 async function loadRun(id: string) {
   const token = ++generation; touring=false;el('tour').setAttribute('aria-pressed','false'); if (clock) clock.playing = false;
@@ -111,7 +118,8 @@ function renderState() {
   document.querySelectorAll<HTMLElement>('[data-operation]').forEach(row=>row.dataset.state=state.states.get(row.dataset.operation!)||'pending');
 }
 async function loadProject(id:string) {
-  ++generation; ++modelGeneration; touring=false;el('tour').setAttribute('aria-pressed','false'); if(clock) clock.playing=false; project=id; el('error').hidden=true;
+  measurementProject=id;
+  ++sceneVersion;sceneMembers=[];renderMembers();++generation; ++modelGeneration; touring=false;el('tour').setAttribute('aria-pressed','false'); if(clock) clock.playing=false; project=id; el('error').hidden=true;
   el<HTMLAnchorElement>('back').href=DEMO?'/':'/?project='+encodeURIComponent(id); if(DEMO)el('back').textContent='locia.work ↗'; if(!DEMO)el<HTMLAnchorElement>('memory-link').href=el<HTMLAnchorElement>('back').href;
   el('measurement-link').hidden=DEMO;
   if(!DEMO)el<HTMLAnchorElement>('measurement-link').href='/measurements/?project='+encodeURIComponent(id);
@@ -154,37 +162,72 @@ el('site').addEventListener('change',()=>{renderState();viewer?.fit();});
 el('scenes').addEventListener('change',()=>{if(!run||!model||!clock)return;const i=el<HTMLSelectElement>('scenes').value;if(i==='')return;const s=workScenes(run,model)[Number(i)];touring=false;el('tour').setAttribute('aria-pressed','false');clock.playing=false;clock.seek((s.start+s.end)/2);renderState();setSceneCut(s.cut??null);if(s.targetIds.length)viewer?.focusTargets(s.targetIds);else viewer?.fit();if(s.reference){viewer?.setConstruction(null);viewer?.setSite(null);}});
 let clipped=false;
 function setSceneCut(height:number|null){
-  clipped=height!==null;
+  el<HTMLSelectElement>('cut-axis').value='Z';el<HTMLInputElement>('cut-reverse').checked=false;clipped=height!==null;
   const bounds=viewer?.modelHeight();
   if(height!==null&&bounds)el<HTMLInputElement>('cut-position').value=String(Math.max(0,Math.min(100,(height-bounds.min)/Math.max(.001,bounds.max-bounds.min)*100)));
   updateCut();
 }
 function updateCut(){
-  const bounds=viewer?.modelHeight();const height=bounds?bounds.min+(bounds.max-bounds.min)*Number(el<HTMLInputElement>('cut-position').value)/100:0;
-  viewer?.cutaway(clipped?height:null);el('cut-controls').hidden=!clipped;el('cut').setAttribute('aria-pressed',String(clipped));el('cut-height').textContent=(height+(model?.coordinate_system.render_origin_m[2]||0)).toFixed(2)+' м';
+  const axis=el<HTMLSelectElement>('cut-axis').value as 'X'|'Y'|'Z';
+  const value=clipped?viewer?.section(axis,Number(el<HTMLInputElement>('cut-position').value)/100,el<HTMLInputElement>('cut-reverse').checked):undefined;
+  if(!clipped)viewer?.cutaway(null);
+  el('cut-controls').hidden=!clipped;el('cut').setAttribute('aria-pressed',String(clipped));el('cut-height').textContent=value===undefined?'':value.toFixed(2)+' м';
 }
 el('cut').addEventListener('click',()=>{clipped=!clipped;updateCut();});
 el('cut-position').addEventListener('input',updateCut);
+el('cut-axis').onchange=updateCut;el('cut-reverse').onchange=updateCut;
+el('cut-box').onclick=()=>{if(!viewer?.sectionBox(true))error('Выберите элемент для ограничения области');else el('cut-height').textContent='Область + 50 мм';};
 el('xray').onclick=()=>{const active=el('xray').getAttribute('aria-pressed')!=='true';el('xray').setAttribute('aria-pressed',String(active));viewer?.setXray(active,model?.elements??[]);};
 document.body.classList.add('viewer-app','schedule-open');document.body.dataset.mode='view';
 if(DEMO){const downloads=document.createElement('a');downloads.href='./downloads/';downloads.textContent='Исходники';el('back').before(downloads);el('back').hidden=true;document.body.classList.add('public-demo');el<HTMLAnchorElement>('memory-link').href='https://github.com/proovcme/uvyazka';document.querySelector('.notice')!.textContent='Учебная модель. Откройте свой файл для просмотра или перейдите в «Симуляцию», чтобы изучить сценарий строительства.';}
 function setMode(mode:'view'|'simulate') {
   if(mode==='simulate'&&cadFrame){error('DWG открыт как чертёж. Для симуляции загрузите IFC или RVT с геометрией и рассчитайте сценарий.');return;}
-  workspaceMode=mode;document.body.dataset.mode=mode;
+  spatial.reset();workspaceMode=mode;document.body.dataset.mode=mode;
   el('mode-view').setAttribute('aria-pressed',String(mode==='view'));el('mode-simulate').setAttribute('aria-pressed',String(mode==='simulate'));
   if(clock)clock.playing=false;touring=false;last=0;cancelAnimationFrame(frame);el('tour').setAttribute('aria-pressed','false');
   setPanel('tree',!matchMedia('(max-width: 650px)').matches);setPanel('inspector',!matchMedia('(max-width: 950px)').matches);
-  if(mode==='simulate')viewer?.show(new Set(model?.elements.filter(e=>e.role==='element').map(e=>e.id)??[]));
-  renderState();if(mode==='view'){viewer?.show(new Set(model?.elements.filter(e=>e.role==='element').map(e=>e.id)??[]));viewer?.fit();}
+  if(mode==='simulate')viewer?.show(new Set(model?.elements.filter(e=>e.role==='element'&&sceneVisible(e.source_instance_id)).map(e=>e.id)??[]));
+  renderState();if(mode==='view'){viewer?.show(new Set(model?.elements.filter(e=>e.role==='element'&&sceneVisible(e.source_instance_id)).map(e=>e.id)??[]));viewer?.fit();}
 }
 el('mode-view').onclick=()=>setMode('view');el('mode-simulate').onclick=()=>setMode('simulate');
+function sceneVisible(instance:string|undefined){return !instance?(sceneMembers.length!==1||sceneMembers[0].visible):sceneMembers.find(m=>m.instanceId===instance)?.visible!==false;}
+function applySceneVisibility(){const floor=el<HTMLSelectElement>('storey-filter').value;viewer?.show(new Set((model?.elements??[]).filter(e=>e.role==='element'&&sceneVisible(e.source_instance_id)&&(!floor||e.storey_id===floor)).map(e=>e.id)));renderElements();}
+async function presentMembers(members:SceneMember[]){
+  const version=++sceneVersion;
+  if(!members.length){sceneMembers=[];browserModel=null;browserBinary=null;browserRun=null;await loadRun('');await loadModel('');renderMembers();document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:null}));return;}
+  // A single untransformed member keeps its original IDs for existing schedules.
+  const only=members[0],single=members.length===1&&only.offset.every(n=>n===0)&&only.rotation===0;
+  const result=single?{model:only.model,binary:only.binary}:await federate(members);if(version!==sceneVersion)return;
+  sceneMembers=members;browserModel=result.model;browserBinary=result.binary;browserRun=null;
+  await loadRun('');el<HTMLSelectElement>('runs').innerHTML='<option>Сценарий не рассчитан</option>';
+  el<HTMLSelectElement>('models').innerHTML=`<option value="${esc(result.model.model_id)}">${esc(result.model.source.filename)}</option>`;
+  await loadModel(result.model.model_id);viewer?.setSourceColors(members.length>1);applySceneVisibility();
+}
+function renderMembers(){
+  const host=el('scene-members');host.replaceChildren();if(!DEMO)return;
+  const add=document.createElement('button');add.textContent='+ Добавить модель';add.className='add-scene-model';add.onclick=()=>{el<HTMLInputElement>('browser-append').checked=true;el<HTMLInputElement>('browser-file').click();};host.append(add);
+  if(!sceneMembers.length)return;
+  const note=document.createElement('p');note.textContent=sceneMembers.length>1?'Общие координаты · совмещение не подтверждено':'Исходные координаты модели';host.append(note);
+  for(const member of sceneMembers){
+    const row=document.createElement('details');row.className='scene-member';
+    const summary=document.createElement('summary');summary.textContent=member.model.source.filename;row.append(summary);
+    const visible=document.createElement('input');visible.type='checkbox';visible.checked=member.visible;
+    const label=document.createElement('label');label.className='check';label.append(visible,document.createTextNode('Показывать модель'));row.append(label);
+    visible.onchange=()=>{member.visible=visible.checked;applySceneVisibility();};
+    const coords=document.createElement('div');coords.className='placement-fields';const inputs:HTMLInputElement[]=[];
+    for(const [i,name] of ['X, м','Y, м','Z, м','Угол Z, °'].entries()){const field=document.createElement('label');field.textContent=name;const input=document.createElement('input');input.type='number';input.step='any';input.value=String(i<3?member.offset[i]:member.rotation);input.setAttribute('aria-label',name+' · '+member.model.source.filename);inputs.push(input);field.append(input);coords.append(field);}row.append(coords);
+    const apply=document.createElement('button');apply.textContent='Применить размещение';apply.onclick=()=>{const values=inputs.map(i=>i.value.trim()===''?NaN:Number(i.value));if(!values.every(Number.isFinite)){error('Заполните X, Y, Z и угол конечными числами');return;}void presentMembers(sceneMembers.map(m=>m===member?{...m,offset:[values[0],values[1],values[2]],rotation:values[3]}:m)).then(()=>document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:browserModel}))).catch(error);};row.append(apply);
+    const remove=document.createElement('button');remove.textContent='Убрать из сцены';remove.onclick=()=>{void presentMembers(sceneMembers.filter(m=>m!==member)).then(()=>document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:browserModel}))).catch(error);};row.append(remove);
+    const metadata=document.createElement('small');metadata.textContent=`${member.model.statistics.physical_elements} элементов · SHA-256 ${member.model.source.sha256.slice(0,12)}…`;row.append(metadata);host.append(row);
+  }
+}
 function renderModelTree() {
   const storey=el<HTMLSelectElement>('storey-filter');storey.replaceChildren(new Option('Все этажи',''),...(model?.storeys??[]).map(s=>new Option(s.name,s.id)));
-  renderElements();
+  renderMembers();renderElements();
 }
 function renderElements() {
   const query=el<HTMLInputElement>('element-search').value.toLowerCase(),floor=el<HTMLSelectElement>('storey-filter').value;
-  const items=(model?.elements??[]).filter(e=>e.role==='element'&&(!floor||e.storey_id===floor)&&(`${e.name} ${e.class} ${e.id}`).toLowerCase().includes(query));
+  const items=(model?.elements??[]).filter(e=>e.role==='element'&&(!floor||e.storey_id===floor)&&sceneVisible(e.source_instance_id)&&(`${e.name} ${e.class} ${e.id} ${e.global_id}`).toLowerCase().includes(query));
   const groups=new Map<string,Map<string,typeof items>>();
   for(const item of items.slice(0,1000)){
     const floor=item.storey_id||'';if(!groups.has(floor))groups.set(floor,new Map());
@@ -192,8 +235,8 @@ function renderElements() {
   }
   el('element-tree').innerHTML=`<p>${items.length} элементов${items.length>1000?' · первые 1000; уточните поиск':''}</p>`+[...groups].map(([floor,classes])=>`<details class="tree-storey" open><summary>${esc(model?.storeys.find(s=>s.id===floor)?.name||'Без этажа')}<small>${[...classes.values()].flat().length}</small></summary>${[...classes].map(([type,elements])=>`<details class="tree-class" ${query||elements.some(e=>e.id===selectedId)||items.length<60?'open':''}><summary>${esc(type)} · ${elements.length}</summary>${elements.map(e=>`<button class="element-item" aria-pressed="${e.id===selectedId}" data-id="${esc(e.id)}">${icon('cube')}<span><strong>${esc(e.name||e.id)}</strong><small>${esc(e.class)}</small></span></button>`).join('')}</details>`).join('')}</details>`).join('');
 }
-el('element-search').oninput=renderElements;el('storey-filter').onchange=()=>{renderElements();if(workspaceMode==='view'){const floor=el<HTMLSelectElement>('storey-filter').value;const ids=(model?.elements??[]).filter(e=>e.role==='element'&&(!floor||e.storey_id===floor)).map(e=>e.id);viewer?.show(new Set(ids));viewer?.focusTargets(ids);}};
-el('reset-visibility').onclick=()=>{clipped=false;updateCut();el<HTMLSelectElement>('storey-filter').value='';el<HTMLInputElement>('element-search').value='';renderElements();viewer?.show(new Set(model?.elements.filter(e=>e.role==='element').map(e=>e.id)??[]));viewer?.fit();};
+el('element-search').oninput=renderElements;el('storey-filter').onchange=()=>{renderElements();if(workspaceMode==='view'){const floor=el<HTMLSelectElement>('storey-filter').value;const ids=(model?.elements??[]).filter(e=>e.role==='element'&&sceneVisible(e.source_instance_id)&&(!floor||e.storey_id===floor)).map(e=>e.id);viewer?.show(new Set(ids));viewer?.focusTargets(ids);}};
+el('reset-visibility').onclick=()=>{clipped=false;updateCut();el<HTMLSelectElement>('storey-filter').value='';el<HTMLInputElement>('element-search').value='';renderElements();viewer?.show(new Set(model?.elements.filter(e=>e.role==='element'&&sceneVisible(e.source_instance_id)).map(e=>e.id)??[]));viewer?.fit();};
 el('element-tree').onclick=event=>{const id=(event.target as HTMLElement).closest<HTMLElement>('[data-id]')?.dataset.id;if(id){selectElement(id);viewer?.focusTargets([id]);}};
 let cadPending:((reason?:string)=>void)|null=null;
 function closeCad(){cadPending?.('Загрузка отменена');cadPending=null;cadFrame?.remove();cadFrame=null;el('cad-host').hidden=true;el('canvas').hidden=false;document.body.classList.remove('cad-open');el<HTMLButtonElement>('mode-simulate').disabled=false;}
@@ -226,8 +269,16 @@ if(DEMO)browserPanel({
   noGeometry:(filename,message)=>{el('file-title').textContent=filename;el('geometry-kind').textContent='RVT · 3D недоступна';el<HTMLButtonElement>('mode-simulate').disabled=true;el<HTMLSelectElement>('models').innerHTML='<option>Геометрия не прочитана</option>';el('inspector-title').textContent='Результат чтения RVT';el('inspector').innerHTML=`<p><strong>${esc(filename)}</strong></p><p>${esc(message)}</p>`;},
   document:(data,message)=>documentPanel?.set(data,message),
   drawing:openCad, cancelDrawing:closeCad,
-  reset:()=>{documentPanel?.set(null);closeCad();setMode('view');el('error').hidden=true;el('element-tree').innerHTML='';++generation;++modelGeneration;project='browser-local';el<HTMLSelectElement>('projects').innerHTML='<option>Локальный файл в браузере</option>';el<HTMLSelectElement>('runs').innerHTML='<option>Сценарий не рассчитан</option>';el<HTMLSelectElement>('models').innerHTML='<option>Чтение модели</option>';el<HTMLSelectElement>('scenes').innerHTML='<option value="">Выберите сцену</option>';document.querySelector('.notice')!.textContent='Свой файл обрабатывается в браузере и не отправляется на сервер. Сценарий предварительный: технология, выработка и связи требуют проверки.';browserModel=null;browserBinary=null;browserRun=null;for(const url of browserUrls)URL.revokeObjectURL(url);browserUrls.length=0;for(const key of ['projects','models','runs'])el<HTMLSelectElement>(key).disabled=true;void loadRun('');void loadModel('');},
-  model:async(pkg,binary)=>{browserModel=pkg;browserBinary=binary;el<HTMLSelectElement>('models').innerHTML=`<option value="${esc(pkg.model_id)}">${esc(pkg.source.filename)}</option>`;await loadModel(pkg.model_id);documentPanel?.geometryReady(!!viewer&&pkg.statistics.meshes>0);el<HTMLDialogElement>('file-dialog').close();},
+  reset:(append)=>{++sceneVersion;documentPanel?.set(null);
+    if(append&&model&&loadedBinary&&!model.federation&&!sceneMembers.length)sceneMembers=[{instanceId:model.model_id,model,binary:loadedBinary,offset:[0,0,0],rotation:0,visible:true}];
+    if(!append){sceneMembers=[];renderMembers();}
+    closeCad();setMode('view');el('error').hidden=true;el('element-tree').innerHTML='';++generation;++modelGeneration;project='browser-local';el<HTMLSelectElement>('projects').innerHTML='<option>Локальный файл в браузере</option>';el<HTMLSelectElement>('runs').innerHTML='<option>Сценарий не рассчитан</option>';el<HTMLSelectElement>('models').innerHTML='<option>Чтение модели</option>';el<HTMLSelectElement>('scenes').innerHTML='<option value="">Выберите сцену</option>';document.querySelector('.notice')!.textContent='Свой файл обрабатывается в браузере и не отправляется на сервер. Сценарий предварительный: технология, выработка и связи требуют проверки.';if(!append){browserModel=null;browserBinary=null;}browserRun=null;for(const url of browserUrls)URL.revokeObjectURL(url);browserUrls.length=0;for(const key of ['projects','models','runs'])el<HTMLSelectElement>(key).disabled=true;void loadRun('');if(!append)void loadModel('');else renderModelTree();},
+  model:async(pkg,binary,append)=>{
+    const candidate:SceneMember={instanceId:pkg.model_id,model:pkg,binary,offset:[0,0,0],rotation:0,visible:true};
+    const existing=append?sceneMembers:[];
+    if(existing.some(m=>m.model.source.sha256===pkg.source.sha256))throw Error('Этот файл уже есть в сцене. Для повторного размещения нужен отдельный экземпляр.');
+    await presentMembers([...existing,candidate]);documentPanel?.geometryReady(!!viewer&&pkg.statistics.meshes>0);el<HTMLDialogElement>('file-dialog').close();return browserModel!;
+  },
   run:async(data)=>{setMode('simulate');browserRun=data;for(const url of browserUrls)URL.revokeObjectURL(url);browserUrls.length=0;el<HTMLSelectElement>('runs').innerHTML=`<option value="${esc(data.run_id)}">${esc(data.scenario.name||'Браузерный расчёт')}</option>`;await loadRun(data.run_id);el<HTMLDialogElement>('file-dialog').close();}
 });
 void (async()=>{try{const r=await fetch(DEMO?'./demo/projects.json':'/api/projects');const d=await r.json();if(project==='browser-local')return;el<HTMLSelectElement>('projects').innerHTML=d.projects.map((p:{id:string;name:string})=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');project=project||d.default_project;if(project){el<HTMLSelectElement>('projects').value=project;await loadProject(project);}else error('Сначала зарегистрируйте проект или запустите uvyazka demo.');}catch(e){error(e);}})();

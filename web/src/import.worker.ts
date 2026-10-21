@@ -1,3 +1,4 @@
+import {geometryCache} from './geometry-cache';
 import { importIfc } from './browser-ifc';
 import {documentCache} from './rvt-document-cache';
 import {rvtImportFailure} from './rvt-import-result';
@@ -15,6 +16,14 @@ worker.onmessage=async({data})=>{
     progress('Вычисление SHA-256 исходного файла','Хеширование');
     const sourceHash=await digest(bytes),sourceSize=bytes.byteLength;
     worker.postMessage({job,kind:'source',sha256:sourceHash});
+    if(/\.ifc$/i.test(filename)){
+      let cache;
+      try{cache=await geometryCache();const cached=await cache.get(sourceHash);if(cached){
+        cached.model.source.filename=filename;
+        progress('Геометрия и свойства восстановлены из локального кеша','Кеш IFC');
+        worker.postMessage({job,kind:'imported',model:cached.model,binary:cached.binary,cached:true},[cached.binary]);return;
+      }}catch(error){progress('Кеш IFC недоступен; читаем исходный файл','Кеш IFC',{warning:String(error)});}finally{cache?.close();}
+    }
     if(/\.rvt$/i.test(filename)){
       progress('Загрузка RVT-декодера · файл остаётся в браузере','RVT-движок');
       const module=await import(/* @vite-ignore */base+'runtime/rvt/uvyazka_rvt_browser.js');
@@ -57,6 +66,7 @@ worker.onmessage=async({data})=>{
     const {model,binary}=await importIfc(api,bytes,filename,await digest(bytes),await response.json(),
       text=>progress(text,text.startsWith('Геометрия:')?'Геометрия':'Свойства IFC'),!!conversion,memoryMiB);
     if(conversion){model.model_id=sourceHash;model.source={...model.source,format:'rvt',sha256:sourceHash,size_bytes:sourceSize,conversion:{engine:'rvt-rs',local_patches:['uvyazka-native-mep-v1','uvyazka-wasm-field-bounds-v1'],warnings:conversion.diagnostics.warnings,unsupported_features:conversion.diagnostics.unsupported_features,ifc_sha256:model.source.sha256,confidence:conversion.diagnostics.confidence,source_revision:'120e2f9ffa8422ba437102c8d300b7e902cdde80'}};}
+    if(!conversion){let cache;try{cache=await geometryCache();await cache.put(sourceHash,model,binary);}catch(error){progress('Модель прочитана; кеш не сохранён','Кеш IFC',{warning:String(error)});}finally{cache?.close();}}
     worker.postMessage({job,kind:'imported',model,binary,conversion,convertedIfc},[binary,...(convertedIfc?[convertedIfc]:[])]);
   } catch(error) {
     if(conversion)delete conversion.ifc_step;

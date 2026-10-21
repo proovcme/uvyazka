@@ -5,7 +5,7 @@ export function journalPanel(){
   const dialog=document.createElement('dialog');dialog.className='processing-journal';dialog.id='processing-journal';dialog.setAttribute('aria-labelledby','processing-title');
   dialog.innerHTML=`<div class="panel-head"><h2 id="processing-title">Журнал обработки</h2><button id="processing-close" aria-label="Закрыть журнал">✕</button></div>
 <div class="journal-controls"><label>Запуск<select id="processing-runs"></select></label><label>События<select id="processing-filter"><option value="all">Все</option><option value="warning">Предупреждения и ошибки</option><option value="error">Ошибки</option></select></label><button id="processing-json">JSON</button><button id="processing-text">TXT</button></div>
-<p id="processing-storage" class="journal-storage">История хранится в этом браузере. Показаны последние 30 запусков; содержимое моделей не сохраняется.</p>
+<p id="processing-storage" class="journal-storage">История хранится в этом браузере. Показаны последние 30 запусков; геометрия не входит в журнал. Кеш IFC хранится отдельно.</p>
 <div id="processing-summary" class="journal-summary" aria-live="polite"></div><div id="processing-events" class="journal-events" role="log" aria-label="События обработки"></div>`;
   document.body.append(dialog);
   const find=<T extends HTMLElement=HTMLElement>(id:string)=>dialog.querySelector<T>('#'+id)!;
@@ -29,7 +29,7 @@ export function journalPanel(){
   function render(){
     const run=current();selected=run?.id||'';
     select.replaceChildren(...journal.runs.slice(0,30).map(r=>{const o=document.createElement('option');o.value=r.id;o.textContent=`${new Date(r.started_at).toLocaleString()} · ${r.filename} · ${stateLabel[r.state]}`;return o;}));select.value=selected;
-    find('processing-storage').textContent=journal.storageError||storageSetupError||'История хранится в этом браузере. Показаны последние 30 запусков; содержимое моделей не сохраняется.';
+    find('processing-storage').textContent=journal.storageError||storageSetupError||'История хранится в этом браузере. Показаны последние 30 запусков; геометрия не входит в журнал. Кеш IFC хранится отдельно.';
     find('processing-storage').classList.toggle('journal-warning',!!journal.storageError||!!storageSetupError);
     summary(run);const host=find('processing-events'),nearBottom=host.scrollHeight-host.scrollTop-host.clientHeight<50;
     host.replaceChildren();

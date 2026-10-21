@@ -6,6 +6,7 @@ const paths:Record<string,string>={
  sliders:'<path d="M4 7h16M4 17h16M8 4v6M16 14v6"/>',
  close:'<path d="m6 6 12 12M18 6 6 18"/>',
  fit:'<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/>',
+ ruler:'<path d="m3 16 13-13 5 5L8 21zM7 12l2 2M10 9l2 2M13 6l2 2"/>',
  cut:'<path d="M4 4h16v16H4zM2 15 22 9"/>',
  info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7v1"/>',
  list:'<path d="M9 5h12M9 12h12M9 19h12M3 5h1M3 12h1M3 19h1"/>',
@@ -27,6 +28,7 @@ export const workspaceShell=`
   <button id="iso" title="Аксонометрия">${icon('cube')}<span>3D</span></button>
   <button id="top" title="Вид сверху">${icon('top')}<span>План</span></button>
   <button id="cut" aria-pressed="false" aria-label="Разрез модели">${icon('cut')}<span>Разрез</span></button>
+  <button id="measure" aria-pressed="false" aria-label="Измерить расстояние">${icon('ruler')}<span>Замер</span></button>
   <button id="toggle-inspector" aria-label="Свойства модели" aria-expanded="true" aria-controls="properties-panel">${icon('list')}<span>Свойства</span></button>
   <div class="rail-spacer"></div>
   <button id="file-settings" aria-label="Модель и параметры расчёта" title="Модель и параметры расчёта">${icon('sliders')}<span>Параметры</span></button>
@@ -37,13 +39,13 @@ export const workspaceShell=`
   <div class="workspace">
    <aside class="model-tree" id="model-panel">
     <div class="panel-head"><h2>Состав модели</h2><button id="close-tree" class="icon-button" aria-label="Скрыть структуру">${icon('close')}</button></div>
-    <div class="tree-tools"><label class="search-field">${icon('search')}<input id="element-search" aria-label="Поиск элемента" type="search" placeholder="Имя, класс или ID"></label><label class="storey-picker">Этаж<select id="storey-filter"><option value="">Все этажи</option></select></label></div>
+    <div id="scene-members"></div><div class="tree-tools"><label class="search-field">${icon('search')}<input id="element-search" aria-label="Поиск элемента" type="search" placeholder="Имя, класс или ID"></label><label class="storey-picker">Этаж<select id="storey-filter"><option value="">Все этажи</option></select></label></div>
     <div id="element-tree"></div><button id="reset-visibility" class="reset-tree">${icon('fit')}Показать всю модель</button>
    </aside>
    <section class="scene" aria-label="Рабочая область модели">
     <div id="canvas"></div><div id="cad-host" hidden></div><div id="no-model">Откройте DWG, RVT или IFC</div>
     <div class="scene-tools"><button id="fit" title="Вписать модель · F" aria-label="Вписать модель">${icon('fit')}</button><button id="xray" aria-pressed="false" title="Прозрачная модель" aria-label="Прозрачная модель">${icon('layers')}</button></div>
-    <div id="cut-controls" hidden><label>Разрез Z <output id="cut-height"></output><input id="cut-position" type="range" min="0" max="100" value="50" aria-label="Высота разреза"></label></div>
+    <div id="cut-controls" hidden><label>Ось сечения<select id="cut-axis" aria-label="Ось сечения"><option>Z</option><option>X</option><option>Y</option></select><output id="cut-height"></output><input id="cut-position" type="range" min="0" max="100" value="50" aria-label="Положение сечения"></label><label class="check"><input id="cut-reverse" type="checkbox">Обратная сторона</label><button id="cut-box">Область выбранного элемента</button></div><div id="measure-controls" hidden></div>
     <div class="scene-caption simulation-only"><span>Последовательность строительства</span><strong id="active-stage">Сценарий не выбран</strong></div>
     <div class="canvas-hint">Мышь — вращение <span>Правая кнопка — перемещение</span> · F — вписать</div>
    </section>

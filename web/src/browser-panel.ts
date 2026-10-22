@@ -38,9 +38,9 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
 
   const status=(text:string)=>{el('browser-status').textContent=text;const footer=document.getElementById('workspace-status')!;footer.textContent=text;footer.title=text;};
   const busy=(yes:boolean)=>{document.body.classList.toggle('is-busy',yes);el<HTMLButtonElement>('browser-cancel').disabled=!yes;el<HTMLButtonElement>('browser-plan').disabled=yes||!current;for(const id of ['open-file','empty-add-model','replace-model']){const button=document.getElementById(id) as HTMLButtonElement|null;if(button)button.disabled=yes;}};
-  const stop=(reason='Обработка отменена: выбран другой файл или режим.')=>{
+  const stop=(reason='Обработка отменена: выбран другой файл или режим.',keepPlanner=false)=>{
     if(run?.state==='running')finishRun(run,'cancelled',reason);
-    active++;importer?.terminate();planner?.terminate();importer=planner=null;busy(false);
+    active++;importer?.terminate();importer=null;if(!keepPlanner){planner?.terminate();planner=null;}busy(false);
   };
   const fail=(message:string,details?:unknown)=>{current=fallback;if(run)finishRun(run,'failed',message,details);stop();status(message+' · подробности в журнале');};
   const download=(id:string,data:Blob,name:string)=>{const old=urls.get(id);if(old)URL.revokeObjectURL(old);const url=URL.createObjectURL(data);urls.set(id,url);const a=el<HTMLAnchorElement>(id);a.href=url;a.download=name;a.hidden=false;};
@@ -117,10 +117,10 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
   el('browser-plan').onclick=async()=>{
     if(!current)return;
     const curingDays=Number(el<HTMLInputElement>('browser-curing').value);if(!Number.isInteger(curingDays)||curingDays<1||curingDays>365){status('Выдержка бетона: целое число от 1 до 365 суток');return;}
-    await log.ready;stop('Запущен новый расчёт.');const job=active;fallback=current;
+    await log.ready;stop('Запущен новый расчёт.',true);const job=active;fallback=current;
     run=journal.begin('simulation',current.source.filename,current.source.size_bytes);const jobRun=run;log.select(run);journal.source(run,current.source.sha256);document.querySelector<HTMLDialogElement>('#file-dialog')!.close();processing.begin(current.source.filename,current.source.size_bytes,true);
     busy(true);status('Подготовка расчёта');processing.update('Подготовка','Загрузка расчётного движка');
-    planner=new Worker(new URL('./planner.worker.ts',import.meta.url),{type:'module'});
+    planner??=new Worker(new URL('./planner.worker.ts',import.meta.url),{type:'module'});
     planner.onerror=(event)=>{if(job===active)fail('Ошибка расчёта: '+event.message);};
     planner.onmessage=async({data})=>{
       if(data.job!==active)return;processing.reply();if(data.kind==='pong')return;
@@ -130,7 +130,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
         try{reportProgress(jobRun,'Отображение','Подготовка результата расчёта');await callbacks.run(data.run);if(job!==active)return;const message=`Рассчитано: ${data.run.scenario.operations.length} работ, ${data.run.duration} минут. Вне графика: ${data.run.scenario.unplanned_element_ids.length} элементов.`;
           if(data.run.scenario.unplanned_element_ids.length)journal.event(jobRun,'warning','Часть элементов осталась вне графика',{element_ids:data.run.scenario.unplanned_element_ids});
           finishRun(jobRun,'completed',message);status(message);
-        }catch(e){if(job===active)fail(String(e));}if(job===active){planner?.terminate();planner=null;busy(false);}
+        }catch(e){if(job===active)fail(String(e));}if(job===active)busy(false);
       }
     };
     const settings={variant:el<HTMLSelectElement>('browser-variant').value,curingDays,capacityFactor:Number(el<HTMLSelectElement>('browser-capacity').value)};

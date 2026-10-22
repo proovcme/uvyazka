@@ -34,9 +34,10 @@ result=SimulationEngine(scenario).run()
 result.update(project_id='browser-local',cpm=cpm(scenario))
 json.dumps(result,ensure_ascii=False,allow_nan=False)
 `);
-    worker.postMessage({job,kind:'planned',run:JSON.parse(result)});
+    const run=JSON.parse(result);
     python.globals.delete('request_json');
     await python.runPythonAsync('del request, scenario, result\nimport gc\ngc.collect()');
+    worker.postMessage({job,kind:'planned',run});
   }catch(error){worker.postMessage({job,kind:'error',message:error instanceof Error?error.message:String(error)});}
 };
 export {};

@@ -39,11 +39,18 @@ pub struct MepReport {
 }
 
 pub fn supports_revit_version(version: u32) -> bool {
-    (2024..=2027).contains(&version)
+    version == 2021 || (2024..=2027).contains(&version)
+}
+
+fn saved_id(value: &Value) -> Option<i64> {
+    let inner = value.get("m_id")?;
+    // 2021 serializes the signed 32-bit leaf as m_id; newer records use m_id64.
+    // Accept only these explicit wrappers, including the -1 sentinel.
+    inner.get("m_id64").or_else(|| inner.get("m_id"))?.as_i64()
 }
 
 fn id(value: &Value) -> Option<u32> {
-    let value = value.get("m_id")?.get("m_id64")?.as_u64()?;
+    let value = saved_id(value)?;
     u32::try_from(value).ok().filter(|id| *id > 0)
 }
 
@@ -95,7 +102,7 @@ fn references(
             .as_u64()
             .ok_or_else(|| anyhow::anyhow!("missing connection type"))?;
         let member = id(&reference["m_id"]);
-        if member.is_none() && reference["m_id"]["m_id"]["m_id64"].as_i64() == Some(-1) {
+        if member.is_none() && saved_id(&reference["m_id"]) == Some(-1) {
             continue;
         }
         let member =
@@ -262,4 +269,23 @@ pub fn scan_mep_systems(
         report.diagnostics.join("; ")
     );
     Ok(report.systems)
+}
+
+
+#[cfg(test)]
+mod uvyazka_id_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn ids_preserve_explicit_32_and_64_bit_wrappers_and_sentinels() {
+        for leaf in ["m_id", "m_id64"] {
+            assert_eq!(id(&json!({"m_id": {leaf: 71}})), Some(71));
+            assert_eq!(saved_id(&json!({"m_id": {leaf: -1}})), Some(-1));
+            assert_eq!(id(&json!({"m_id": {leaf: -1}})), None);
+            assert_eq!(id(&json!({"m_id": {leaf: 0}})), None);
+            assert_eq!(id(&json!({"m_id": {leaf: 4294967296u64}})), None);
+        }
+        assert_eq!(id(&json!({"other": {"m_id": 71}})), None);
+        assert_eq!(id(&json!(71)), None);
+    }
 }

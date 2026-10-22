@@ -20,7 +20,7 @@ export const workspaceShell=`
  <a class="brand" id="memory-link" href="/" aria-label="Увязка — база проекта">увязка</a>
  <div class="file-heading"><h1 id="file-title">Загрузка модели…</h1><span id="geometry-kind"></span></div>
  <nav class="mode-switch" aria-label="Режим работы"><button id="mode-view" aria-pressed="true">Модель</button><button id="mode-simulate" aria-pressed="false">Симуляция</button><a id="measurement-link" href="/measurements/" hidden>Лист и измерения ↗</a></nav>
- <div class="header-actions"><a id="back" href="/">База проекта</a><button id="open-file" aria-label="Открыть файл" title="Открыть файл">${icon('open')}<span>Открыть</span></button></div>
+ <div class="header-actions"><button id="theme-toggle" title="Переключить тему">Тёмная тема</button><a id="back" href="/">База проекта</a><button id="replace-model" title="Открыть файл вместо текущей сцены">Заменить сцену</button><button id="open-file" class="add-model-primary" aria-label="Добавить модель" title="Добавить RVT или IFC к сцене">${icon('open')}<span>Добавить модель</span></button></div>
 </header>
 <main>
  <nav class="tool-rail" aria-label="Инструменты модели">
@@ -39,11 +39,11 @@ export const workspaceShell=`
   <div class="workspace">
    <aside class="model-tree" id="model-panel">
     <div class="panel-head"><h2>Состав модели</h2><button id="close-tree" class="icon-button" aria-label="Скрыть структуру">${icon('close')}</button></div>
-    <div id="scene-members"></div><div class="tree-tools"><label class="search-field">${icon('search')}<input id="element-search" aria-label="Поиск элемента" type="search" placeholder="Имя, класс или ID"></label><label class="storey-picker">Этаж<select id="storey-filter"><option value="">Все этажи</option></select></label></div>
+    <div id="scene-members"></div><div class="tree-tools"><label class="search-field">${icon('search')}<input id="element-search" aria-label="Поиск элемента" type="search" placeholder="Имя, класс или ID"></label><label class="storey-picker">Этаж<select id="storey-filter"><option value="">Все этажи</option></select></label><label class="storey-picker">Система<select id="system-filter"><option value="">Все системы</option></select></label><label><input id="system-only" type="checkbox"> Только выбранная система</label><div id="system-summary" aria-live="polite"></div></div>
     <div id="element-tree"></div><button id="reset-visibility" class="reset-tree">${icon('fit')}Показать всю модель</button>
    </aside>
    <section class="scene" aria-label="Рабочая область модели">
-    <div id="canvas"></div><div id="cad-host" hidden></div><div id="no-model">Откройте DWG, RVT или IFC</div>
+    <div id="canvas"></div><div id="cad-host" hidden></div><div id="no-model"><strong>Добавьте модель проекта</strong><p>RVT или IFC — модель, системы и свойства.<br>DWG / DXF — просмотр чертежа.</p><button id="empty-add-model" class="add-model-primary">${icon('open')}Добавить модель</button><small>Файл обрабатывается на вашем устройстве</small></div>
     <div class="scene-tools"><button id="fit" title="Вписать модель · F" aria-label="Вписать модель">${icon('fit')}</button><button id="xray" aria-pressed="false" title="Прозрачная модель" aria-label="Прозрачная модель">${icon('layers')}</button></div>
     <div id="cut-controls" hidden><label>Ось сечения<select id="cut-axis" aria-label="Ось сечения"><option>Z</option><option>X</option><option>Y</option></select><output id="cut-height"></output><input id="cut-position" type="range" min="0" max="100" value="50" aria-label="Положение сечения"></label><label class="check"><input id="cut-reverse" type="checkbox">Обратная сторона</label><button id="cut-box">Область выбранного элемента</button></div><div id="measure-controls" hidden></div>
     <div class="scene-caption simulation-only"><span>Последовательность строительства</span><strong id="active-stage">Сценарий не выбран</strong></div>

@@ -6,6 +6,7 @@ import type {RvtDocument} from './rvt-document';
 
 const worker=self as unknown as {onmessage:((event:MessageEvent)=>void)|null;postMessage:(value:unknown,transfer?:Transferable[])=>void};
 worker.onmessage=async({data})=>{
+  if(data.kind==='ping'){worker.postMessage({job:data.job,kind:'pong'});return;}
   const {job,buffer,filename,base,memoryMiB=1024}=data;
   let stage='Проверка файла',conversion:any=null,rvtDocument:RvtDocument|null=null;
   const progress=(text:string,nextStage=stage,details?:unknown)=>{stage=nextStage;worker.postMessage({job,kind:'progress',stage,text,details});};
@@ -65,7 +66,7 @@ worker.onmessage=async({data})=>{
     progress('Чтение структуры IFC','Структура IFC');
     const {model,binary}=await importIfc(api,bytes,filename,await digest(bytes),await response.json(),
       text=>progress(text,text.startsWith('Геометрия:')?'Геометрия':'Свойства IFC'),!!conversion,memoryMiB);
-    if(conversion){model.model_id=sourceHash;model.source={...model.source,format:'rvt',sha256:sourceHash,size_bytes:sourceSize,conversion:{engine:'rvt-rs',local_patches:['uvyazka-native-mep-v1','uvyazka-wasm-field-bounds-v1'],warnings:conversion.diagnostics.warnings,unsupported_features:conversion.diagnostics.unsupported_features,ifc_sha256:model.source.sha256,confidence:conversion.diagnostics.confidence,source_revision:'120e2f9ffa8422ba437102c8d300b7e902cdde80'}};}
+    if(conversion){model.model_id=sourceHash;model.source={...model.source,format:'rvt',sha256:sourceHash,size_bytes:sourceSize,conversion:{engine:'rvt-rs',local_patches:['uvyazka-native-mep-v1','uvyazka-wasm-field-bounds-v1','uvyazka-native-2021-v1'],warnings:conversion.diagnostics.warnings,unsupported_features:conversion.diagnostics.unsupported_features,ifc_sha256:model.source.sha256,confidence:conversion.diagnostics.confidence,source_revision:'b6086d41b9758fd9b92f42f0a47b8345b9c58056'}};}
     if(!conversion){let cache;try{cache=await geometryCache();await cache.put(sourceHash,model,binary);}catch(error){progress('Модель прочитана; кеш не сохранён','Кеш IFC',{warning:String(error)});}finally{cache?.close();}}
     worker.postMessage({job,kind:'imported',model,binary,conversion,convertedIfc},[binary,...(convertedIfc?[convertedIfc]:[])]);
   } catch(error) {

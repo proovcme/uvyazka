@@ -1,4 +1,5 @@
-//! Revit 2023 partition element records (RE-81, #421).
+//! Revit 2023 partition element records (RE-81, #421), and Revit 2015 to
+//! 2022's, which take the same layout (RE-180, RE-181).
 //!
 //! A 2023 record sits behind the same marker as 2024 and 2025,
 //! `[tag of Outline][0xFF x 4][tag of ElementParents]` in the file's own
@@ -26,17 +27,92 @@
 use crate::RevitFile;
 use crate::partition_element_records::{
     BBOX_MARKER_OFFSET, BBOX_OFFSET, BUILTIN_CATEGORY_MAX, BUILTIN_CATEGORY_MIN, CLASS_TAG_OFFSET,
-    CONTAINER_OFFSET, PLACEMENT_KIND_OFFSET, PartitionElementRecord,
+    PLACEMENT_KIND_OFFSET, PartitionElementRecord,
 };
 use std::collections::BTreeSet;
 
-/// The release this layout is measured on.
+/// The release this layout is first measured on.
 pub const REVIT_2023: u32 = 2023;
+
+/// The releases whose records take this layout: Revit 2015 to 2023
+/// (RE-180, RE-181). On Autodesk's 2019, 2020, 2021 and 2022 sample projects
+/// every marker of the file's own schema has a declared `u32` ElementId 52
+/// bytes before it and the tag of `ElementHeader` 8 bytes after that, as on
+/// 2023, but for 4 to 109 per file, as many as on the file's 2023 copy but on
+/// 2021 `rac_advanced` (`examples/probe_re180_revit_2019_2022.rs`). On their
+/// 2016, 2017 and 2018 copies it is the same, with as many markers without
+/// one as on the 2019 copy, and on three of Autodesk's 2015 templates all but
+/// 0 to 68 per file (`examples/probe_re181_revit_2015_2018.rs`). Revit 2014
+/// is left out: the one 2014 file measured is not documented, so it is no
+/// evidence for the release (fail closed).
+pub const REVIT_32BIT_RELEASES: std::ops::RangeInclusive<u32> = 2015..=2023;
+
+/// Whether `revit_version` writes this module's 32-bit records and the
+/// 32-bit name, material, layer and Level frames that go with them.
+pub fn is_32bit_release(revit_version: u32) -> bool {
+    REVIT_32BIT_RELEASES.contains(&revit_version)
+}
+
+/// The schema tags the 32-bit readers match, each the tag of the named
+/// class in the release's own schema. The constants measured on 2023
+/// (RE-111 to RE-116) are 2023's tags of these classes, and 2024's
+/// counterparts are its tags of the same classes (RE-180).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchemaTags32 {
+    /// `CellList`: opens an element's serialised data (RE-111).
+    pub cell_list: u16,
+    /// `Material`: a material object's class tag (RE-113).
+    pub material: u16,
+    /// `PhysicalParamSet`: ends a material's name (RE-116).
+    pub physical_param_set: u16,
+    /// `PatternHelper`: frames a category's object-styles entry (RE-115).
+    pub pattern_helper: u16,
+    /// `VerticalRegionsStructure`: frames a type's layer count (RE-112).
+    pub vertical_regions_structure: u16,
+}
+
+/// The [`SchemaTags32`] of `revit_version`, read from Autodesk's sample
+/// projects of each release (every file of a release has the same
+/// schema), or `None` outside [`REVIT_32BIT_RELEASES`]. No 2015 sample
+/// project is published: that row is read from three of Autodesk's 2015
+/// templates (RE-181).
+pub fn schema_tags(revit_version: u32) -> Option<SchemaTags32> {
+    let tags = |cell_list, material, physical_param_set, pattern_helper, vertical_regions| {
+        Some(SchemaTags32 {
+            cell_list,
+            material,
+            physical_param_set,
+            pattern_helper,
+            vertical_regions_structure: vertical_regions,
+        })
+    };
+    match revit_version {
+        2015 => tags(0x024f, 0x0871, 0x0a0b, 0x01b9, 0x0dc4),
+        2016 => tags(0x0255, 0x088b, 0x0a34, 0x01be, 0x0e06),
+        2017 => tags(0x025d, 0x08b7, 0x0a73, 0x01bf, 0x0e5e),
+        2018 => tags(0x0263, 0x08f8, 0x0aba, 0x01ca, 0x0eeb),
+        2019 => tags(0x0264, 0x0924, 0x0aef, 0x01ca, 0x0f37),
+        2020 => tags(0x026c, 0x094d, 0x0b24, 0x01d0, 0x0f76),
+        2021 => tags(0x027d, 0x094b, 0x0b25, 0x01e1, 0x0f79),
+        2022 => tags(0x028d, 0x09af, 0x0b90, 0x01f0, 0x1003),
+        2023 => tags(0x02c0, 0x09fb, 0x0beb, 0x013f, 0x106f),
+        _ => None,
+    }
+}
 
 /// Bytes from the ElementId to the marker.
 const ID_BEFORE_MARKER: usize = 52;
 /// Bytes from the `BuiltInCategory` to the marker.
 const CATEGORY_BEFORE_MARKER: usize = 38;
+/// Bytes from the container reference to the marker. The reference is a
+/// `u32` 16 bytes after the category, followed by `ff ff ff ff`. Joined on
+/// ElementId with the 2024 copy of Autodesk's same sample project, it gives
+/// 2024's container on every shared record of the three 2023 samples
+/// (1,201, 5,858 and 8,901 records), where the `u64` at 2024's place
+/// relative to the marker (8 bytes after the category) disagrees on 9,
+/// 4,183 and 95, every container member among them
+/// (`examples/probe_32bit_container.rs`).
+const CONTAINER_BEFORE_MARKER: usize = 22;
 /// Offset of the `ElementHeader` tag after the ElementId (after the `u32`
 /// id and the `u32` size).
 const HEADER_TAG_AFTER_ID: usize = 8;
@@ -65,10 +141,11 @@ pub fn record_marker(rf: &mut RevitFile) -> Option<([u8; 8], u16)> {
     Some((marker, header))
 }
 
-/// Every 2023 element record in the file whose ElementId is declared in
-/// `Global/ElemTable`. Empty for any other release (fail closed).
+/// Every 2015 to 2023 element record in the file whose ElementId is
+/// declared in `Global/ElemTable`. Empty for any other release (fail
+/// closed).
 pub fn scan_records(rf: &mut RevitFile, revit_version: u32) -> Vec<PartitionElementRecord> {
-    if revit_version != REVIT_2023 {
+    if !is_32bit_release(revit_version) {
         return Vec::new();
     }
     let Ok(table) = crate::elem_table::parse_records(rf) else {
@@ -123,12 +200,12 @@ fn decode_at_marker(
         let from = usize::try_from(base + offset as isize).ok()?;
         buf.get(from..from + len)
     };
-    let u64_at = |offset: usize| {
-        field(offset, 8)
-            .and_then(|b| b.try_into().ok())
-            .map(u64::from_le_bytes)
-    };
-    let container = u64_at(CONTAINER_OFFSET)?;
+    let container_at = at.checked_sub(CONTAINER_BEFORE_MARKER)?;
+    let container =
+        match u32::from_le_bytes(buf.get(container_at..container_at + 4)?.try_into().ok()?) {
+            u32::MAX => u64::MAX,
+            id => u64::from(id),
+        };
     let placement_kind = u32::from_le_bytes(field(PLACEMENT_KIND_OFFSET, 4)?.try_into().ok()?);
     let class_tag = u16::from_le_bytes(field(CLASS_TAG_OFFSET, 2)?.try_into().ok()?);
     let mut bbox_feet = [0.0f64; 6];

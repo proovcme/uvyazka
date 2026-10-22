@@ -68,6 +68,12 @@ def main():
                 results.append({'file':path.name,'error':status});context.close();continue
             imported_seconds=time.monotonic()-start
             (args.out/(path.name+'.model.json')).write_text(json.dumps(imported,ensure_ascii=False),encoding='utf-8')
+            page.locator('#conversion-done').wait_for(state='visible', timeout=300000)
+            page.locator('#conversion-done').click()
+            assert page.locator('html').get_attribute('data-theme') == 'light'
+            page.locator('#theme-toggle').click()
+            assert page.locator('html').get_attribute('data-theme') == 'dark'
+            page.locator('#theme-toggle').click()
             page.locator('#mode-simulate').click()
             page.locator('#file-settings').click()
             page.locator('#browser-plan').click()
@@ -81,6 +87,8 @@ def main():
             assert expected==planned, f'{path.name}: CPython/Pyodide discrepancy'
             assert not errors,errors
             assert all(r['method']=='GET' and r['bytes']==0 and r['url'].startswith(args.url.split('/uvyazka/')[0]) for r in requests),requests
+            page.locator('#conversion-done').wait_for(state='visible', timeout=300000)
+            page.locator('#conversion-done').click()
             page.locator('#play').click();page.wait_for_timeout(350);page.locator('#play').click()
             assert page.locator('#error').is_hidden(),page.locator('#error').inner_text()
             # Reuse the loaded Python worker with the network disabled.
@@ -97,6 +105,8 @@ def main():
             scenario2.update(project_id='browser-local',revision=1)
             expected2=SimulationEngine(scenario2).run();expected2.update(project_id='browser-local',cpm=cpm(scenario2))
             assert expected2==offline,f'{path.name}: offline recomputation differs'
+            page.locator('#conversion-done').wait_for(state='visible', timeout=60000)
+            page.locator('#conversion-done').click()
             context.set_offline(False)
             page.locator('.view-options > summary').click()
             page.locator('#site').uncheck()

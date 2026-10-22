@@ -13,13 +13,18 @@ def register_tools(mcp,workspace):
 
     @mcp.tool(annotations={'readOnlyHint':False,'destructiveHint':False,'idempotentHint':True})
     def extract_rvt_data(project_id:str,doc_id:str,request_id:str,profile:str='all') -> dict:
-        """Extract and cache saved native RVT data without IFC conversion or Revit. Requires the built runtime. profile=all, views (also schedules/placements), or schedules. Returns extraction_id, source SHA, counts and partial/unsupported diagnostics. Values are serialized, not evaluated by Revit; repeated inputs reuse the snapshot. No source file is modified."""
+        """Extract and cache saved native RVT data without IFC conversion or Revit. Requires built runtime. Profiles: all; views (also schedules/placements); schedules; engineering (family instances, MEP curves/systems, levels, RoomElem and schema descendants; excludes family types); systems (HVAC/piping/electrical). Use focused profiles when all hits its output budget. Returns extraction_id, SHA, counts and partial/unsupported diagnostics. Values are saved, not evaluated; repeat inputs reuse the snapshot. No source modification."""
         return RvtData(workspace).extract(project_id,doc_id,request_id,profile)
 
     @mcp.tool(annotations=read)
     def get_rvt_data(project_id:str,extraction_id:str,section:str='elements',query:str='',offset:int=0,limit:int=40,json_path:list[str|int]|None=None,max_chars:int=6000) -> dict:
         """Read a bounded cached RVT inventory without Revit. Sections: summary, coverage (by native class), units, parameter_definitions, classes, elements (all record kinds), views, schedules, placements, systems, diagnostics. record_id addresses get_rvt_record. section=value reads extraction-report JSON by json_path with character continuation. Source SHA identifies the snapshot, not the approved revision. Saved unit formats do not by themselves convert raw values to SI."""
         return RvtData(workspace).read(project_id,extraction_id,section,query,offset,limit,json_path,max_chars)
+
+    @mcp.tool(annotations=read)
+    def find_rvt_parameters(project_id:str,extraction_id:str,query:str='',element_id:str='',class_name:str='',cursor:dict|None=None,limit:int=40,max_scan_records:int=25) -> dict:
+        """Search cached native RVT parameter projections without reopening the RVT, Revit or IFC. query is a case-insensitive substring of saved JSON; element_id/class_name are exact filters. Returns raw values/definitions/slots with record_id, native source and json_path; does not infer units or evaluate formulas. Follow next_cursor even for an empty batch. search_exhausted means the cached search ended, not complete source extraction or verified absence. Truncated entries can be read with get_rvt_record(section=value)."""
+        return RvtData(workspace).search_parameters(project_id,extraction_id,query,element_id,class_name,cursor,limit,max_scan_records)
 
     @mcp.tool(annotations=read)
     def get_rvt_record(project_id:str,extraction_id:str,record_id:int,section:str='fields',offset:int=0,limit:int=40,json_path:list[str|int]|None=None,max_chars:int=6000) -> dict:

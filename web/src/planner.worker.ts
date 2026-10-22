@@ -1,6 +1,7 @@
 const worker=self as unknown as {onmessage:((event:MessageEvent)=>void)|null;postMessage:(value:unknown)=>void};
 let python:any;
 worker.onmessage=async({data})=>{
+  if(data.kind==='ping'){worker.postMessage({job:data.job,kind:'pong'});return;}
   const {job,base,model,scenario,variant='base',curingDays=28,capacityFactor=1}=data;
   try {
     if(!python){

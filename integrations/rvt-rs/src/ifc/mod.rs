@@ -115,12 +115,12 @@ pub mod from_decoded;
 pub mod gltf;
 pub mod measure;
 pub mod pbr;
-pub mod pset_validate;
 pub mod saved_meshes;
 pub mod scene_graph;
 pub mod schedule_csv;
 pub mod share;
 pub mod sheet;
+pub mod standard_property_sets;
 pub mod step_writer;
 
 pub use export_content::{
@@ -201,6 +201,13 @@ pub struct IfcModel {
     /// entry gets an opening the shape of its own body.
     #[serde(default)]
     pub opening_cuts: std::collections::BTreeMap<usize, entities::OpeningCut>,
+    /// Further pieces of an element of separate loops that the STEP writer
+    /// puts in their element's body, one item per piece, rather than
+    /// writing each as an element of its own (#823), by index into
+    /// `entities`: the element, then its pieces. The pieces stay in
+    /// `entities`, so the glTF export and the viewer still draw them.
+    #[serde(default)]
+    pub body_pieces: std::collections::BTreeMap<usize, Vec<usize>>,
 }
 
 /// A layered element's layers across its thickness (RE-53).
@@ -483,6 +490,8 @@ fn elem_table_declared_element_count(rf: &mut crate::RevitFile) -> Option<usize>
 pub struct ExportInputDiagnostics {
     pub revit_version: Option<u32>,
     pub build: Option<String>,
+    /// The file name of the path Revit last saved the file at, without its
+    /// folders.
     pub original_path: Option<String>,
     pub project_name: Option<String>,
     pub stream_count: usize,
@@ -490,6 +499,11 @@ pub struct ExportInputDiagnostics {
     pub has_part_atom: bool,
     pub has_formats_latest: bool,
     pub has_global_latest: bool,
+    /// How this file's release is read (#871): the support-matrix row of its
+    /// element records and that row's status, `experimental` where too few
+    /// files of the release are measured to rely on its elements.
+    #[serde(default)]
+    pub release_support: Option<crate::capability::ReleaseSupport>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -776,11 +790,11 @@ pub struct PlaceholderExporter;
 
 impl Exporter for PlaceholderExporter {
     fn export(&self, rf: &mut crate::RevitFile) -> Result<IfcModel> {
-        let project_name = rf
-            .part_atom()
-            .ok()
-            .and_then(|pa| pa.title)
-            .or_else(|| rf.basic_file_info().ok().and_then(|bfi| bfi.original_path));
+        let project_name = rf.part_atom().ok().and_then(|pa| pa.title).or_else(|| {
+            rf.basic_file_info()
+                .ok()
+                .and_then(|bfi| bfi.original_path.as_deref().and_then(original_file_stem))
+        });
         Ok(IfcModel {
             project_name,
             description: Some(
@@ -804,6 +818,7 @@ impl Exporter for PlaceholderExporter {
             element_type_ids: Default::default(),
             material_constituent_sets: Vec::new(),
             opening_cuts: Default::default(),
+            body_pieces: Default::default(),
         })
     }
 }
@@ -890,7 +905,7 @@ impl RvtDocExporter {
 ///
 /// This exporter starts from the same conservative model as
 /// [`RvtDocExporter`], then appends low-confidence schema-scan hits as
-/// `IFCBUILDINGELEMENTPROXY` elements with `Pset_RvtRsDiagnosticCandidate`
+/// `IFCBUILDINGELEMENTPROXY` elements with `RvtRsDiagnosticCandidate`
 /// provenance. It is intended for reverse-engineering and issue
 /// attachments, not for normal model exchange.
 pub struct DiagnosticRvtDocExporter;
@@ -943,6 +958,27 @@ enum RvtDocExportMode {
     DiagnosticProxies,
 }
 
+/// The file name in a Revit file's original path: all an export reports of
+/// the path. Its folders, which can hold the author's account and client
+/// names, stay out. The path is Windows-style on every host, so both
+/// separators split.
+fn original_file_name(path: &str) -> Option<&str> {
+    let name = path.rsplit(['\\', '/']).next()?;
+    (!name.is_empty()).then_some(name)
+}
+
+/// [`original_file_name`] without its Revit extension: an export's name when
+/// the file has no PartAtom title.
+fn original_file_stem(path: &str) -> Option<String> {
+    let name = original_file_name(path)?;
+    let lower = name.to_ascii_lowercase();
+    let stem = [".rvt", ".rfa", ".rte", ".rft"]
+        .iter()
+        .find(|ext| lower.ends_with(*ext))
+        .map_or(name, |ext| &name[..name.len() - ext.len()]);
+    (!stem.is_empty()).then(|| stem.to_string())
+}
+
 fn export_rvt_doc(
     rf: &mut crate::RevitFile,
     mode: RvtDocExportMode,
@@ -950,14 +986,15 @@ fn export_rvt_doc(
     walker_limits: crate::walker::WalkerLimits,
 ) -> Result<IfcModel> {
     let policy = export_content::ExportContentPolicy::for_quality_mode(quality_mode);
-    // Identity from PartAtom if present; fall back to
+    // Identity from PartAtom if present; fall back to the file name in
     // BasicFileInfo's original path.
     let part = rf.part_atom().ok();
     let bfi = rf.basic_file_info().ok();
-    let project_name = part
-        .as_ref()
-        .and_then(|pa| pa.title.clone())
-        .or_else(|| bfi.as_ref().and_then(|b| b.original_path.clone()));
+    let project_name = part.as_ref().and_then(|pa| pa.title.clone()).or_else(|| {
+        bfi.as_ref()
+            .and_then(|b| b.original_path.as_deref())
+            .and_then(original_file_stem)
+    });
 
     let description = {
         let mut d = Vec::new();
@@ -1027,6 +1064,8 @@ fn export_rvt_doc(
         element_type_ids,
         element_original_symbols,
         element_flips,
+        computed_inverts,
+        body_pieces,
     ) = append_production_walker_elements(
         rf,
         &mut entities,
@@ -1144,7 +1183,7 @@ fn export_rvt_doc(
     // first place) find nothing to bind and change nothing.
     apply_element_record_storeys(&mut entities, &mut building_storeys);
     // RE-157: a pipe's invert is above its storey, known only now.
-    export_content::pipe_inverts_above_storeys(&mut entities, &building_storeys);
+    export_content::pipe_inverts_above_storeys(&mut entities, &building_storeys, &computed_inverts);
     // B63: a room's furniture, fixtures and equipment are contained in its
     // space, which needs both on their storeys.
     export_content::contain_in_spaces(&mut entities);
@@ -1198,6 +1237,7 @@ fn export_rvt_doc(
         element_type_ids,
         material_constituent_sets,
         opening_cuts,
+        body_pieces,
     })
 }
 
@@ -2104,8 +2144,19 @@ fn attach_family_instance_ports(
         return;
     };
     for (element, id, symbol) in instances {
-        for &index in ports.get(&u64::from(symbol)).into_iter().flatten() {
-            entities.push(entities::IfcEntity::Port { element, id, index });
+        for &(index, domain) in ports.get(&u64::from(symbol)).into_iter().flatten() {
+            entities.push(entities::IfcEntity::Port {
+                element,
+                id,
+                index,
+                predefined_type: Some(
+                    crate::native_connectors::port_type_of_domain(domain).to_string(),
+                ),
+                flow_direction: crate::native_connectors::port_flow_direction_of_domain(domain)
+                    .map(str::to_string),
+                location_feet: None,
+                direction: None,
+            });
         }
     }
 }
@@ -2755,7 +2806,8 @@ fn ifc_mapping_label(emission: &entities::IfcUnitEmission) -> String {
 /// What the production walker's elements give beside their entities: each
 /// layered element's layers (RE-53), the materials each element's type
 /// draws in (RE-82), and the layers of walls their data does not place
-/// (RE-88), all by ElementId.
+/// (RE-88), all by ElementId, and the pipe inverts worked out in model
+/// height (RE-157), by entity index.
 type WalkerElementData = (
     std::collections::BTreeMap<u32, ElementLayers>,
     std::collections::BTreeMap<u32, Vec<String>>,
@@ -2763,6 +2815,8 @@ type WalkerElementData = (
     std::collections::BTreeMap<u32, u32>,
     std::collections::BTreeMap<u32, u32>,
     std::collections::BTreeMap<u32, bool>,
+    Vec<usize>,
+    std::collections::BTreeMap<usize, Vec<usize>>,
 );
 
 fn append_production_walker_elements(
@@ -2795,6 +2849,8 @@ fn append_production_walker_elements(
             append.element_type_ids,
             append.element_original_symbols,
             append.element_flips,
+            append.computed_inverts,
+            append.body_pieces,
         );
     }
     Default::default()
@@ -3007,7 +3063,7 @@ fn diagnostic_candidate_property_set(
     }
 
     entities::PropertySet {
-        name: "Pset_RvtRsDiagnosticCandidate".into(),
+        name: "RvtRsDiagnosticCandidate".into(),
         properties,
     }
 }
@@ -3172,12 +3228,15 @@ pub fn build_export_diagnostics_with_limits(
     }
     if exported.building_elements == 0 {
         warnings.push("No building elements were exported; output is scaffold-only.".into());
-    } else if bfi.as_ref().map(|b| b.version)
-        == Some(crate::partition_element_records_2023::REVIT_2023)
+    } else if let Some(version) = bfi
+        .as_ref()
+        .map(|b| b.version)
+        .filter(|&version| crate::partition_element_records_2023::is_32bit_release(version))
     {
-        // RE-81, RE-102, RE-107, RE-109, RE-111 to RE-115: what a 2023 export carries, and what it does not.
-        warnings.push(
-            "Revit 2023: elements come from their records with their ElementId, category and \
+        // RE-81, RE-102, RE-107, RE-109, RE-111 to RE-115, RE-180: what a
+        // 2015 to 2023 export carries, and what it does not (RE-181).
+        warnings.push(format!(
+            "Revit {version}: elements come from their records with their ElementId, category and \
              bounding box, doors and windows with their host wall, rooms with their outline, \
              and, where its Levels are read, each element on the storey of the Level its \
              record names; family instances, walls, floors and roofs carry their family and \
@@ -3185,10 +3244,25 @@ pub fn build_export_diagnostics_with_limits(
              material layer sets where their materials are named, a layer that takes its \
              category's material taking the object styles' one, and walls keep their record box. \
              Wall joins and profiles, design options, parameters and \
-             \"Export to IFC As\" overrides are not read for 2023, and components nested in \
-             doors and windows are left out."
-                .into(),
-        );
+             \"Export to IFC As\" overrides are not read for {version}, and components \
+             nested in doors and windows are left out."
+        ));
+    }
+    let release_support = bfi
+        .as_ref()
+        .map(|b| crate::capability::release_support(b.version));
+    if let Some((version, support)) = bfi
+        .as_ref()
+        .map(|b| b.version)
+        .zip(release_support.as_ref())
+        .filter(|(_, support)| support.status == "experimental")
+    {
+        warnings.push(format!(
+            "Revit {version} is read experimentally ({} in docs/support-matrix.json): too few \
+             files of this release are measured against Revit's own export to rely on its \
+             elements, which may be missing, extra or of another class.",
+            support.capability.as_deref().unwrap_or("no row")
+        ));
     }
     append_geometry_gap_warnings(&mut warnings, &exported, &geometry_gaps);
     if model.units.is_empty() {
@@ -3312,6 +3386,19 @@ pub fn build_export_diagnostics_with_limits(
     }
     if mode == ExportDiagnosticsMode::Placeholder {
         warnings.push("Placeholder export mode omits decoded elements by design.".into());
+    } else if !walker_stats.unapplied_export_values.is_empty() {
+        let total: usize = walker_stats.unapplied_export_values.values().sum();
+        let mut counts: Vec<(&String, &usize)> =
+            walker_stats.unapplied_export_values.iter().collect();
+        counts.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        let listed: Vec<String> = counts
+            .iter()
+            .map(|(value, n)| format!("{value} {n}"))
+            .collect();
+        warnings.push(format!(
+            "{total} element(s) carry an \"Export to IFC As\" value the export does not apply, so each keeps its category's entity (#792): {}.",
+            listed.join(", ")
+        ));
     }
 
     let formats_latest_integrity = match rf.read_stream(crate::streams::FORMATS_LATEST) {
@@ -3348,8 +3435,9 @@ pub fn build_export_diagnostics_with_limits(
             build: bfi.as_ref().and_then(|b| b.build.clone()),
             original_path: bfi
                 .as_ref()
-                .and_then(|b| b.original_path.as_ref())
-                .map(|path| crate::redact::redact_sensitive(path)),
+                .and_then(|b| b.original_path.as_deref())
+                .and_then(original_file_name)
+                .map(str::to_string),
             project_name: model
                 .project_name
                 .clone()
@@ -3363,6 +3451,7 @@ pub fn build_export_diagnostics_with_limits(
             has_global_latest: stream_names
                 .iter()
                 .any(|name| name == crate::streams::GLOBAL_LATEST),
+            release_support,
         },
         decoded: DecodedExportDiagnostics {
             production_walker_elements,
@@ -3676,7 +3765,7 @@ fn count_diagnostic_proxy_elements(model: &IfcModel) -> usize {
                 entities::IfcEntity::BuildingElement {
                     property_set: Some(property_set),
                     ..
-                } if property_set.name == "Pset_RvtRsDiagnosticCandidate"
+                } if property_set.name == "RvtRsDiagnosticCandidate"
             )
         })
         .count()
@@ -3791,6 +3880,9 @@ struct ProductionWalkerStats {
     mep_warnings: std::collections::BTreeSet<String>,
     mean_element_confidence: Option<f32>,
     elements_below_min_confidence: usize,
+    /// Exported elements whose "Export to IFC As" value the export does not
+    /// apply, by `"<value> on <class>"` (#792).
+    unapplied_export_values: std::collections::BTreeMap<String, usize>,
 }
 
 fn production_walker_stats(
@@ -3815,6 +3907,11 @@ fn production_walker_stats(
         n += 1;
         if !el.meets_confidence(min_c) {
             stats.elements_below_min_confidence += 1;
+        } else if let Some(value) = export_content::unapplied_export_value(&el) {
+            *stats
+                .unapplied_export_values
+                .entry(format!("{value} on {}", el.class))
+                .or_insert(0) += 1;
         }
     }
     if n > 0 {
@@ -3859,7 +3956,7 @@ fn pset_property_value_count(model: &IfcModel) -> usize {
     let storeys: usize = model
         .building_storeys
         .iter()
-        .flat_map(|storey| entities::PropertySet::storey_sets(&storey.name))
+        .flat_map(|_| entities::PropertySet::storey_sets())
         .map(|set| values(&set))
         .sum();
     let building = if model.building_storeys.is_empty() {

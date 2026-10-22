@@ -185,8 +185,29 @@ pub enum IfcEntity {
     /// its `IfcDistributionPort`, tied to the element, where no join has.
     /// Revit's export writes connectors 0 and 1 of every duct and pipe, and
     /// each connector of a family instance's symbol, whether or not anything
-    /// is connected to them.
-    Port { element: usize, id: u32, index: u32 },
+    /// is connected to them. `predefined_type` is the port's IFC4
+    /// `PredefinedType` (`PIPE`, `DUCT`, `CABLE`), from its connector's
+    /// domain or its duct or pipe (#828), and `flow_direction` its
+    /// `FlowDirection` where the domain gives one (RE-197).
+    ///
+    /// `location_feet` is the connector's point, model feet, where it is
+    /// read (#847): a pipe's end whose connector entry keys name this
+    /// connector. The writer places the port there, in its element's
+    /// frame; a port without one has no placement. `direction` is the unit
+    /// vector, model axes, its placement's Z axis points along: out of the
+    /// pipe at that end, or into it for a port whose flow is `SINK`, as
+    /// Revit's export writes them.
+    Port {
+        element: usize,
+        id: u32,
+        index: u32,
+        predefined_type: Option<String>,
+        flow_direction: Option<String>,
+        #[serde(default)]
+        location_feet: Option<[f64; 3]>,
+        #[serde(default)]
+        direction: Option<[f64; 3]>,
+    },
     /// An MEP system (RE-162, #528): the Revit system element `id`, named
     /// `name`, grouping the building elements at `members` (indices into
     /// `IfcModel::entities`). The writer emits an `IfcSystem` with an
@@ -1362,7 +1383,8 @@ impl ForgeUnit {
 
 /// A named collection of typed property values attached to a
 /// BuildingElement. Emits as IfcPropertySet → IfcPropertySingleValue
-/// → IfcRelDefinesByProperties in the STEP writer.
+/// → IfcRelDefinesByProperties in the STEP writer; a set named `Qto_` as
+/// an IfcElementQuantity of [`PropertyValue::quantity`]s (#822).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PropertySet {
     /// Property-set name. Convention: "Pset_WallCommon",
@@ -1372,35 +1394,21 @@ pub struct PropertySet {
 }
 
 impl PropertySet {
-    /// `Pset_AirSideSystemInformation` and `Pset_ProductRequirements`, each
-    /// with `Name` (`IfcLabel`) `name`: the sets Revit's export gives every
-    /// storey and space on the RE1 models, holding its name (#35).
-    pub fn name_sets(name: &str) -> Vec<PropertySet> {
-        ["Pset_AirSideSystemInformation", "Pset_ProductRequirements"]
-            .into_iter()
-            .map(|set| PropertySet {
-                name: set.into(),
-                properties: vec![Property {
-                    name: "Name".into(),
-                    value: PropertyValue::Label(name.to_string()),
-                }],
-            })
-            .collect()
-    }
-
-    /// The sets Revit's export gives a storey on the RE1 models (#35): its
-    /// [`Self::name_sets`] and `Pset_BuildingStoreyCommon` with `AboveGround`
-    /// unknown.
-    pub fn storey_sets(name: &str) -> Vec<PropertySet> {
-        let mut sets = Self::name_sets(name);
-        sets.push(PropertySet {
+    /// The set Revit's export gives a storey (#35): `Pset_BuildingStoreyCommon`
+    /// with `AboveGround` unknown. Its IFC2X3 export of the RE1 models also
+    /// gives each storey and space `Pset_AirSideSystemInformation` and
+    /// `Pset_ProductRequirements` holding its name; its IFC4 export of the
+    /// BIM4LCA office gives neither, IFC4 has no `Pset_ProductRequirements`,
+    /// and it applies `Pset_AirSideSystemInformation` to spaces and zones
+    /// only, its `Name` that of the air-side system (#822).
+    pub fn storey_sets() -> Vec<PropertySet> {
+        vec![PropertySet {
             name: "Pset_BuildingStoreyCommon".into(),
             properties: vec![Property {
                 name: "AboveGround".into(),
                 value: PropertyValue::Logical(None),
             }],
-        });
-        sets
+        }]
     }
 
     /// `Pset_BuildingCommon` as Revit's export gives the building on the RE1
@@ -1449,7 +1457,7 @@ pub enum PropertyValue {
     /// Free-form text — `IfcText`.
     Text(String),
     /// A name — `IfcLabel`, as standard property sets declare for values
-    /// such as `Pset_SpaceCommon.FloorCovering` (RE-153).
+    /// such as `Pset_SpaceCoveringRequirements.FloorCovering` (RE-153).
     Label(String),
     /// An identifier — `IfcIdentifier`, as standard property sets declare
     /// for `Reference` (RE-153).
@@ -1486,9 +1494,12 @@ pub enum PropertyValue {
     /// Mass in pounds (writer converts to kilograms).
     /// Maps to `IfcMassMeasure`. (IFC-32)
     MassPounds(f64),
+    /// A thermal transmittance in W/(m²·K), as Revit stores it. Maps to
+    /// `IfcThermalTransmittanceMeasure`, which standard property sets such
+    /// as `Pset_WallCommon` declare (RE-194).
+    ThermalTransmittance(f64),
     /// A list of values: the writer emits an `IfcPropertyListValue`, as
-    /// standard property sets declare for values given once per port, such as
-    /// `Pset_PipeFittingTypeCommon.NominalDiameter` (B44).
+    /// standard property sets declare for some properties.
     List(Vec<PropertyValue>),
     /// Values of an enumeration, as labels: the writer emits an
     /// `IfcPropertyEnumeratedValue`, as Revit's export writes
@@ -1544,6 +1555,9 @@ impl PropertyValue {
                 let kg = lb * 0.45359237;
                 format!("IFCMASSMEASURE({kg:.6})")
             }
+            PropertyValue::ThermalTransmittance(u) => {
+                format!("IFCTHERMALTRANSMITTANCEMEASURE({u:.6})")
+            }
             PropertyValue::List(items) => format!(
                 "({})",
                 items
@@ -1561,6 +1575,30 @@ impl PropertyValue {
                     .join(",")
             ),
         }
+    }
+
+    /// The IFC4 simple quantity this value is written as in a quantity set
+    /// (a [`PropertySet`] named `Qto_`, #822) and its value as written:
+    /// lengths as `IfcQuantityLength` in metres, areas, volumes, counts,
+    /// masses and times likewise. `None` for a value that is not a quantity.
+    pub fn quantity(&self) -> Option<(&'static str, String)> {
+        Some(match self {
+            PropertyValue::LengthFeet(ft) | PropertyValue::PositiveLengthFeet(ft) => {
+                ("IFCQUANTITYLENGTH", format!("{:.6}", ft * 0.3048))
+            }
+            PropertyValue::AreaSquareFeet(sqft) => {
+                ("IFCQUANTITYAREA", format!("{:.6}", sqft * 0.09290304))
+            }
+            PropertyValue::VolumeCubicFeet(cuft) => {
+                ("IFCQUANTITYVOLUME", format!("{:.6}", cuft * 0.028316846592))
+            }
+            PropertyValue::CountValue(n) => ("IFCQUANTITYCOUNT", format!("{n}")),
+            PropertyValue::MassPounds(lb) => {
+                ("IFCQUANTITYWEIGHT", format!("{:.6}", lb * 0.45359237))
+            }
+            PropertyValue::TimeSeconds(seconds) => ("IFCQUANTITYTIME", format!("{seconds:.6}")),
+            _ => return None,
+        })
     }
 }
 

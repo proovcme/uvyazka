@@ -151,8 +151,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Releases where this framing is corpus-proven: 2024 on Core Interior
 /// (RE-24) and Snowdon Towers, 2025 on RE1 Architecture (RE-51), and 2023
-/// on two projects in its 32-bit form (RE-107).
-pub const PARTITION_LEVEL_SUPPORTED_REVIT_VERSIONS: &[u32] = &[2023, 2024, 2025, 2026];
+/// on two projects in its 32-bit form (RE-107), as 2015 to 2022 write it
+/// (RE-180, RE-181).
+pub const PARTITION_LEVEL_SUPPORTED_REVIT_VERSIONS: &[u32] = &[
+    2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026, 2027,
+];
 
 /// The release whose Level records and name blocks carry 32-bit
 /// ElementIds (RE-107).
@@ -200,6 +203,7 @@ pub fn elevation_marker(revit_version: u32) -> Option<[u8; 6]> {
         2024 => Some([0x05, 0x00, 0x00, 0x00, 0x48, 0x02]),
         2025 => Some([0x05, 0x00, 0x00, 0x00, 0x5d, 0x02]),
         2026 => Some([0x05, 0x00, 0x00, 0x00, 0x65, 0x02]),
+        2027 => Some([0x05, 0x00, 0x00, 0x00, 0x7a, 0x02]),
         _ => None,
     }
 }
@@ -459,14 +463,27 @@ pub const BUILDING_STORY_WINDOW: usize = 0x200;
 /// exact on all 18 architectural and 19 structural Levels (12 stories, 7
 /// not), and it is 1 on Core Interior's 15 and RE1's 2 Levels, every one a
 /// storey of Revit's export. `None` where the frame is not found.
-fn building_story_after(buf: &[u8], name_end: usize) -> Option<bool> {
+///
+/// Revit 2023 (`id_len` 4) writes the unset id and the ElementId as
+/// `u32`s: `ff ff ff ff 00 01`, the `f64`, a `u32` ElementId and the
+/// setting. Measured on Autodesk's `rac_basic`, `rst_basic` and
+/// `rac_advanced` of 2023, whose every Level then gives the setting the 2024
+/// copy of the same model gives it.
+fn building_story_after(buf: &[u8], name_end: usize, id_len: usize) -> Option<bool> {
+    const ANCHOR_32: [u8; 6] = [0xff, 0xff, 0xff, 0xff, 0x00, 0x01];
     let window = buf.get(name_end..(name_end + BUILDING_STORY_WINDOW).min(buf.len()))?;
-    let anchor = name_end + find_subslice(window, &BUILDING_STORY_ANCHOR)?;
-    let id_at = anchor + BUILDING_STORY_ANCHOR.len() + 8;
-    if read_u64(buf, id_at)? > u64::from(u32::MAX) {
-        return None;
-    }
-    match buf.get(id_at + 8)? {
+    let setting_at = if id_len == 4 {
+        let anchor = name_end + find_subslice(window, &ANCHOR_32)?;
+        anchor + ANCHOR_32.len() + 8 + 4
+    } else {
+        let anchor = name_end + find_subslice(window, &BUILDING_STORY_ANCHOR)?;
+        let id_at = anchor + BUILDING_STORY_ANCHOR.len() + 8;
+        if read_u64(buf, id_at)? > u64::from(u32::MAX) {
+            return None;
+        }
+        id_at + 8
+    };
+    match buf.get(setting_at)? {
         0 => Some(false),
         1 => Some(true),
         _ => None,
@@ -578,7 +595,7 @@ fn decode_name_block(
         element_id,
         name,
         elevation_feet,
-        building_story: building_story_after(buf, end),
+        building_story: building_story_after(buf, end, id_len),
     })
 }
 
@@ -728,8 +745,13 @@ pub fn levels_from_records_and_blocks(
 /// Whether a recovered level list is usable as a storey set.
 ///
 /// Fail closed: at least two levels, one block per Level, and no two
-/// levels sharing an elevation. A partial recovery is not
+/// building-storey levels sharing an elevation. A partial recovery is not
 /// silently emitted as a smaller building.
+///
+/// A Level that is not a building storey may share a storey's elevation
+/// (#746: BIM4LCA `Housing_Timber_*` has the reference level
+/// `Bet 1-lattia` at `Level_01`'s 170.6037 ft), so only storeys are
+/// held to distinct elevations.
 pub fn recovered_levels_are_a_storey_set(
     records: &[PartitionLevelRecord],
     levels: &[PartitionLevel],
@@ -748,6 +770,8 @@ pub fn recovered_levels_are_a_storey_set(
     let mut seen: BTreeSet<u64> = BTreeSet::new();
     levels
         .iter()
+        // A non-storey Level may sit at a storey's elevation (#746).
+        .filter(|level| level.building_story != Some(false))
         .all(|level| seen.insert(level.elevation_feet.to_bits()))
 }
 
@@ -781,7 +805,7 @@ const ID_BEFORE_CATEGORY_2023: usize = 14;
 /// and the `u32` record size, as in [`crate::partition_element_records_2023`].
 const HEADER_TAG_AFTER_ID_2023: usize = 8;
 /// Bytes from the category to the container reference.
-const CONTAINER_AFTER_CATEGORY_2023: usize = 8;
+const CONTAINER_AFTER_CATEGORY_2023: usize = 16;
 /// Bytes from the category to the placement kind.
 const PLACEMENT_KIND_AFTER_CATEGORY_2023: usize = 24;
 /// Bytes from the category to the record marker.
@@ -822,21 +846,32 @@ pub fn find_level_records_2023(
                 offset: id_at,
                 element_id,
                 flags: read_u32(buf, id_at + 4)?,
-                container: read_u64(buf, category + CONTAINER_AFTER_CATEGORY_2023)?,
+                container: match read_u32(buf, category + CONTAINER_AFTER_CATEGORY_2023)? {
+                    u32::MAX => u64::MAX,
+                    id => u64::from(id),
+                },
                 placement_kind: read_u32(buf, category + PLACEMENT_KIND_AFTER_CATEGORY_2023)?,
             })
         })
         .collect()
 }
 
+/// The placement kind Revit 2015 to 2018 write on a Level element, where
+/// 2019 and later write [`crate::partition_element_records::PLACEMENT_KIND_INSTANCE`]
+/// (RE-181). Their other records carry the later releases' kinds: the 7
+/// Levels of Autodesk's 2017 `rac_basic` hold it, and their 2019 copies
+/// hold the instance kind, under the same ElementIds and bytes otherwise.
+pub const LEVEL_PLACEMENT_KIND_2015: u32 = 0xffff_ef6f;
+
 /// Every `OST_Levels` record of every partition, first- and
-/// second-prologue.
+/// second-prologue. On Revit 2015 to 2018 a Level's own placement kind,
+/// [`LEVEL_PLACEMENT_KIND_2015`], reads as the instance kind.
 fn level_records(
     rf: &mut RevitFile,
     revit_version: u32,
     declared_ids: &BTreeSet<u32>,
 ) -> Vec<PartitionLevelRecord> {
-    if revit_version == REVIT_2023 {
+    if crate::partition_element_records_2023::is_32bit_release(revit_version) {
         let Some((full, header_tag)) = crate::partition_element_records_2023::record_marker(rf)
         else {
             return Vec::new();
@@ -855,6 +890,14 @@ fn level_records(
                 header_tag,
                 &marker,
             ));
+        }
+        if revit_version < 2019 {
+            for record in &mut records {
+                if record.placement_kind == LEVEL_PLACEMENT_KIND_2015 {
+                    record.placement_kind =
+                        crate::partition_element_records::PLACEMENT_KIND_INSTANCE;
+                }
+            }
         }
         return records;
     }
@@ -923,8 +966,8 @@ pub fn scan_partition_levels(
             .unwrap_or(0);
         let mut blocks = Vec::new();
         let buf = inflated.bytes();
-        if revit_version == REVIT_2023 {
-            // No Level inside another element is measured on 2023.
+        if crate::partition_element_records_2023::is_32bit_release(revit_version) {
+            // No Level inside another element is measured on 2015 to 2023.
             blocks.extend(find_name_blocks_sized(
                 buf,
                 declared_ids,

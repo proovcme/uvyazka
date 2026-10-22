@@ -102,8 +102,87 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Releases where this record shape is corpus-proven: 2024 on
 /// `2024_Core_Interior.rvt` against Revit's own export, 2025 on the
-/// `Drshelden/IFC-ECS` RE1 projects (MIT) against theirs (RE-32).
-pub const PARTITION_ELEMENT_RECORD_SUPPORTED_REVIT_VERSIONS: &[u32] = &[2024, 2025, 2026];
+/// `Drshelden/IFC-ECS` RE1 projects (MIT) against theirs (RE-32), 2026 on
+/// one house against its export (RE-124), and 2027 against the 2026 copies
+/// of Autodesk's sample projects, with no 2027 export (RE-179).
+pub const PARTITION_ELEMENT_RECORD_SUPPORTED_REVIT_VERSIONS: &[u32] = &[2024, 2025, 2026, 2027];
+
+/// The name Revit's `Category` parameter gives an element of each
+/// `BuiltInCategory` (spike 257), a sub-category as `Parent: Name`.
+///
+/// The ids are Autodesk's published API constants; each name is the one
+/// Revit 2024's own IFC export writes as `Other.Category` for elements whose
+/// record carries the id, measured on the seven Autodesk Revit 2024 samples
+/// whose records this module reads (26,656 elements, 57 categories, no id
+/// with two names). Revit writes the name in its UI language: these are the
+/// English names. An id not listed has no name here.
+pub const BUILTIN_CATEGORY_NAMES: &[(i64, &str)] = &[
+    (-2_000_011, "Walls"),
+    (-2_000_014, "Windows"),
+    (-2_000_023, "Doors"),
+    (-2_000_032, "Floors"),
+    (-2_000_035, "Roofs"),
+    (-2_000_038, "Ceilings"),
+    (-2_000_045, "Lines: <Sketch>"),
+    (-2_000_051, "Lines"),
+    (-2_000_080, "Furniture"),
+    (-2_000_100, "Columns"),
+    (-2_000_120, "Stairs"),
+    (-2_000_123, "Stairs: Supports"),
+    (-2_000_126, "Railings"),
+    (-2_000_151, "Generic Models"),
+    (-2_000_170, "Curtain Panels"),
+    (-2_000_171, "Curtain Wall Mullions"),
+    (-2_000_181, "Walls: Wall Sweeps"),
+    (-2_000_182, "Walls: Reveals"),
+    (-2_000_267, "Assemblies"),
+    (-2_000_919, "Stairs: Runs"),
+    (-2_000_920, "Stairs: Landings"),
+    (-2_000_996, "Shaft Openings"),
+    (-2_000_997, "Walls: Rectangular Straight Wall Opening"),
+    (-2_001_000, "Casework"),
+    (-2_001_040, "Electrical Equipment"),
+    (-2_001_060, "Electrical Fixtures"),
+    (-2_001_100, "Furniture Systems"),
+    (-2_001_120, "Lighting Fixtures"),
+    (-2_001_140, "Mechanical Equipment"),
+    (-2_001_160, "Plumbing Fixtures"),
+    (-2_001_180, "Parking"),
+    (-2_001_263, "Site: Pads"),
+    (-2_001_300, "Structural Foundations"),
+    (-2_001_320, "Structural Framing"),
+    (-2_001_327, "Structural Beam Systems"),
+    (-2_001_330, "Structural Columns"),
+    (-2_001_336, "Structural Trusses"),
+    (-2_001_350, "Specialty Equipment"),
+    (-2_001_354, "Structural Stiffeners"),
+    (-2_001_360, "Planting"),
+    (-2_001_370, "Entourage"),
+    (-2_001_392, "Floors: Slab Edges"),
+    (-2_003_400, "Mass"),
+    (-2_008_000, "Ducts"),
+    (-2_008_010, "Duct Fittings"),
+    (-2_008_013, "Air Terminals"),
+    (-2_008_020, "Flex Ducts"),
+    (-2_008_044, "Pipes"),
+    (-2_008_049, "Pipe Fittings"),
+    (-2_008_087, "Lighting Devices"),
+    (-2_008_099, "Sprinklers"),
+    (-2_008_126, "Cable Tray Fittings"),
+    (-2_008_128, "Conduit Fittings"),
+    (-2_008_130, "Cable Trays"),
+    (-2_008_132, "Conduits"),
+    (-2_009_000, "Structural Rebar"),
+    (-2_009_030, "Structural Connections"),
+];
+
+/// [`BUILTIN_CATEGORY_NAMES`]' name for `id`.
+pub fn builtin_category_name(id: i64) -> Option<&'static str> {
+    BUILTIN_CATEGORY_NAMES
+        .iter()
+        .find(|(known, _)| *known == id)
+        .map(|(_, name)| *name)
+}
 
 /// Autodesk `BuiltInCategory.OST_Columns` — architectural columns.
 pub const OST_COLUMNS: i64 = -2_000_100;
@@ -170,6 +249,9 @@ pub const OST_ELECTRICAL_FIXTURES: i64 = -2_001_060;
 pub const OST_ELECTRICAL_EQUIPMENT: i64 = -2_001_040;
 /// Autodesk `BuiltInCategory.OST_MechanicalEquipment`.
 pub const OST_MECHANICAL_EQUIPMENT: i64 = -2_001_140;
+/// Autodesk `BuiltInCategory.OST_Mass`: mass instances, which Revit's export
+/// writes only where their "Export to IFC As" names an entity (#864).
+pub const OST_MASS: i64 = -2_003_400;
 
 /// Device categories whose shared nested components are element records of
 /// their own that Revit's export leaves out (#96): a switch or receptacle
@@ -305,7 +387,7 @@ pub const OST_EDGE_SLAB: i64 = -2_001_392;
 /// RE-39 adds stairs with their runs, landings and stringers, and roofs.
 /// RE-40 adds slab edges, once elements in non-primary design options are
 /// left out: all 59 exported on Snowdon Towers are Revit's.
-pub const PRODUCT_RECORD_CATEGORIES: [(i64, &str); 38] = [
+pub const PRODUCT_RECORD_CATEGORIES: [(i64, &str); 39] = [
     (OST_FURNITURE, "Furniture"),
     (OST_CASEWORK, "Casework"),
     (OST_PLUMBING_FIXTURES, "PlumbingFixture"),
@@ -344,6 +426,7 @@ pub const PRODUCT_RECORD_CATEGORIES: [(i64, &str); 38] = [
     (OST_ELECTRICAL_FIXTURES, "ElectricalFixture"),
     (OST_ELECTRICAL_EQUIPMENT, "ElectricalEquipment"),
     (OST_MECHANICAL_EQUIPMENT, "MechanicalEquipment"),
+    (OST_MASS, "Mass"),
 ];
 
 /// Smallest bounding-box extent, in feet, a placed instance needs on every
@@ -409,6 +492,11 @@ pub const BBOX_MARKER_2025: [u8; 8] = [0x59, 0x01, 0xff, 0xff, 0xff, 0xff, 0xd3,
 /// single-dwelling house against Revit's own export (RE-124).
 pub const BBOX_MARKER_2026: [u8; 8] = [0x61, 0x01, 0xff, 0xff, 0xff, 0xff, 0xf1, 0x05];
 
+/// The bbox marker of Revit 2027 files: `0x0164`, `0xFF`×4, `0x0610`, the
+/// tags of `Outline` and `ElementParents` in the schema of all seven of
+/// Autodesk's 2027 sample files (RE-179).
+pub const BBOX_MARKER_2027: [u8; 8] = [0x64, 0x01, 0xff, 0xff, 0xff, 0xff, 0x10, 0x06];
+
 /// The bbox marker of `revit_version`, or `None` where the record shape
 /// is not proven (fail closed).
 pub fn bbox_marker(revit_version: u32) -> Option<[u8; 8]> {
@@ -416,6 +504,7 @@ pub fn bbox_marker(revit_version: u32) -> Option<[u8; 8]> {
         2024 => Some(BBOX_MARKER),
         2025 => Some(BBOX_MARKER_2025),
         2026 => Some(BBOX_MARKER_2026),
+        2027 => Some(BBOX_MARKER_2027),
         _ => None,
     }
 }
@@ -1000,13 +1089,37 @@ pub fn assign_second_prologue_ids(
     marker: &[u8; 8],
     declared_ids: &BTreeSet<u32>,
 ) -> BTreeMap<usize, u32> {
+    assign_second_prologue_ids_with(buf, marker, declared_ids, false)
+}
+
+/// The first release whose type-symbol frames take their enclosing record's
+/// id too ([`assign_second_prologue_ids_with`], RE-179).
+pub const SECOND_PROLOGUE_SYMBOLS_FROM: u32 = 2027;
+
+/// [`assign_second_prologue_ids`], giving type-symbol frames
+/// ([`PLACEMENT_KIND_SYMBOL`]) their enclosing record's id as well when
+/// `symbols` is set.
+///
+/// Revit 2027 writes most frames in the second prologue, type symbols among
+/// them (RE-179): 938 of the 1,265 on Autodesk's 2027 `rac_basic`, where its
+/// 2026 copy writes none. Of the 17,621 such frames on the 2027 `rac_basic`,
+/// `rac_advanced` and `rme_basic`, 17,619 get the id the 2026 copy's
+/// first-prologue frame of the same category, kind and box carries. Before
+/// 2027 symbols are left out: on Snowdon Towers Facades (2025) they would
+/// give seven columns a type section no export here checks.
+pub fn assign_second_prologue_ids_with(
+    buf: &[u8],
+    marker: &[u8; 8],
+    declared_ids: &BTreeSet<u32>,
+    symbols: bool,
+) -> BTreeMap<usize, u32> {
     let chain = partition_record_chain(buf, marker);
     let mut out = BTreeMap::new();
     for hit in memchr::memmem::find_iter(buf, marker) {
         let Some(offset) = hit.checked_sub(BBOX_MARKER_OFFSET) else {
             continue;
         };
-        if !is_second_prologue_instance(buf, offset) {
+        if !is_second_prologue_frame(buf, offset, symbols) {
             continue;
         }
         let Some(span) = enclosing_record(&chain, offset) else {
@@ -1028,15 +1141,22 @@ pub fn carries_no_element_id(raw: u64) -> bool {
     raw == 0 || raw >= u64::from(u32::MAX)
 }
 
-/// Whether the frame at `offset` is a placed instance in the
-/// `BuiltInCategory` band with no ElementId at `+0x00`
-/// ([`carries_no_element_id`]): the frames [`assign_second_prologue_ids`]
-/// resolves.
-fn is_second_prologue_instance(buf: &[u8], offset: usize) -> bool {
+/// Whether the frame at `offset` is a placed instance (or, with `symbols`,
+/// a type symbol) in the `BuiltInCategory` band with no ElementId at
+/// `+0x00` ([`carries_no_element_id`]): the frames
+/// [`assign_second_prologue_ids_with`] resolves.
+fn is_second_prologue_frame(buf: &[u8], offset: usize, symbols: bool) -> bool {
     read_u64(buf, offset + CATEGORY_OFFSET)
         .is_some_and(|v| (BUILTIN_CATEGORY_MIN..=BUILTIN_CATEGORY_MAX).contains(&(v as i64)))
         && read_u64(buf, offset).is_some_and(carries_no_element_id)
-        && is_instance_frame(buf, offset)
+        && (is_instance_frame(buf, offset) || (symbols && is_symbol_frame(buf, offset)))
+}
+
+/// Whether the frame at `offset` carries the type-symbol placement kind
+/// ([`PLACEMENT_KIND_SYMBOL`]).
+fn is_symbol_frame(buf: &[u8], offset: usize) -> bool {
+    read_u64(buf, offset + PLACEMENT_KIND_OFFSET)
+        .is_some_and(|v| (v & 0xffff_ffff) as u32 == PLACEMENT_KIND_SYMBOL)
 }
 
 /// Second-prologue ElementIds for a whole file, keyed by partition stream
@@ -1061,7 +1181,12 @@ pub fn compute_second_prologue_ids(rf: &mut RevitFile) -> SecondPrologueIds {
         let Ok(inflated) = rf.inflated_partition(&stream) else {
             continue;
         };
-        let assigned = assign_second_prologue_ids(inflated.bytes(), &marker, &declared);
+        let assigned = assign_second_prologue_ids_with(
+            inflated.bytes(),
+            &marker,
+            &declared,
+            version >= SECOND_PROLOGUE_SYMBOLS_FROM,
+        );
         if !assigned.is_empty() {
             out.insert(stream, assigned);
         }
@@ -1237,7 +1362,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// The categories the exporter recovers instances of, with the class name
 /// each is decoded as: the architectural core plus
 /// [`PRODUCT_RECORD_CATEGORIES`].
-pub const RECOVERED_CATEGORIES: [(i64, &str); 45] = [
+pub const RECOVERED_CATEGORIES: [(i64, &str); 46] = [
     (OST_WALLS, "Wall"),
     (OST_DOORS, "Door"),
     (OST_WINDOWS, "Window"),
@@ -1283,6 +1408,7 @@ pub const RECOVERED_CATEGORIES: [(i64, &str); 45] = [
     (OST_ELECTRICAL_FIXTURES, "ElectricalFixture"),
     (OST_ELECTRICAL_EQUIPMENT, "ElectricalEquipment"),
     (OST_MECHANICAL_EQUIPMENT, "MechanicalEquipment"),
+    (OST_MASS, "Mass"),
 ];
 
 /// Placed-instance frames in `buf`, per category, that carry the bbox

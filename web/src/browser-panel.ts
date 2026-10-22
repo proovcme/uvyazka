@@ -1,9 +1,10 @@
+import {processingPanel} from './processing-panel';
 import {geometryCache} from './geometry-cache';
 import type { ModelPackage } from './model';
 import type { RunPackage } from './simulation';
 import { journalPanel } from './import-journal-panel';
 import { filePolicy } from './import-journal';
-import type { ImportRun } from './import-journal';
+import type { RunState, ImportRun } from './import-journal';
 import type {RvtDocument} from './rvt-document';
 import {hasReadableDocument} from './rvt-import-result';
 
@@ -29,22 +30,29 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
   const base=new URL('.',location.href).href;
   let active=0,importer:Worker|null=null,planner:Worker|null=null,current:ModelPackage|null=null,fallback:ModelPackage|null=null,run:ImportRun|null=null;
   const urls=new Map<string,string>();
+  const processing=processingPanel(()=>el<HTMLButtonElement>('browser-cancel').click(),log.open);
+  const finishRun=(target:ImportRun,state:Exclude<RunState,'running'>,message:string,details?:unknown)=>{journal.finish(target,state,message,details);if(target===run)processing.finish(state,message);};
+  const reportProgress=(target:ImportRun,stage:string,message:string,details?:unknown)=>{journal.progress(target,stage,message,details);if(target===run)processing.update(stage,message);};
+  const probe=setInterval(()=>{if(run?.state==='running'){importer?.postMessage({kind:'ping',job:active});planner?.postMessage({kind:'ping',job:active});}},2000);
+  addEventListener('pagehide',()=>clearInterval(probe));
+
   const status=(text:string)=>{el('browser-status').textContent=text;const footer=document.getElementById('workspace-status')!;footer.textContent=text;footer.title=text;};
-  const busy=(yes:boolean)=>{document.body.classList.toggle('is-busy',yes);el<HTMLButtonElement>('browser-cancel').disabled=!yes;el<HTMLButtonElement>('browser-plan').disabled=yes||!current;};
+  const busy=(yes:boolean)=>{document.body.classList.toggle('is-busy',yes);el<HTMLButtonElement>('browser-cancel').disabled=!yes;el<HTMLButtonElement>('browser-plan').disabled=yes||!current;for(const id of ['open-file','empty-add-model','replace-model']){const button=document.getElementById(id) as HTMLButtonElement|null;if(button)button.disabled=yes;}};
   const stop=(reason='Обработка отменена: выбран другой файл или режим.')=>{
-    if(run?.state==='running')journal.finish(run,'cancelled',reason);
+    if(run?.state==='running')finishRun(run,'cancelled',reason);
     active++;importer?.terminate();planner?.terminate();importer=planner=null;busy(false);
   };
-  const fail=(message:string,details?:unknown)=>{current=fallback;if(run)journal.finish(run,'failed',message,details);stop();status(message+' · подробности в журнале');};
+  const fail=(message:string,details?:unknown)=>{current=fallback;if(run)finishRun(run,'failed',message,details);stop();status(message+' · подробности в журнале');};
   const download=(id:string,data:Blob,name:string)=>{const old=urls.get(id);if(old)URL.revokeObjectURL(old);const url=URL.createObjectURL(data);urls.set(id,url);const a=el<HTMLAnchorElement>(id);a.href=url;a.download=name;a.hidden=false;};
   const diagnosticReport=(report:unknown)=>{el('browser-diagnostics').hidden=false;section.querySelector('pre')!.textContent=JSON.stringify(report,null,2);download('browser-report',new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),'uvyazka-diagnostics.json');};
   el('browser-cancel').onclick=()=>{current=fallback;callbacks.cancelDrawing();stop('Отменено пользователем.');status('Обработка отменена. События сохранены в журнале.');};
   el('browser-demo').onclick=async()=>{stop('Переход к учебному примеру.');await journal.flush();location.href=base;};
   el<HTMLInputElement>('browser-file').onchange=async()=>{
     const input=el<HTMLInputElement>('browser-file'),file=input.files?.[0];if(!file)return;input.value='';
-    document.querySelector<HTMLDialogElement>('#file-dialog')!.showModal();
+    document.querySelector<HTMLDialogElement>('#file-dialog')!.close();
     stop();const job=active;await log.ready;if(job!==active)return;
-    run=journal.begin('import',file.name,file.size);const jobRun=run;log.select(run);
+    run=journal.begin('import',file.name,file.size);const jobRun=run;log.select(run);processing.begin(file.name,file.size);
+    fallback=current;
     const policy=filePolicy(file.name,file.size);
     if(policy.error){fail(policy.error);return;}
     if(policy.warning)journal.event(run,'warning',policy.warning);
@@ -55,16 +63,16 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
     for(const [id,url] of urls){URL.revokeObjectURL(url);el(id).hidden=true;}urls.clear();el('browser-diagnostics').hidden=true;
     try{
       if(/\.(dwg|dxf)$/i.test(file.name)){
-        journal.progress(run,'CAD','Чтение чертежа');await callbacks.drawing(file);
-        if(job===active){journal.finish(jobRun,'completed','Чертёж открыт.');status(file.name+' открыт. Масштаб и слои — над чертежом.');busy(false);}return;
+        reportProgress(run,'CAD','Чтение чертежа');await callbacks.drawing(file);
+        if(job===active){document.querySelector<HTMLDialogElement>('#file-dialog')!.close();finishRun(jobRun,'completed','Чертёж открыт.');status(file.name+' открыт. Масштаб и слои — над чертежом.');busy(false);}return;
       }
-      journal.progress(run,'Чтение файла','Загрузка байтов с локального диска');
+      reportProgress(run,'Чтение файла','Загрузка байтов с локального диска');
       const buffer=await file.arrayBuffer();if(job!==active)return;
       importer=new Worker(new URL('./import.worker.ts',import.meta.url),{type:'module'});
       importer.onerror=(event)=>{if(job===active)fail('Worker остановился: '+(event.message||'причина недоступна; возможна нехватка памяти'),{filename:event.filename,line:event.lineno});};
       importer.onmessageerror=()=>{if(job===active)fail('Не удалось получить данные от worker.');};
       importer.onmessage=async({data})=>{
-        if(data.job!==active)return;
+        if(data.job!==active)return;processing.reply();if(data.kind==='pong')return;
         if(data.kind==='document'){
           callbacks.document(data.document);
           journal.event(jobRun,data.document.status==='partial'||data.document.schedule_data?.status==='partial'?'warning':'info',hasReadableDocument(data.document)?'Каталог видов и таблиц прочитан':'Читаемые записи каталога не получены',{cached:!!data.cached,records:data.document.records.length,status:data.document.status,error:data.document.error,clipped_records:data.document.clipped_records,schedule_parameters:data.document.schedule_data?{records:data.document.schedule_data.records.length,status:data.document.schedule_data.status,error:data.document.schedule_data.error}:undefined});
@@ -75,7 +83,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
           journal.event(jobRun,'warning','Не удалось прочитать каталог RVT; геометрия обрабатывается отдельно',{message:data.message});
         }
         else if(data.kind==='source')journal.source(jobRun,data.sha256);
-        else if(data.kind==='progress'){if(data.details?.warning)journal.event(jobRun,'warning',data.text,data.details);journal.progress(jobRun,data.stage||'Импорт',data.text,data.details);status(data.text);}
+        else if(data.kind==='progress'){if(data.details?.warning)journal.event(jobRun,'warning',data.text,data.details);reportProgress(jobRun,data.stage||'Импорт',data.text,data.details);status(data.text);}
         else if(data.kind==='error'){
           diagnosticReport({filename:file.name,sha256:jobRun.sha256,outcome:'failed',message:data.message,...data.details});
           if(!append&&/\.rvt$/i.test(file.name))callbacks.noGeometry(file.name,data.message);
@@ -83,7 +91,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
         }
         else if(data.kind==='partial'){
           diagnosticReport({filename:file.name,sha256:jobRun.sha256,outcome:'partial',message:data.message,...data.details});
-          journal.finish(jobRun,'partial',data.message,data.details);current=fallback;stop();status(data.message);
+          finishRun(jobRun,'partial',data.message,data.details);current=fallback;stop();status(data.message);
           if(!append)callbacks.noGeometry(file.name,data.message);
           document.querySelector<HTMLDialogElement>('#file-dialog')!.close();callbacks.openDocument();
         }
@@ -96,11 +104,11 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
           el('browser-diagnostics').hidden=false;section.querySelector('pre')!.textContent=JSON.stringify(report,null,2);
           download('browser-report',new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),'uvyazka-diagnostics.json');
           if(data.convertedIfc)download('browser-ifc',new Blob([data.convertedIfc],{type:'application/x-step'}),file.name.replace(/\.rvt$/i,'.ifc'));
-          journal.progress(jobRun,'Отображение','Создание 3D-сцены');status('Отображение модели');
+          reportProgress(jobRun,'Отображение','Создание 3D-сцены');status('Отображение модели');
           try{const displayed=await callbacks.model(data.model,data.binary,append);if(job!==active)return;current=displayed;fallback=null;}
           catch(e){if(job===active)fail('Не удалось отобразить модель: '+String(e));return;}
           const result=`${file.name}: ${s.physical_elements} физических элементов, ${s.meshes} сеток, ${s.geometry_errors} без геометрии.`;
-          journal.finish(jobRun,'completed',result);status(result+' Можно рассчитать сценарий.');busy(false);
+          finishRun(jobRun,'completed',result);status(result+' Можно рассчитать сценарий.');busy(false);
         }
       };
       importer.postMessage({job,buffer,filename:file.name,base,memoryMiB},[buffer]);
@@ -109,19 +117,19 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
   el('browser-plan').onclick=async()=>{
     if(!current)return;
     const curingDays=Number(el<HTMLInputElement>('browser-curing').value);if(!Number.isInteger(curingDays)||curingDays<1||curingDays>365){status('Выдержка бетона: целое число от 1 до 365 суток');return;}
-    await log.ready;stop('Запущен новый расчёт.');const job=active;
-    run=journal.begin('simulation',current.source.filename,current.source.size_bytes);const jobRun=run;log.select(run);journal.source(run,current.source.sha256);
-    busy(true);status('Подготовка расчёта');
+    await log.ready;stop('Запущен новый расчёт.');const job=active;fallback=current;
+    run=journal.begin('simulation',current.source.filename,current.source.size_bytes);const jobRun=run;log.select(run);journal.source(run,current.source.sha256);document.querySelector<HTMLDialogElement>('#file-dialog')!.close();processing.begin(current.source.filename,current.source.size_bytes,true);
+    busy(true);status('Подготовка расчёта');processing.update('Подготовка','Загрузка расчётного движка');
     planner=new Worker(new URL('./planner.worker.ts',import.meta.url),{type:'module'});
     planner.onerror=(event)=>{if(job===active)fail('Ошибка расчёта: '+event.message);};
     planner.onmessage=async({data})=>{
-      if(data.job!==active)return;
-      if(data.kind==='progress'){journal.progress(jobRun,'Расчёт',data.text);status(data.text);}
+      if(data.job!==active)return;processing.reply();if(data.kind==='pong')return;
+      if(data.kind==='progress'){reportProgress(jobRun,/Загрузка Python/.test(data.text)?'Подготовка':'Расчёт',data.text);status(data.text);}
       else if(data.kind==='error')fail('Не удалось рассчитать: '+data.message);
       else if(data.kind==='planned'){
-        try{await callbacks.run(data.run);if(job!==active)return;const message=`Рассчитано: ${data.run.scenario.operations.length} работ, ${data.run.duration} минут. Вне графика: ${data.run.scenario.unplanned_element_ids.length} элементов.`;
+        try{reportProgress(jobRun,'Отображение','Подготовка результата расчёта');await callbacks.run(data.run);if(job!==active)return;const message=`Рассчитано: ${data.run.scenario.operations.length} работ, ${data.run.duration} минут. Вне графика: ${data.run.scenario.unplanned_element_ids.length} элементов.`;
           if(data.run.scenario.unplanned_element_ids.length)journal.event(jobRun,'warning','Часть элементов осталась вне графика',{element_ids:data.run.scenario.unplanned_element_ids});
-          journal.finish(jobRun,'completed',message);status(message);
+          finishRun(jobRun,'completed',message);status(message);
         }catch(e){if(job===active)fail(String(e));}if(job===active){planner?.terminate();planner=null;busy(false);}
       }
     };
@@ -129,5 +137,5 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
     journal.event(run,'info','Параметры расчёта',settings);planner.postMessage({job,base,model:current,...settings});
   };
   document.addEventListener('scene-model-changed',((event:CustomEvent<ModelPackage|null>)=>{stop('Изменён состав или размещение сцены.');current=event.detail;busy(false);}) as EventListener);
-  addEventListener('pagehide',()=>{if(run?.state==='running')journal.finish(run,'interrupted','Вкладка закрыта или перезагружена до завершения.');stop();for(const url of urls.values())URL.revokeObjectURL(url);});
+  addEventListener('pagehide',()=>{if(run?.state==='running')finishRun(run,'interrupted','Вкладка закрыта или перезагружена до завершения.');stop();for(const url of urls.values())URL.revokeObjectURL(url);});
 }

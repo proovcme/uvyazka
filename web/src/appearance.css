@@ -1,0 +1,41 @@
+:root{color-scheme:light;--canvas:#f0f3f6;--panel:#ffffff;--rail:#f7f8fa;--raised:#e7edf2;--field:#f4f6f8;--ink:#1d2d3c;--secondary:#4b5d6d;--muted:#637382;--edge:#20364b1a;--strong-edge:#20364b30;--amber:#925008;--amber-wash:#a9680910;--danger:#b32b24;--accent-ink:#fff;--error-bg:#fff0ed;--backdrop:#17283966;--step-done:#237147;--dialog-shadow:0 16px 64px #17283924}
+:root[data-theme=dark]{color-scheme:dark;--canvas:#12181d;--panel:#1b2229;--rail:#171d23;--raised:#232c35;--field:#141b21;--ink:#e4e8ec;--secondary:#a5b0bb;--muted:#7d8c9a;--edge:#ffffff12;--strong-edge:#ffffff24;--amber:#efb65e;--amber-wash:#efb65e16;--danger:#f29787;--accent-ink:#12181d;--error-bg:#3b2524;--backdrop:#080d12b3;--step-done:#91c8a6;--dialog-shadow:0 20px 80px #0008}
+button.add-model-primary,#browser-plan{color:var(--accent-ink)}
+.error{background:var(--error-bg)}
+dialog{box-shadow:var(--dialog-shadow)}dialog::backdrop{background:var(--backdrop)}
+.gantt-bar[data-state=completed]{background:var(--secondary)}
+#theme-toggle{font-size:11px;min-height:44px;color:var(--secondary);white-space:nowrap;display:inline-flex;align-items:center;gap:6px}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
+.conversion-dialog{width:min(680px,calc(100% - 24px));max-height:90dvh;overflow:auto}
+.conversion-dialog>.panel-head{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px 24px}
+.conversion-dialog h2{font:500 22px var(--technical);margin:0}
+.conversion-dialog button{min-height:44px;padding:10px 16px;border:1px solid var(--strong-edge);border-radius:4px}
+.conversion-dialog button:hover{background:var(--raised)}
+.conversion-body{padding:20px 24px}
+#conversion-source{font-size:13px;color:var(--secondary);overflow-wrap:anywhere;margin:0 0 20px}
+.conversion-stage{padding:16px;background:var(--field);border:1px solid var(--edge);border-radius:4px}
+#conversion-badge{display:block;color:var(--amber);font-size:12px;font-weight:500;margin-bottom:8px}
+#conversion-stage{font:500 24px var(--technical);color:var(--ink)}
+#conversion-message{font-size:14px;line-height:1.5;margin:8px 0 0;overflow-wrap:anywhere}
+#conversion-progress{display:block;width:100%;height:5px;margin:16px 0;accent-color:var(--amber)}
+.conversion-timers{display:flex;justify-content:space-between;gap:16px;font-size:13px;color:var(--secondary)}
+.conversion-timers b{font:500 20px var(--technical);font-variant-numeric:tabular-nums;margin-left:8px;color:var(--ink)}
+#conversion-activity{font-size:13px;color:var(--secondary);line-height:1.6;min-height:42px}
+#conversion-activity[data-silent=true]{color:var(--amber)}
+#conversion-steps{list-style:none;margin:20px 0;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:0 24px;counter-reset:steps}
+#conversion-steps li{display:grid;grid-template-columns:24px 1fr auto;align-items:center;gap:8px;min-height:36px;padding:4px 0;border-bottom:1px solid var(--edge);font-size:12px;color:var(--muted);counter-increment:steps}
+#conversion-steps li:before{content:counter(steps,decimal-leading-zero);font:12px var(--technical);font-variant-numeric:tabular-nums}
+#conversion-steps small{font-size:10px}
+#conversion-steps [data-state=active]{color:var(--amber);font-weight:500}
+#conversion-steps [data-state=done]{color:var(--step-done)}
+#conversion-steps [data-state=stopped]{color:var(--danger)}
+.conversion-privacy{font-size:12px;line-height:1.5;color:var(--muted);margin:20px 0}
+.conversion-actions{display:flex;gap:12px;justify-content:flex-end;flex-wrap:wrap}
+#conversion-cancel{color:var(--danger)}
+#conversion-done{background:var(--amber);color:var(--accent-ink);border-color:var(--amber)}
+.conversion-dialog[data-state=failed] #conversion-badge{color:var(--danger)}
+.conversion-dialog[data-state=completed] #conversion-badge{color:var(--step-done)}
+.conversion-dialog [hidden]{display:none!important}
+.status-bar #open-processing{color:var(--amber);white-space:nowrap}
+@media(max-width:950px){.header-actions{gap:8px}.header-actions #theme-toggle{font-size:10px;padding:4px}}
+@media(max-width:650px){.conversion-body{padding:16px}.conversion-dialog>.panel-head{padding:12px 16px}#conversion-steps{grid-template-columns:1fr;gap:0}.conversion-actions button{flex:1}.conversion-timers{flex-wrap:wrap}.header-actions{gap:6px;padding:8px}#theme-toggle{width:40px;flex-shrink:0;justify-content:center;padding:4px}#theme-toggle span{display:none}.header-actions #open-file{font-size:11px;padding:8px 10px;min-width:0}.header-actions #replace-model{font-size:10px;padding:4px}.status-bar #workspace-status{max-width:38vw}}

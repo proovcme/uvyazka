@@ -42,10 +42,10 @@ pub struct ElemTableHeader {
     /// 2016, 1411 on 2024, 1481 on 2026). For the declared ElementIds use
     /// [`declared_element_ids`].
     pub element_count: u16,
-    /// The number of records, the low 16 bits of the `u32` count at `0x02`
-    /// (every file measured has fewer than 65,536 records; [`parse_records`]
-    /// reads the whole `u32`).
-    pub record_count: u16,
+    /// The number of records the table states, the `u32` at `0x02` (#152).
+    /// A table can hold more than a `u16` counts: a Nordic LCA office
+    /// project's states 72,798 (#745).
+    pub record_count: u32,
     /// The `0x0011` found at `0x1E` / `0x22` on family files, 0 elsewhere.
     /// It is the owner field of the table's first record (ElementId 17 on
     /// family files), not a header field (#152).
@@ -131,7 +131,7 @@ fn parse_header_bytes(d: &[u8]) -> Result<ElemTableHeader> {
         ));
     }
     let element_count = u16::from_le_bytes([d[0], d[1]]);
-    let record_count = u16::from_le_bytes([d[2], d[3]]);
+    let record_count = u32::from_le_bytes([d[2], d[3], d[4], d[5]]);
     let header_flag = [0x1eusize, 0x22]
         .iter()
         .find_map(|&off| {
@@ -175,6 +175,12 @@ fn u32_at(d: &[u8], at: usize) -> Option<u32> {
 /// table. When both fit equally, the one that leaves the shorter tail wins
 /// (a 40-byte table also fits at 28). Falls back to the 12-byte implicit
 /// layout from `0x30` when neither fits.
+///
+/// The id that rises is the record's second one ([`ElemRecord::id_secondary`],
+/// `+4` on 28 bytes, `+20` on 40), the element's ElementId. The first id
+/// rises with it wherever the two agree, but on Autodesk's Snowdon Towers
+/// samples they differ on 27 (Structural) and 84 (Architectural) records,
+/// and there the first id falls back below its predecessor 2 and 3 times.
 pub fn detect_layout(d: &[u8]) -> ElemTableLayout {
     let fallback = ElemTableLayout {
         start: 0x30,
@@ -190,10 +196,11 @@ pub fn detect_layout(d: &[u8]) -> ElemTableLayout {
         if end > d.len() {
             return None;
         }
+        let (element_id_at, _, _) = record_fields(stride)?;
         let mut previous = None;
         let mut rises = 0;
         for k in 0..count {
-            let id = u32_at(d, RECORDS_ORIGIN + k * stride)?;
+            let id = u32_at(d, RECORDS_ORIGIN + k * stride + element_id_at)?;
             if previous.is_some_and(|p| id > p) {
                 rises += 1;
             }
@@ -308,17 +315,17 @@ fn inflate(rf: &mut RevitFile) -> Result<Vec<u8>> {
 }
 
 /// Parse all records from Global/ElemTable: the `u32` count at `0x02`
-/// records from `0x06`, at the record size [`detect_layout`] finds. On the
-/// implicit fallback layout the count is the header's `record_count`.
+/// records from `0x06`, at the record size [`detect_layout`] finds, or from
+/// `0x30` on the implicit fallback layout, which reads the same count.
 pub fn parse_records(rf: &mut RevitFile) -> Result<Vec<ElemRecord>> {
     let d = inflate(rf)?;
-    let header = parse_header_bytes(&d)?;
+    parse_header_bytes(&d)?;
     let layout = detect_layout(&d);
-    let limit = match layout.framing {
-        RecordFraming::Explicit { .. } => stated_count(&d).unwrap_or(0),
-        RecordFraming::Implicit => usize::from(header.record_count),
-    };
-    Ok(parse_records_from_bytes(&d, layout, limit))
+    Ok(parse_records_from_bytes(
+        &d,
+        layout,
+        stated_count(&d).unwrap_or(0),
+    ))
 }
 
 /// Index ElemTable records by `id_primary` for ElementId lookups.
@@ -396,25 +403,31 @@ pub fn declared_element_ids(rf: &mut RevitFile) -> Result<Vec<u32>> {
 /// Length of a record on the 40-byte layout (Revit 2024 and later).
 pub const RECORD_LEN_40: usize = 40;
 
-/// The ElementIds `records` declare (RE-41): every record's `id_primary`,
-/// and on the 40-byte layout also its `id_secondary` when that is not `0`.
+/// The ElementIds `records` declare (RE-41, RE-189): each record's current
+/// id, its `id_secondary` on the 40-byte layout when that is not `0`, and
+/// its `id_primary` otherwise.
 ///
 /// The two agree on every record of the 2016-2023 projects, the family
-/// files and the 2024 and 2025 projects measured, except Autodesk's Snowdon
+/// files and the 2024 to 2027 projects measured, except Autodesk's Snowdon
 /// Towers samples. There they differ on 84 records (Architectural) and 27
-/// (Structural), and `id_secondary` is the id the element's partition
-/// record carries (RE-35) and the `Tag` Revit's own IFC export writes;
-/// `id_primary` is neither. Both are kept, so no id declared before is
-/// dropped. A `0` in `id_secondary` is not added.
+/// (Structural). `id_secondary` is the id the element's partition record
+/// carries (RE-35) and the `Tag` Revit's own IFC export writes, and
+/// `id_primary` is the id the element was created with, which only its
+/// GlobalId still uses ([`crate::revit_global_ids`], RE-48). No element
+/// record of either file names a first id that is not also some element's
+/// current id (RE-189), so a first id is no longer declared on its own: 84
+/// ids on Architectural and 20 on Structural that named no element.
 pub fn declared_ids(records: &[ElemRecord]) -> std::collections::BTreeSet<u32> {
-    let mut ids = std::collections::BTreeSet::new();
-    for record in records {
-        ids.insert(record.id_primary);
-        if record.raw.len() == RECORD_LEN_40 && record.id_secondary != 0 {
-            ids.insert(record.id_secondary);
-        }
-    }
-    ids
+    records
+        .iter()
+        .map(|record| {
+            if record.raw.len() == RECORD_LEN_40 && record.id_secondary != 0 {
+                record.id_secondary
+            } else {
+                record.id_primary
+            }
+        })
+        .collect()
 }
 
 /// Attempt to enumerate records after the header. Conservative: stops at

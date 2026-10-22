@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from uvyazka.core import Workspace,encode
 from uvyazka.ingest import scan
-from uvyazka.construction.rvt_data import RvtData,project_record,kind_for
+from uvyazka.construction.rvt_data import RvtData,project_record,kind_for,selected_classes
 
 
 def fixture():
@@ -28,6 +28,17 @@ def fixture():
 
 
 class DataTests(unittest.TestCase):
+    def test_focused_profiles_use_schema_ancestry_and_exclude_types_and_named_decoys(self):
+        classes={'FamilyInstance':{'parent':'Element'},'FamilySymbol':{'parent':'Symbol'},
+            'RoomElem':{'parent':'Element'},'RoomTag':{'parent':'Element'},
+            'RbsPipeCurve':{'parent':'RbsCurve'},'RbsCurve':{'parent':'HostObj'},
+            'RbsPipingSystem':{'parent':'RbsSystem'},'RbsSystem':{'parent':'Element'},
+            'FakeRbsPipingSystem':{'parent':'Element'}}
+        engineering=selected_classes('engineering',classes)
+        self.assertIn('RoomElem',engineering);self.assertIn('RbsPipeCurve',engineering)
+        self.assertNotIn('FamilySymbol',engineering);self.assertNotIn('RoomTag',engineering)
+        self.assertEqual(selected_classes('systems',classes),['RbsPipingSystem'])
+
     def test_mep_evidence_is_addressable_and_older_snapshots_remain_unknown(self):
         row=fixture()
         self.assertEqual(project_record(row,'mep_system')[0]['status'],'unavailable')

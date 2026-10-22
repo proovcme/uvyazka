@@ -22,8 +22,12 @@ export class Viewer {
   readonly raycaster = new THREE.Raycaster();
   readonly bounds = new THREE.Box3();
   private grid?: THREE.GridHelper;
+  private lightTheme=()=>document.documentElement.dataset.theme!=='dark';
+  private themeChanged=()=>{this.updateGridColors();this.refreshPresentation();};
+  private updateGridColors(){if(!this.grid)return;const colors=this.grid.geometry.getAttribute('color');const a=new THREE.Color(this.lightTheme()?0xaab8c5:0x37434d),b=new THREE.Color(this.lightTheme()?0xd3dce4:0x253039);for(let i=0;i<colors.count;i++){const c=i>=56&&i<60?a:b;colors.setXYZ(i,c.r,c.g,c.b);}colors.needsUpdate=true;this.invalidate();}
   private ground?: THREE.Mesh;
   private selected?: string;
+  private highlightedElements = new Set<string>();
   private highlight?: THREE.Box3Helper;
   private edges = new Map<string, THREE.LineSegments<THREE.EdgesGeometry, THREE.LineBasicMaterial>>();
   private xray = false;
@@ -55,6 +59,7 @@ export class Viewer {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x12181d, 0);
+    document.addEventListener('theme-change',this.themeChanged);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
@@ -165,6 +170,7 @@ export class Viewer {
     const size = this.bounds.getSize(new THREE.Vector3());
     const span = Math.max(size.x, size.z, 5);
     this.grid = new THREE.GridHelper(Math.ceil(span * 2.4), 28, 0x37434d, 0x253039);
+    this.updateGridColors();
     this.grid.position.set(this.bounds.getCenter(new THREE.Vector3()).x,this.bounds.min.y-.04,this.bounds.getCenter(new THREE.Vector3()).z);
     this.scene.add(this.grid);
     this.ground = new THREE.Mesh(new THREE.PlaneGeometry(span * 5, span * 5), new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.3 }));
@@ -255,6 +261,11 @@ export class Viewer {
       this.highlight = new THREE.Box3Helper(new THREE.Box3().setFromObject(mesh), new THREE.Color(0xefb65e));
       this.scene.add(this.highlight);
     }
+    this.refreshPresentation();
+  }
+
+  highlightElements(ids:Set<string>) {
+    this.highlightedElements = new Set(ids);
     this.refreshPresentation();
   }
 
@@ -352,7 +363,10 @@ export class Viewer {
           const source=this.model?.federation?.members.findIndex(member=>member.instance_id===element.source_instance_id)??-1;
           if(source>=0)material.color.set([0xc9b792,0x5794b9,0x77a28a,0xa47991][source%4]);
         }
+        if(this.highlightedElements.has(element.id))material.color.set(0x27c4c0);
         if (state === 'active' || this.selected===element.id) material.color.set(0xefb65e);
+        material.emissive.set(this.selected===element.id?0x805b16:this.highlightedElements.has(element.id)?0x087b79:0x000000);
+        material.emissiveIntensity=this.selected===element.id?.34:this.highlightedElements.has(element.id)?.3:0;
         const alpha = state === 'future' && this.showFuture ? (this.edges.has(element.id)?.035:.12) : state === 'active' ? 0.85 : this.xray && element.role === 'element' ? Math.min(opacity, 0.2) : opacity;
         material.transparent = alpha < 1;
         material.opacity = alpha;
@@ -360,7 +374,7 @@ export class Viewer {
         material.needsUpdate = true;
       });
       const edges=this.edges.get(element.id);
-      if(edges){edges.material.opacity=state==='future'?.5:.3;edges.material.color.set(this.selected===element.id||state==='active'?0xefb65e:state==='future'?0x8c9ba8:0x40505c);}
+      if(edges){edges.material.opacity=state==='future'?.5:.3;edges.material.color.set(this.selected===element.id||state==='active'?0xefb65e:state==='future'?0x8c9ba8:(this.lightTheme()?0x647586:0x40505c));}
     }
     this.invalidate();
   }
@@ -393,6 +407,7 @@ export class Viewer {
   dispose() {
     this.clearModel();
     this.observer.disconnect();
+    document.removeEventListener('theme-change',this.themeChanged);
     this.controls.dispose();
     cancelAnimationFrame(this.frame);
     this.renderer.dispose();

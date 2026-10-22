@@ -303,7 +303,7 @@ pub fn extract_graphs(
     )
 }
 /// A record group's records, `(id, offset, body start, body end)`: a
-/// 4-byte (Revit 2023) or 8-byte id, a header, the body and its length
+/// 4-byte (Revit 2021/2023) or 8-byte id, a header, the body and its length
 /// repeated after it. The group's declared object count and body bytes must
 /// agree with what is read.
 fn group_records(
@@ -311,7 +311,9 @@ fn group_records(
     bytes: &[u8],
     version: u32,
 ) -> Result<Vec<(u64, usize, usize, usize)>> {
-    let id_bytes = if version == 2023 { 4 } else { 8 };
+    // Uvyazka: 2021 uses the same checked group framing with 32-bit IDs.
+    // All dual-length, object-count, identity and current-record checks remain.
+    let id_bytes = if matches!(version, 2021 | 2023) { 4 } else { 8 };
     let header = match source.channel {
         101 => id_bytes + 4,
         102 | 103 => id_bytes + 8,
@@ -359,7 +361,7 @@ fn extract_records(
 ) -> Result<Summary> {
     let version = file.basic_file_info()?.version;
     ensure!(
-        matches!(version, 2023..=2027),
+        matches!(version, 2021 | 2023..=2027),
         "native record framing is unvalidated for Revit {version}"
     );
     let preamble = file.native_preamble()?;
@@ -675,4 +677,35 @@ fn extract_records(
     }
     summary.selected_ids_without_records = selected.difference(&seen_ids).copied().collect();
     Ok(summary)
+}
+
+
+#[cfg(test)]
+mod uvyazka_framing_tests {
+    use super::*;
+    #[test]
+    fn legacy_and_modern_groups_keep_dual_lengths_and_counts() {
+        for version in [2021, 2023, 2024, 2027] {
+            for channel in [101, 102, 103] {
+                let mut bytes = if version <= 2023 { 71u32.to_le_bytes().to_vec() } else { 71u64.to_le_bytes().to_vec() };
+                if channel != 101 { bytes.extend_from_slice(&0u32.to_le_bytes()); }
+                bytes.extend_from_slice(&3u32.to_le_bytes());
+                bytes.extend_from_slice(&[7, 8, 9]);
+                bytes.extend_from_slice(&3u32.to_le_bytes());
+                let mut source = native_segments::GroupSource { content_key: None, content_element_count: None,
+                    channel, first_marker_offset: 0, segment_count: 1, declared_objects: 1, declared_body_bytes: 3 };
+                let rows = group_records(&source, &bytes, version).unwrap();
+                assert_eq!(rows[0].0, 71);
+                assert_eq!(&bytes[rows[0].2..rows[0].3], &[7, 8, 9]);
+                source.declared_objects = 2;
+                assert!(group_records(&source, &bytes, version).is_err());
+                source.declared_objects = 1;
+                source.declared_body_bytes = 4;
+                assert!(group_records(&source, &bytes, version).is_err());
+                source.declared_body_bytes = 3;
+                bytes.pop();
+                assert!(group_records(&source, &bytes, version).is_err());
+            }
+        }
+    }
 }

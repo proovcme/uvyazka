@@ -252,6 +252,67 @@ pub fn resolve_unique(found: BTreeMap<u32, Vec<RoomParameters>>) -> BTreeMap<u32
     out
 }
 
+/// The number of partition stream `stream` (`Partitions/398` is 398), 0 for
+/// a name without one.
+pub(crate) fn partition_number(stream: &str) -> u32 {
+    stream
+        .rsplit('/')
+        .next()
+        .and_then(|number| number.parse().ok())
+        .unwrap_or(0)
+}
+
+/// One value per element from the copies of its data that several
+/// partitions hold (#800): the latest partition's, which is the copy RE-145
+/// found current wherever an element's copies differ, and none where that
+/// partition's own entries disagree. On the BIM4LCA office's building-permit
+/// file every room and area has an older copy with Finnish names and a newer
+/// one with the English names Revit's export carries.
+pub(crate) struct LatestCopy<V> {
+    found: BTreeMap<u32, (u32, Option<V>)>,
+}
+
+impl<V> Default for LatestCopy<V> {
+    fn default() -> Self {
+        Self {
+            found: BTreeMap::new(),
+        }
+    }
+}
+
+impl<V: PartialEq> LatestCopy<V> {
+    /// `element`'s `value` as `partition` holds it.
+    pub(crate) fn offer(&mut self, element: u32, partition: u32, value: V) {
+        match self.found.get_mut(&element) {
+            Some((held_partition, held)) if *held_partition == partition => {
+                if held.as_ref() != Some(&value) {
+                    *held = None;
+                }
+            }
+            Some((held_partition, _)) if *held_partition > partition => {}
+            _ => {
+                self.found.insert(element, (partition, Some(value)));
+            }
+        }
+    }
+
+    pub(crate) fn into_values(self) -> BTreeMap<u32, V> {
+        self.found
+            .into_iter()
+            .filter_map(|(element, (_, value))| Some((element, value?)))
+            .collect()
+    }
+
+    /// Each element's value, `None` where its latest partition's copies
+    /// disagree.
+    pub(crate) fn into_options(self) -> BTreeMap<u32, Option<V>> {
+        self.found
+            .into_iter()
+            .map(|(element, (_, value))| (element, value))
+            .collect()
+    }
+}
+
 /// BuiltInParameter `ROOM_FINISH_FLOOR`, a room's Floor Finish (RE-153).
 pub const ROOM_FINISH_FLOOR_PARAMETER: i64 = -1_006_903;
 /// Bytes of a data object's header on Revit 2024 and later: `i32 ElementId ·
@@ -289,9 +350,12 @@ pub fn data_objects(buf: &[u8]) -> Vec<(usize, DataObject)> {
     let mut p = 0;
     while p + DATA_OBJECT_HEADER <= buf.len() {
         let size = u32_at(p + 12) as usize;
-        let end = p + DATA_OBJECT_HEADER + size;
-        let plausible =
-            u32_at(p + 4) == 0 && size >= 4 && end <= buf.len() && u32_at(end - 4) as usize == size;
+        // On a 32-bit target a size read from arbitrary bytes can carry the
+        // end past `usize::MAX` (#836); such an object cannot be in `buf`.
+        let end = (p + DATA_OBJECT_HEADER).checked_add(size);
+        let plausible = end.is_some_and(|end| {
+            u32_at(p + 4) == 0 && size >= 4 && end <= buf.len() && u32_at(end - 4) as usize == size
+        });
         match plausible.then(|| verified_data_object(buf, p)).flatten() {
             Some(object) => {
                 out.push((p, object));
@@ -344,9 +408,11 @@ pub fn verified_data_object(buf: &[u8], p: usize) -> Option<DataObject> {
 /// Each room's value of the text parameter `parameter`, by ElementId
 /// (RE-153), on Revit 2024 and later. The value is an entry `parameter (i64) ·
 /// u32 n · UTF-16 × n`, joined to its room by the data object holding it
-/// ([`enclosing_data_object`]). A room whose entries disagree gets nothing.
-/// On RE1 Architecture the Floor Finish ([`ROOM_FINISH_FLOOR_PARAMETER`]) of
-/// 11 of 11 rooms is Revit's `Pset_SpaceCommon.FloorCovering`.
+/// ([`enclosing_data_object`]). Where its copies differ, the latest
+/// partition's is taken, and a room whose entries there disagree gets nothing
+/// (#800). On RE1 Architecture the Floor Finish
+/// ([`ROOM_FINISH_FLOOR_PARAMETER`]) of 11 of 11 rooms is Revit's
+/// `Pset_SpaceCommon.FloorCovering`.
 pub fn scan_room_text_parameter(
     rf: &mut RevitFile,
     revit_version: u32,
@@ -360,7 +426,10 @@ pub fn scan_room_text_parameter(
 /// BuiltInParameter or a project or shared parameter's ElementId, by
 /// ElementId, on Revit 2024 and later: an entry `parameter (i64) · u32 n ·
 /// UTF-16 × n` in the element's own data object ([`enclosing_data_object`],
-/// RE-153, RE-156). An element whose entries disagree gets nothing.
+/// RE-153, RE-156), from the latest partition that holds one; an element
+/// whose entries there disagree gets nothing (#800). An entry of `n` 0 is an
+/// empty value: it is the latest copy's too, so an element whose value was
+/// emptied gets nothing, though an older copy holds one (RE-196).
 pub fn scan_text_parameter(
     rf: &mut RevitFile,
     revit_version: u32,
@@ -371,35 +440,32 @@ pub fn scan_text_parameter(
         return BTreeMap::new();
     }
     let tag = parameter.to_le_bytes();
-    let mut found: BTreeMap<u32, Option<String>> = BTreeMap::new();
+    let mut found = LatestCopy::default();
     for stream in rf.partition_stream_names() {
         let Ok(inflated) = rf.inflated_partition(&stream) else {
             continue;
         };
+        let partition = partition_number(&stream);
         let buf = inflated.bytes();
         for hit in memchr::memmem::find_iter(buf, &tag) {
-            let Some(value) = utf16_entry(buf, hit + tag.len(), 256) else {
-                continue;
+            let value = match read_u32(buf, hit + tag.len()) {
+                Some(0) => String::new(),
+                _ => match utf16_entry(buf, hit + tag.len(), 256) {
+                    Some(value) => value,
+                    None => continue,
+                },
             };
             let Some(element) = enclosing_data_object(buf, hit).filter(|id| elements.contains(id))
             else {
                 continue;
             };
-            match found.get_mut(&element) {
-                None => {
-                    found.insert(element, Some(value));
-                }
-                Some(held) => {
-                    if held.as_ref() != Some(&value) {
-                        *held = None;
-                    }
-                }
-            }
+            found.offer(element, partition, value);
         }
     }
     found
+        .into_values()
         .into_iter()
-        .filter_map(|(element, value)| Some((element, value?)))
+        .filter(|(_, value)| !value.is_empty())
         .collect()
 }
 
@@ -410,8 +476,9 @@ pub const FUNCTION_PARAMETER: i64 = -1_001_006;
 /// Each element of `elements`' value of the integer parameter `parameter`,
 /// by ElementId, on Revit 2024 and later (RE-158): an entry `parameter (i64)
 /// · u32 value` in the element's own data object ([`enclosing_data_object`]).
-/// An element whose entries disagree gets nothing. On RE1 Architecture the
-/// door and floor types' [`FUNCTION_PARAMETER`] is Revit's `IsExternal` on
+/// The latest partition's copy is taken, and an element whose entries there
+/// disagree gets nothing (#800). On RE1 Architecture the door and
+/// floor types' [`FUNCTION_PARAMETER`] is Revit's `IsExternal` on
 /// 5 of 5 doors (interior and exterior) and 2 of 2 floors.
 pub fn scan_integer_parameter(
     rf: &mut RevitFile,
@@ -423,11 +490,12 @@ pub fn scan_integer_parameter(
         return BTreeMap::new();
     }
     let tag = parameter.to_le_bytes();
-    let mut found: BTreeMap<u32, Option<u32>> = BTreeMap::new();
+    let mut found = LatestCopy::default();
     for stream in rf.partition_stream_names() {
         let Ok(inflated) = rf.inflated_partition(&stream) else {
             continue;
         };
+        let partition = partition_number(&stream);
         let buf = inflated.bytes();
         for hit in memchr::memmem::find_iter(buf, &tag) {
             let Some(value) = read_u32(buf, hit + tag.len()) else {
@@ -437,21 +505,158 @@ pub fn scan_integer_parameter(
             else {
                 continue;
             };
-            match found.get_mut(&element) {
-                None => {
-                    found.insert(element, Some(value));
-                }
-                Some(held) => {
-                    if *held != Some(value) {
-                        *held = None;
+            found.offer(element, partition, value);
+        }
+    }
+    found.into_values()
+}
+
+/// The ElementId of the data object among `objects` (a stream's
+/// [`data_objects`], in offset order) whose payload holds the byte at `at`:
+/// the one [`enclosing_data_object`] finds, without its backward search.
+fn data_object_owner(objects: &[(usize, DataObject)], at: usize) -> Option<u32> {
+    let before = objects.partition_point(|(start, _)| start + DATA_OBJECT_HEADER <= at);
+    objects[..before]
+        .iter()
+        .rev()
+        .take_while(|(start, _)| at - start <= DATA_OBJECT_SEARCH)
+        .find(|(_, object)| object.end > at)
+        .map(|(_, object)| object.element_id)
+}
+
+/// [`scan_integer_parameter`] for each of `parameters` at once
+/// ([`scan_parameter_entries`] with [`EntryKind::Word`]).
+pub fn scan_integer_parameters(
+    rf: &mut RevitFile,
+    revit_version: u32,
+    elements: &BTreeSet<u32>,
+    parameters: &[i64],
+) -> BTreeMap<i64, BTreeMap<u32, u32>> {
+    let wanted: Vec<(i64, EntryKind)> = parameters
+        .iter()
+        .map(|&parameter| (parameter, EntryKind::Word))
+        .collect();
+    scan_parameter_entries(rf, revit_version, elements, &wanted)
+        .into_iter()
+        .map(|(parameter, values)| {
+            let words = values
+                .into_iter()
+                .filter_map(|(element, value)| match value {
+                    EntryValue::Word(word) => Some((element, word)),
+                    _ => None,
+                })
+                .collect();
+            (parameter, words)
+        })
+        .collect()
+}
+
+/// How a parameter's value is stored after (or before) its key in an
+/// element's own data object, on Revit 2024 and later (RE-194).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    /// `parameter (i64) · u32 value`: a Yes/No or integer parameter (RE-158).
+    Word,
+    /// `parameter (i64) · u32 n · UTF-16 × n`: a text parameter of up to 256
+    /// characters (RE-156). An empty one, `n` 0, is read as an empty text,
+    /// so that it hides the value an older copy of the element holds.
+    Text,
+    /// `f64 value · parameter (i64)`: a number, a length in feet or another
+    /// quantity in its SI unit, immediately before its key (RE-194).
+    Real,
+}
+
+/// A parameter's value as [`EntryKind`] reads it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EntryValue {
+    /// [`EntryKind::Word`].
+    Word(u32),
+    /// [`EntryKind::Text`].
+    Text(String),
+    /// [`EntryKind::Real`], a finite number.
+    Real(f64),
+}
+
+fn read_entry(buf: &[u8], hit: usize, kind: EntryKind) -> Option<EntryValue> {
+    match kind {
+        EntryKind::Word => read_u32(buf, hit + 8).map(EntryValue::Word),
+        EntryKind::Text => match read_u32(buf, hit + 8)? {
+            0 => Some(EntryValue::Text(String::new())),
+            _ => utf16_entry(buf, hit + 8, 256).map(EntryValue::Text),
+        },
+        EntryKind::Real => {
+            let bits = read_u64(buf, hit.checked_sub(8)?)?;
+            Some(f64::from_bits(bits))
+                .filter(|value| value.is_finite())
+                .map(EntryValue::Real)
+        }
+    }
+}
+
+/// Each element of `elements`' value of each of `parameters`, a project or
+/// shared parameter's ElementId (or a BuiltInParameter) with how its value is
+/// stored, by parameter and ElementId, on Revit 2024 and later: the entry with
+/// the parameter's key in the element's own data object (RE-153), the
+/// innermost one holding it among the stream's data objects, memoised on the
+/// handle ([`RevitFile::partition_data_objects`], B80). Only the payloads of
+/// the elements' own objects are searched. The latest partition's copy is
+/// taken, and an element whose entries there disagree gets nothing (#800).
+pub fn scan_parameter_entries(
+    rf: &mut RevitFile,
+    revit_version: u32,
+    elements: &BTreeSet<u32>,
+    parameters: &[(i64, EntryKind)],
+) -> BTreeMap<i64, BTreeMap<u32, EntryValue>> {
+    if revit_version < 2024 || elements.is_empty() || parameters.is_empty() {
+        return BTreeMap::new();
+    }
+    let keys: Vec<[u8; 8]> = parameters
+        .iter()
+        .map(|(parameter, _)| parameter.to_le_bytes())
+        .collect();
+    let finders: Vec<memchr::memmem::Finder<'_>> =
+        keys.iter().map(memchr::memmem::Finder::new).collect();
+    let mut found: Vec<LatestCopy<EntryValue>> =
+        parameters.iter().map(|_| LatestCopy::default()).collect();
+    for stream in rf.partition_stream_names() {
+        let (Ok(inflated), Ok(objects)) = (
+            rf.inflated_partition(&stream),
+            rf.partition_data_objects(&stream),
+        ) else {
+            continue;
+        };
+        let partition = partition_number(&stream);
+        let buf = inflated.bytes();
+        for (start, object) in objects.iter() {
+            if !elements.contains(&object.element_id) {
+                continue;
+            }
+            let payload_start = start + DATA_OBJECT_HEADER;
+            let Some(payload) = buf.get(payload_start..object.end) else {
+                continue;
+            };
+            for ((finder, (_, kind)), latest) in
+                finders.iter().zip(parameters).zip(found.iter_mut())
+            {
+                for hit in finder.find_iter(payload) {
+                    let at = payload_start + hit;
+                    if data_object_owner(&objects, at) != Some(object.element_id) {
+                        continue;
+                    }
+                    if *kind == EntryKind::Real && hit < 8 {
+                        continue;
+                    }
+                    if let Some(value) = read_entry(buf, at, *kind) {
+                        latest.offer(object.element_id, partition, value);
                     }
                 }
             }
         }
     }
-    found
-        .into_iter()
-        .filter_map(|(element, value)| Some((element, value?)))
+    parameters
+        .iter()
+        .zip(found)
+        .map(|((parameter, _), latest)| (*parameter, latest.into_values()))
         .collect()
 }
 
@@ -547,8 +752,10 @@ pub const ROOM_PARAMETER_ENTRY_SOURCE: &str = "partition_room_parameter_entries"
 /// [`ROOM_PARAMETER_ENTRY_WINDOW`] past it, immediately followed by
 /// `ROOM_NAME · u32 m · UTF-16 × m`, the parameter ids as wide as the
 /// release's ElementIds: 377 or 389 bytes past the id on Exemplo_data
-/// (2023), 483 to 503 on RE1 Architecture (2025). A room whose copies
-/// disagree gets nothing.
+/// (2023), 483 to 503 on RE1 Architecture (2025). An empty number or name is
+/// an entry of `n` 0, read as an empty text (RE-196): the latest partition's
+/// copy decides even where it is empty, and a room whose entries there
+/// disagree gets nothing (#800).
 pub fn scan_room_parameter_entries(
     rf: &mut RevitFile,
     revit_version: u32,
@@ -573,7 +780,7 @@ pub fn scan_room_parameter_entries(
     };
     let string_at = |buf: &[u8], at: usize, limit: usize| -> Option<(String, usize)> {
         let n = usize::try_from(u32::from_le_bytes(buf.get(at..at + 4)?.try_into().ok()?)).ok()?;
-        if !(1..=limit).contains(&n) {
+        if n > limit {
             return None;
         }
         let units: Vec<u16> = buf
@@ -584,11 +791,12 @@ pub fn scan_room_parameter_entries(
         let text = String::from_utf16(&units).ok()?;
         (!text.chars().any(char::is_control)).then_some((text, at + 4 + 2 * n))
     };
-    let mut found: BTreeMap<u32, Option<(String, String)>> = BTreeMap::new();
+    let mut found = LatestCopy::default();
     for stream in rf.partition_stream_names() {
         let Ok(inflated) = rf.inflated_partition(&stream) else {
             continue;
         };
+        let partition = partition_number(&stream);
         let buf = inflated.bytes();
         for hit in memchr::memmem::find_iter(buf, &[1u8, 0, 0, 0]) {
             let Some(id) = layout.id_at(buf, hit + 4).filter(|id| rooms.contains(id)) else {
@@ -609,20 +817,8 @@ pub fn scan_room_parameter_entries(
             let Some(pair) = pair else {
                 continue;
             };
-            match found.get_mut(&id) {
-                None => {
-                    found.insert(id, Some(pair));
-                }
-                Some(held) => {
-                    if held.as_ref() != Some(&pair) {
-                        *held = None;
-                    }
-                }
-            }
+            found.offer(id, partition, pair);
         }
     }
-    found
-        .into_iter()
-        .filter_map(|(id, pair)| pair.map(|p| (id, p)))
-        .collect()
+    found.into_values()
 }

@@ -1,5 +1,5 @@
 import type {RvtDocument} from './rvt-document';
-const VERSION='native-document-v2';
+const VERSION='native-document-v3-rvt061-2021';
 /** Content addressed local snapshot; source RVT bytes are never stored here. */
 export async function documentCache(){
  const db=await new Promise<IDBDatabase>((resolve,reject)=>{const r=indexedDB.open('uvyazka-rvt-documents',1);r.onupgradeneeded=()=>r.result.createObjectStore('documents');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);r.onblocked=()=>reject(Error('Хранилище занято другой вкладкой'));});

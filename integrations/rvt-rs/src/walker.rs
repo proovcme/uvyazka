@@ -138,6 +138,21 @@ pub trait ElementDecoder: Sync + Send {
         schema: &formats::ClassEntry,
         index: &HandleIndex,
     ) -> Result<DecodedElement>;
+
+    /// [`Self::decode`] under the caller's walker caps (#852). The default
+    /// decodes `bytes` cut to `limits.max_per_record_decode_bytes`; a
+    /// decoder that walks the generic decoder overrides it to pass
+    /// `limits` on, so a cap above the default applies too.
+    fn decode_with_limits(
+        &self,
+        bytes: &[u8],
+        schema: &formats::ClassEntry,
+        index: &HandleIndex,
+        limits: WalkerLimits,
+    ) -> Result<DecodedElement> {
+        let end = limits.max_per_record_decode_bytes.min(bytes.len());
+        self.decode(&bytes[..end], schema, index)
+    }
 }
 
 /// Mirror of [`ElementDecoder`] for the write path (WRT-03). A per-
@@ -681,18 +696,19 @@ pub fn read_field_by_type(
                 return InstanceField::Bytes(slice.to_vec());
             }
             let char_count = u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]) as usize;
-            // wasm32 usize is 32-bit: saturation followed by +4 used to
-            // wrap, pass the length check and panic on slice[4..3]. Treat
-            // impossible/truncated lengths as undecoded bytes on every target.
-            let Some(end) = char_count.checked_mul(2).and_then(|n| n.checked_add(4)) else {
+            // Checked, not saturating: on wasm32 `usize` is 32 bits, so a garbage `char_count`
+            // saturates to `usize::MAX` and `4 + byte_count` wraps, slipping past the bound below.
+            let Some(end) = char_count.checked_mul(2).and_then(|b| b.checked_add(4)) else {
                 return InstanceField::Bytes(slice.to_vec());
             };
-            let Some(utf16_bytes) = slice.get(4..end) else {
+            if slice.len() < end {
                 return InstanceField::Bytes(slice.to_vec());
-            };
+            }
+            let byte_count = end - 4;
+            let utf16_bytes = &slice[4..end];
             // Decode as UTF-16LE. encoding_rs is already in deps.
             let (text, _, had_errors) = encoding_rs::UTF_16LE.decode(utf16_bytes);
-            *cursor += end;
+            *cursor += 4 + byte_count;
             if had_errors {
                 // Fall back to raw bytes when encoding failed.
                 InstanceField::Bytes(utf16_bytes.to_vec())
@@ -1361,20 +1377,24 @@ pub fn read_adocument_lossy_with_limits(
 /// entities. Pipeline:
 ///   1. Read + decompress `Formats/Latest` → [`crate::formats::SchemaTable`].
 ///   2. Read + decompress `Global/Latest` → raw bytes.
-///   3. Run [`scan_candidates`] with `min_score = 0` — every offset
-///      where `trial_walk` produced a non-degenerate score. The
-///      `80` threshold is calibrated for the 16-field ADocument
-///      entry-point detector and filters out simple element
-///      classes whose `walk_score` is structurally bounded (most
-///      have fewer than 3 trailing ElementIds, which caps the
-///      score below the ADocument band).
+///   3. Run [`scan_candidates`] with [`PRODUCTION_ELEMENT_MIN_SCORE`]
+///      (80). That threshold is calibrated for the 16-field ADocument
+///      entry-point detector and filters out simple element classes
+///      whose `walk_score` is structurally bounded (most have fewer
+///      than 3 trailing ElementIds, which caps the score below the
+///      ADocument band). On the 76 files Measure reads (the family
+///      corpus 2014 to 2026, the reference models and Autodesk's
+///      sample projects 2015 to 2027) it yields no production row
+///      (#852, Measure run 39367864281): real elements come from the
+///      `Partitions/*` merges below.
 ///   4. For each candidate, run [`decode_instance`] to produce a
 ///      typed `DecodedElement`, then extract the self-id via
 ///      [`find_self_id_field`].
 ///   5. Dedup: first-seen (highest-score) wins — if two candidates
 ///      claim the same `ElementId`, only the higher-score offset
-///      survives. Scoreless / id-zero candidates are still yielded
-///      only by the explicit diagnostic path.
+///      survives. A candidate with no ElementId (or id zero) is
+///      yielded only by the explicit diagnostic path, a `min_score`
+///      below [`PRODUCTION_ELEMENT_MIN_SCORE`] (#852).
 ///
 /// Returns a materialised `Vec<DecodedElement>::into_iter()` rather
 /// than a lazy iterator — each element requires upfront schema +
@@ -1509,6 +1529,10 @@ pub fn iter_elements_with_control(
                 continue;
             }
             decoded.id = Some(id);
+        } else if min_score >= PRODUCTION_ELEMENT_MIN_SCORE {
+            // #852: a production row needs an ElementId; one without is
+            // for diagnostic probes only.
+            continue;
         }
 
         out.push(decoded);

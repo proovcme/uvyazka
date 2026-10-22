@@ -54,6 +54,9 @@ pub struct PartitionSchemaMvp {
     pub levels: Vec<DecodedElement>,
     pub materials: Vec<DecodedElement>,
     pub rooms: Vec<DecodedElement>,
+    /// Placed Areas from their partition chain records, written as
+    /// `IfcSpace` (#763, [`crate::partition_area_records`]).
+    pub areas: Vec<DecodedElement>,
     /// 2024 ArcWallRectOpening index rows — not typed Door/Window.
     pub rect_openings: Vec<DecodedElement>,
     /// 2024 `OST_Columns` partition element records (M4-09 / #204).
@@ -81,6 +84,7 @@ impl PartitionSchemaMvp {
             self.levels.len()
                 + self.materials.len()
                 + self.rooms.len()
+                + self.areas.len()
                 + self.rect_openings.len()
                 + self.columns.len()
                 + self.walls.len()
@@ -92,6 +96,7 @@ impl PartitionSchemaMvp {
         out.extend(self.levels);
         out.extend(self.materials);
         out.extend(self.rooms);
+        out.extend(self.areas);
         out.extend(self.rect_openings);
         out.extend(self.columns);
         out.extend(self.walls);
@@ -146,10 +151,11 @@ pub fn recover_partition_schema_mvp(
         out.rect_openings = rect_openings_from_partitions(rf, revit_version, limits)?;
     }
 
-    // --- Revit 2023 element records (RE-81, #421): identity, category and
-    // box only; nothing else 2024 decodes on top of records is read. ---
-    if revit_version == crate::partition_element_records_2023::REVIT_2023 {
-        recover_2023_records(rf, &mut out);
+    // --- Revit 2015 to 2023 element records (RE-81, RE-180, RE-181, #421):
+    // identity, category and box only; nothing else 2024 decodes on top of
+    // records is read. ---
+    if crate::partition_element_records_2023::is_32bit_release(revit_version) {
+        recover_2023_records(rf, revit_version, &mut out);
         attach_room_outlines(rf, revit_version, &mut out.rooms);
         // --- Storeys from the Levels the records name (RE-107), by the
         // same rules as 2024's (RE-59, RE-68) ---
@@ -194,7 +200,8 @@ pub fn recover_partition_schema_mvp(
         // system type's data holds its layers where a family type's holds
         // its map, and a layer reads as a one-entry map, so the types of
         // system-family elements are left out. ---
-        let mut type_materials = crate::partition_type_materials::type_material_names_2023(rf);
+        let mut type_materials =
+            crate::partition_type_materials::type_material_names_32(rf, revit_version);
         for element in out.walls.iter().chain(&out.slabs).chain(&out.products) {
             let system = element.fields.iter().any(|(name, value)| {
                 name == FAMILY_NAME_SOURCE_FIELD
@@ -216,6 +223,11 @@ pub fn recover_partition_schema_mvp(
         ] {
             attach_type_materials(&type_materials, elements);
         }
+        // Uvyazka: explicit native MEP edges on the validated 2021 framing.
+        attach_mep_systems(rf, revit_version, [
+            &mut out.walls, &mut out.columns, &mut out.doors,
+            &mut out.windows, &mut out.slabs, &mut out.products,
+        ]);
         return Ok(out);
     }
 
@@ -274,6 +286,12 @@ pub fn recover_partition_schema_mvp(
     out.rooms = rooms_from_partition_category_records(rf, revit_version, &level_ids)?;
     // Their outlines from the faces of their stored solids (RE-101).
     attach_room_outlines(rf, revit_version, &mut out.rooms);
+    // --- Areas, which carry no record box (#763) ---
+    out.areas = crate::partition_area_records::areas_from_partition_chain_records(
+        rf,
+        revit_version,
+        &level_ids,
+    );
 
     // --- Other product categories from element records (RE-33) ---
     out.products = product_instances_from_partition_records(rf, revit_version, &level_ids)?;
@@ -377,10 +395,24 @@ pub fn recover_partition_schema_mvp(
     ] {
         attach_family_and_type_names(rf, elements);
     }
+    // --- The phase each element was created in (spike 257) ---
+    attach_phases_created(
+        rf,
+        [
+            &mut out.walls,
+            &mut out.columns,
+            &mut out.doors,
+            &mut out.windows,
+            &mut out.slabs,
+            &mut out.products,
+        ],
+    );
     // --- Pipes' types, which have no name entry (RE-130) ---
     attach_pipe_type_names(rf, &mut out.products);
     // --- Ducts' and pipes' sizes, and ducts' types (RE-134) ---
     attach_curve_fields(rf, revit_version, &mut out.products);
+    // --- Which connector each end of a duct is (#847) ---
+    attach_duct_end_keys(rf, revit_version, &mut out.products);
     // --- Pipe fittings' nominal sizes, from their connectors (RE-165) ---
     attach_fitting_nominal_diameters(rf, revit_version, &mut out.products);
     // --- The shared parameter Serial Number (RE-156) ---
@@ -421,8 +453,19 @@ pub fn recover_partition_schema_mvp(
         })
         .collect();
     attach_system_type_names(rf, revit_version, &mut unnamed);
-    // --- A door's and a floor's type Function (RE-158) ---
-    attach_type_functions(rf, revit_version, [&mut out.doors, &mut out.slabs]);
+    // --- Each element's type Function (RE-158) ---
+    attach_type_functions(
+        rf,
+        revit_version,
+        [
+            &mut out.walls,
+            &mut out.columns,
+            &mut out.doors,
+            &mut out.windows,
+            &mut out.slabs,
+            &mut out.products,
+        ],
+    );
     // --- Curtain panels that are walls (RE-64) ---
     let mut unnamed_panels: Vec<&mut DecodedElement> = out
         .products
@@ -491,6 +534,12 @@ pub fn recover_partition_schema_mvp(
         }
     }
 
+    // --- Column bottoms from the geometry node (RE-173) ---
+    if revit_version == 2024 {
+        apply_column_node_bottoms(rf, [&mut out.columns, &mut out.products]);
+        apply_column_cut_bodies(rf, [&mut out.columns, &mut out.products]);
+    }
+
     // --- Type text parameters (RE-77, #35) ---
     let type_parameters = crate::partition_type_parameters::type_text_parameters(rf, revit_version);
     if !type_parameters.is_empty() {
@@ -503,6 +552,33 @@ pub fn recover_partition_schema_mvp(
             &mut out.products,
         ] {
             attach_type_text_parameters(&type_parameters, elements);
+        }
+    }
+
+    // --- Level parameters from the per-element association record (RE-172),
+    // stairs' Base and Top Level from the same record and the Level named in
+    // the element record's id lists where the field holds none (RE-174) ---
+    let (level_parameters, (level_names, level_elevations)) =
+        crate::partition_level_parameters::level_parameters(rf, revit_version);
+    if !level_names.is_empty() {
+        let mut lists = [
+            &mut out.walls,
+            &mut out.columns,
+            &mut out.doors,
+            &mut out.windows,
+            &mut out.slabs,
+            &mut out.products,
+        ];
+        for elements in lists.iter_mut() {
+            for element in elements.iter_mut() {
+                attach_level_parameters(
+                    rf,
+                    element,
+                    &level_parameters,
+                    &level_names,
+                    &level_elevations,
+                );
+            }
         }
     }
 
@@ -538,8 +614,51 @@ pub fn recover_partition_schema_mvp(
     // --- Each door's rough opening from its type (RE-94, #227), after RE-84
     // marks the doors that are openings alone ---
     attach_door_openings(rf, revit_version, &mut out.doors);
+    // --- Each door's Width and Height from its type (RE-187, #759) ---
+    attach_door_sizes(rf, revit_version, &mut out.doors);
     // --- Steel beams' and columns' I sections from their type (RE-103, RE-104) ---
     attach_beam_sections(rf, revit_version, &mut out.products);
+    // --- A wall's and a curtain panel wall's type Function, from its native
+    // type record (RE-185), after RE-72 has relabelled the panels ---
+    attach_wall_type_functions(
+        rf,
+        revit_version,
+        out.walls.iter_mut().chain(
+            out.products
+                .iter_mut()
+                .filter(|product| product.class == CURTAIN_PANEL_WALL_CLASS),
+        ),
+    );
+    // --- IsExternal: the parameters named for it, and Revit's calculation (RE-193) ---
+    attach_is_external(
+        rf,
+        revit_version,
+        [
+            &mut out.walls,
+            &mut out.columns,
+            &mut out.doors,
+            &mut out.windows,
+            &mut out.slabs,
+            &mut out.rooms,
+            &mut out.areas,
+            &mut out.products,
+        ],
+    );
+    // --- The parameters named for a standard set's other properties (RE-194) ---
+    attach_named_parameters(
+        rf,
+        revit_version,
+        [
+            &mut out.walls,
+            &mut out.columns,
+            &mut out.doors,
+            &mut out.windows,
+            &mut out.slabs,
+            &mut out.rooms,
+            &mut out.areas,
+            &mut out.products,
+        ],
+    );
     Ok(out)
 }
 
@@ -553,6 +672,12 @@ pub const IFC_EXPORT_AS_FIELD: &str = "m_ifc_export_as";
 /// parameters set (RE-45). The IFC writer uses it only when it is an
 /// enumerator of the entity the element exports as.
 pub const IFC_PREDEFINED_TYPE_FIELD: &str = "m_ifc_predefined_type";
+
+/// Field carrying the Revit release that saved the file, beside
+/// [`IFC_EXPORT_AS_FIELD`]: whether Revit's exporter acts on the value can
+/// depend on it ([`crate::ifc::category_map::export_override_applies`],
+/// RE-188).
+pub const IFC_EXPORT_RELEASE_FIELD: &str = "m_ifc_export_release";
 
 /// Attach each element's IFC export overrides (RE-45): the element's own
 /// "Export to IFC As" and predefined type, else those its type sets
@@ -591,6 +716,14 @@ fn attach_ifc_export_overrides(
                 element
                     .fields
                     .push((IFC_EXPORT_AS_FIELD.into(), InstanceField::String(entity)));
+                element.fields.push((
+                    IFC_EXPORT_RELEASE_FIELD.into(),
+                    InstanceField::Integer {
+                        value: i64::from(revit_version),
+                        signed: false,
+                        size: 4,
+                    },
+                ));
             }
             if let Some(predefined) = own.effective_predefined_type(of_type) {
                 element.fields.push((
@@ -795,34 +928,29 @@ fn railing_type_picks(
 }
 
 /// Each wanted type's name, read from its serialised data
-/// ([`crate::partition_names::find_element_data_names`]); `None` when two
-/// copies of the type disagree.
+/// ([`crate::partition_names::find_element_data_names`]), from the latest
+/// partition that holds one (#807, RE-145); `None` when two copies there
+/// disagree. On the BIM4LCA office's permit file every type has an older copy
+/// with its Finnish name and a newer one with its English name.
 fn type_data_names(
     rf: &mut RevitFile,
     header: &[u8; 10],
     wanted: &BTreeSet<u32>,
 ) -> std::collections::BTreeMap<u32, Option<String>> {
-    let mut names: std::collections::BTreeMap<u32, Option<String>> =
-        std::collections::BTreeMap::new();
+    use crate::partition_room_parameters::{LatestCopy, partition_number};
+    let mut names = LatestCopy::default();
     for stream in rf.partition_stream_names() {
         let Ok(inflated) = rf.inflated_partition(&stream) else {
             continue;
         };
+        let partition = partition_number(&stream);
         for (id, name) in
             crate::partition_names::find_element_data_names(inflated.bytes(), header, wanted)
         {
-            match names.get(&id) {
-                None => {
-                    names.insert(id, Some(name));
-                }
-                Some(held) if held.as_deref() != Some(name.as_str()) => {
-                    names.insert(id, None);
-                }
-                _ => {}
-            }
+            names.offer(id, partition, name);
         }
     }
-    names
+    names.into_options()
 }
 
 /// Set [`TYPE_ID_FIELD`] and [`TYPE_NAME_FIELD`] on each picked element
@@ -1862,6 +1990,60 @@ fn attach_door_openings(rf: &mut RevitFile, revit_version: u32, doors: &mut [Dec
             opening.rough_width_feet,
             opening.rough_height_feet,
         );
+    }
+}
+
+/// Fields carrying a door's Width and Height from its type (RE-187), feet.
+pub const DOOR_TYPE_SIZE_FIELDS: [&str; 2] = ["m_door_type_width", "m_door_type_height"];
+
+/// The size [`DOOR_TYPE_SIZE_FIELDS`] record.
+pub fn door_type_size_from_fields(
+    fields: &[(String, InstanceField)],
+) -> Option<crate::partition_type_parameters::DoorTypeSize> {
+    let [width, height] = DOOR_TYPE_SIZE_FIELDS.map(|wanted| {
+        fields.iter().find_map(|(name, value)| match value {
+            InstanceField::Float { value, .. } if name == wanted => Some(*value),
+            _ => None,
+        })
+    });
+    Some(crate::partition_type_parameters::DoorTypeSize {
+        width_feet: width?,
+        height_feet: height?,
+    })
+}
+
+/// Give each door whose type's Width and Height are read
+/// ([`crate::partition_type_parameters::type_door_sizes`]) that size (RE-187),
+/// whether or not its opening is read. A door that is an opening alone
+/// (RE-84) is written as that opening, and gets none.
+fn attach_door_sizes(rf: &mut RevitFile, revit_version: u32, doors: &mut [DecodedElement]) {
+    let type_of = |element: &DecodedElement| {
+        element.fields.iter().find_map(|(name, value)| match value {
+            InstanceField::ElementId { id, .. } if name == TYPE_ID_FIELD => Some(*id),
+            _ => None,
+        })
+    };
+    let types: BTreeSet<u32> = doors.iter().filter_map(type_of).collect();
+    let sizes = crate::partition_type_parameters::type_door_sizes(rf, revit_version, &types);
+    for element in doors.iter_mut() {
+        if element
+            .fields
+            .iter()
+            .any(|(name, _)| name == TYPE_WITHOUT_GEOMETRY_FIELD)
+        {
+            continue;
+        }
+        let Some(size) = type_of(element).and_then(|id| sizes.get(&id)).copied() else {
+            continue;
+        };
+        for (name, value) in DOOR_TYPE_SIZE_FIELDS
+            .iter()
+            .zip([size.width_feet, size.height_feet])
+        {
+            element
+                .fields
+                .push(((*name).into(), InstanceField::Float { value, size: 8 }));
+        }
     }
 }
 
@@ -3286,7 +3468,7 @@ fn attach_system_family_names(
             // records either: a layer's material is only held to be
             // declared (RE-112).
             let materials: BTreeSet<u32> =
-                if revit_version == crate::partition_element_records_2023::REVIT_2023 {
+                if crate::partition_element_records_2023::is_32bit_release(revit_version) {
                     declared.clone()
                 } else {
                     crate::partition_type_records::scan_type_records(
@@ -3684,7 +3866,7 @@ fn attach_wall_layers(rf: &mut RevitFile, revit_version: u32, walls: &mut [Decod
     // A 2023 wall keeps its record body, cut back at its joins (RE-120),
     // and takes only its layers and exterior side: its location line is not
     // read (RE-114).
-    let centreline_bodies = revit_version != crate::partition_element_records_2023::REVIT_2023;
+    let centreline_bodies = !crate::partition_element_records_2023::is_32bit_release(revit_version);
     let type_of = |element: &DecodedElement| {
         element.fields.iter().find_map(|(name, value)| match value {
             InstanceField::ElementId { id, .. } if name == TYPE_ID_FIELD => Some(*id),
@@ -4319,6 +4501,18 @@ pub const PIPE_AXIS_END_FIELDS: [&str; 3] = [
 ];
 /// Field holding a pipe's outside radius, feet (RE-131).
 pub const PIPE_RADIUS_FIELD: &str = "m_pipe_radius";
+/// Fields holding the keys of the connector entries at a pipe's first and
+/// second end (#847), each a vector of `[element, connector index]` pairs.
+pub const PIPE_END_KEYS_FIELDS: [&str; 2] = ["m_pipe_start_keys", "m_pipe_end_keys"];
+/// Fields holding a duct's two ends, model feet: the centres of the faces of
+/// its record box across its length (#847, RE-134).
+pub const DUCT_ENDS_FIELDS: [[&str; 3]; 2] = [
+    ["m_duct_start_x", "m_duct_start_y", "m_duct_start_z"],
+    ["m_duct_end_x", "m_duct_end_y", "m_duct_end_z"],
+];
+/// Fields holding the keys of the connector entries at a duct's two ends
+/// (#847), as [`PIPE_END_KEYS_FIELDS`] for a pipe.
+pub const DUCT_END_KEYS_FIELDS: [&str; 2] = ["m_duct_start_keys", "m_duct_end_keys"];
 /// Fields holding a duct's or pipe's `m_dWidthOrDiameter` and `m_dHeight`,
 /// feet (RE-134).
 pub const CURVE_SIZE_FIELDS: [&str; 2] = ["m_curve_width", "m_curve_height"];
@@ -4343,8 +4537,10 @@ pub fn curve_size_from_fields(fields: &[(String, InstanceField)]) -> Option<(f64
     Some((field(CURVE_SIZE_FIELDS[0])?, field(CURVE_SIZE_FIELDS[1])?))
 }
 
-/// Field carrying the Function of an element's type (`FUNCTION_PARAM`: 0
-/// interior, 1 exterior), RE-158.
+/// Field carrying the Function of an element's type: `FUNCTION_PARAM` (0
+/// interior, 1 exterior), RE-158, or a wall type's native `m_function`, the
+/// same values followed by foundation, retaining, soffit and core shaft
+/// (RE-185).
 pub const TYPE_FUNCTION_FIELD: &str = "m_type_function";
 
 /// Give each element of `groups` whose type is known its type's Function,
@@ -4353,7 +4549,7 @@ pub const TYPE_FUNCTION_FIELD: &str = "m_type_function";
 fn attach_type_functions(
     rf: &mut RevitFile,
     revit_version: u32,
-    groups: [&mut Vec<DecodedElement>; 2],
+    groups: [&mut Vec<DecodedElement>; 6],
 ) {
     use crate::partition_room_parameters as prp;
     let type_of = |element: &DecodedElement| {
@@ -4376,6 +4572,320 @@ fn attach_type_functions(
                     signed: false,
                     size: 4,
                 },
+            ));
+        }
+    }
+}
+
+/// Releases whose walls' native type Function is measured (RE-185, RE-193).
+pub const WALL_TYPE_FUNCTION_REVIT_VERSIONS: &[u32] = &[2024, 2025];
+
+/// Give each of `walls` with no [`TYPE_FUNCTION_FIELD`] its type's Function
+/// from the type's native record ([`crate::native_wall_types`], RE-185).
+/// Nothing on a release not measured, or where the native records are not
+/// read.
+fn attach_wall_type_functions<'a>(
+    rf: &mut RevitFile,
+    revit_version: u32,
+    walls: impl IntoIterator<Item = &'a mut DecodedElement>,
+) {
+    if !WALL_TYPE_FUNCTION_REVIT_VERSIONS.contains(&revit_version) {
+        return;
+    }
+    let has_function = |element: &DecodedElement| {
+        element
+            .fields
+            .iter()
+            .any(|(name, _)| name == TYPE_FUNCTION_FIELD)
+    };
+    let mut walls: Vec<&mut DecodedElement> = walls
+        .into_iter()
+        .filter(|element| !has_function(element))
+        .collect();
+    let ids: BTreeSet<u64> = walls
+        .iter()
+        .filter_map(|element| element.id.map(u64::from))
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    let Ok(functions) = crate::native_wall_types::wall_type_functions(rf, &ids) else {
+        return;
+    };
+    for element in walls.iter_mut() {
+        if let Some(&function) = element.id.and_then(|id| functions.get(&u64::from(id))) {
+            element.fields.push((
+                TYPE_FUNCTION_FIELD.into(),
+                InstanceField::Integer {
+                    value: function,
+                    signed: true,
+                    size: 8,
+                },
+            ));
+        }
+    }
+}
+
+/// Prefix of a field carrying the Yes/No value of a project or shared
+/// parameter on an element, named by the parameter's name (RE-193).
+pub const NAMED_PARAMETER_FIELD_PREFIX: &str = "m_named_parameter:";
+
+/// Prefix of a field carrying the same value on the element's type.
+pub const TYPE_NAMED_PARAMETER_FIELD_PREFIX: &str = "m_type_named_parameter:";
+
+/// The name of the parameter Revit's exporter reads `IsExternal` from (RE-193).
+pub const IS_EXTERNAL_PARAMETER_NAME: &str = "IsExternal";
+
+/// Field carrying the `IsExternal` Revit's exporter calculates for an element
+/// (RE-193), which a parameter named for the property set it is written in
+/// takes precedence over ([`crate::ifc::export_content`]).
+pub const IS_EXTERNAL_FIELD: &str = "m_is_external";
+
+/// Classes whose `IsExternal` Revit's exporter takes from their type's
+/// Function, so one whose Function is not read gets none: a value calculated
+/// without it would be a guess (fail closed). A window's host does not give
+/// it: on the R2025 models the host wall's value is Revit's on 6 of 18.
+const IS_EXTERNAL_FUNCTION_CLASSES: &[&str] = &[
+    "Wall",
+    CURTAIN_WALL_CLASS,
+    CURTAIN_PANEL_WALL_CLASS,
+    "Door",
+    "Window",
+    "Floor",
+    "BuildingPad",
+];
+
+/// Classes whose `IsExternal` is not established: on the BIM4LCA office
+/// Revit's export writes most curtain mullions and panels as not external
+/// where their curtain wall is, and some as external (RE-193).
+const IS_EXTERNAL_UNKNOWN_CLASSES: &[&str] = &["CurtainWallMullion", "CurtainWallPanel"];
+
+/// The `IsExternal` Revit's exporter calculates for `element` (RE-193),
+/// following revit-ifc's `CategoryUtil.IsElementExternal` (CLEANROOM.md
+/// source 5): a parameter named [`IS_EXTERNAL_PARAMETER_NAME`] on the
+/// element, then on its type; its type's Function, external unless interior
+/// (0); a roof is external; otherwise not external, where `last_step`
+/// allows it. `None` for the classes whose value cannot be calculated from
+/// what is read, and where the last step is not allowed.
+fn calculated_is_external(element: &DecodedElement, last_step: bool) -> Option<bool> {
+    let flag = |wanted: &str| {
+        element.fields.iter().find_map(|(name, value)| match value {
+            InstanceField::Bool(flag) if name == wanted => Some(*flag),
+            _ => None,
+        })
+    };
+    if let Some(value) = flag(&format!(
+        "{NAMED_PARAMETER_FIELD_PREFIX}{IS_EXTERNAL_PARAMETER_NAME}"
+    ))
+    .or_else(|| {
+        flag(&format!(
+            "{TYPE_NAMED_PARAMETER_FIELD_PREFIX}{IS_EXTERNAL_PARAMETER_NAME}"
+        ))
+    }) {
+        return Some(value);
+    }
+    let function = element.fields.iter().find_map(|(name, value)| match value {
+        InstanceField::Integer { value, .. } if name == TYPE_FUNCTION_FIELD => Some(*value),
+        _ => None,
+    });
+    if let Some(function) = function {
+        return Some(function != 0);
+    }
+    if element.class == "Roof" {
+        return Some(true);
+    }
+    let class = element.class.as_str();
+    if !last_step
+        || IS_EXTERNAL_FUNCTION_CLASSES.contains(&class)
+        || IS_EXTERNAL_UNKNOWN_CLASSES.contains(&class)
+    {
+        return None;
+    }
+    Some(false)
+}
+
+/// Releases where the calculation's last step, not external, is measured
+/// (RE-193). The parameters and a type's Function are read on every release
+/// from 2024, as RE-158 read a door's and a floor's.
+pub const IS_EXTERNAL_LAST_STEP_REVIT_VERSIONS: &[u32] = &[2024, 2025];
+
+/// Give each element of `groups` the Yes/No parameters named `IsExternal` or
+/// `<property set>.IsExternal` that it carries ([`NAMED_PARAMETER_FIELD_PREFIX`];
+/// for the plain name also its type's, [`TYPE_NAMED_PARAMETER_FIELD_PREFIX`]),
+/// then the value Revit's exporter calculates ([`IS_EXTERNAL_FIELD`]). Revit's
+/// exporter reads `Pset_WallCommon.IsExternal` on a wall before anything else,
+/// and the BIM4LCA office defines one such parameter for each of twelve
+/// property sets (RE-193).
+fn attach_is_external(
+    rf: &mut RevitFile,
+    revit_version: u32,
+    mut groups: [&mut Vec<DecodedElement>; 8],
+) {
+    use crate::partition_room_parameters as prp;
+    let last_step = IS_EXTERNAL_LAST_STEP_REVIT_VERSIONS.contains(&revit_version);
+    let type_of = |element: &DecodedElement| {
+        element.fields.iter().find_map(|(name, value)| match value {
+            InstanceField::ElementId { id, .. } if name == TYPE_ID_FIELD => Some(*id),
+            _ => None,
+        })
+    };
+    let parameters: Vec<(String, u32)> = prp::find_parameter_definitions(rf, revit_version)
+        .into_iter()
+        .filter(|(name, _)| {
+            name == IS_EXTERNAL_PARAMETER_NAME
+                || name.ends_with(&format!(".{IS_EXTERNAL_PARAMETER_NAME}"))
+        })
+        .collect();
+    if !parameters.is_empty() {
+        let owners: BTreeSet<u32> = groups
+            .iter()
+            .flat_map(|elements| elements.iter())
+            .flat_map(|element| element.id.into_iter().chain(type_of(element)))
+            .collect();
+        let ids: Vec<i64> = parameters.iter().map(|(_, id)| i64::from(*id)).collect();
+        let mut found = prp::scan_integer_parameters(rf, revit_version, &owners, &ids);
+        let values: Vec<(String, BTreeMap<u32, u32>)> = parameters
+            .into_iter()
+            .map(|(name, id)| {
+                let values = found.remove(&i64::from(id)).unwrap_or_default();
+                (name, values)
+            })
+            .collect();
+        for element in groups.iter_mut().flat_map(|elements| elements.iter_mut()) {
+            let type_id = type_of(element);
+            for (name, found) in &values {
+                if let Some(&value) = element.id.and_then(|id| found.get(&id)) {
+                    element.fields.push((
+                        format!("{NAMED_PARAMETER_FIELD_PREFIX}{name}"),
+                        InstanceField::Bool(value != 0),
+                    ));
+                }
+                if let (true, Some(&value)) = (
+                    name == IS_EXTERNAL_PARAMETER_NAME,
+                    type_id.and_then(|id| found.get(&id)),
+                ) {
+                    element.fields.push((
+                        format!("{TYPE_NAMED_PARAMETER_FIELD_PREFIX}{name}"),
+                        InstanceField::Bool(value != 0),
+                    ));
+                }
+            }
+        }
+    }
+    for element in groups.into_iter().flat_map(|elements| elements.iter_mut()) {
+        if let Some(external) = calculated_is_external(element, last_step) {
+            element
+                .fields
+                .push((IS_EXTERNAL_FIELD.into(), InstanceField::Bool(external)));
+        }
+    }
+}
+
+/// Give each element of `groups` the values of the project or shared
+/// parameters named `<property set>.<property>` for a property of a standard
+/// set ([`crate::ifc::standard_property_sets`]) that its own data object holds
+/// (RE-194), each as a field [`NAMED_PARAMETER_FIELD_PREFIX`]`<name>`: a
+/// Yes/No's 0 or 1 as a boolean, an integer, a text of one or more
+/// characters, a positive length in feet, or a length or thermal
+/// transmittance as stored. The latest partition's copy decides, so a text
+/// emptied there gets nothing, though an older copy holds one: on the
+/// BIM4LCA office at building permit 74 columns' `FireRating`. `IsExternal`
+/// is [`attach_is_external`]'s. Of the models measured, only the BIM4LCA
+/// office defines such parameters.
+fn attach_named_parameters(
+    rf: &mut RevitFile,
+    revit_version: u32,
+    groups: [&mut Vec<DecodedElement>; 8],
+) {
+    use crate::ifc::standard_property_sets::{self as sps, StandardPropertyKind as Kind};
+    use crate::partition_room_parameters::{self as prp, EntryKind, EntryValue};
+    let parameters: Vec<(String, i64, Kind)> = prp::find_parameter_definitions(rf, revit_version)
+        .into_iter()
+        .filter_map(|(name, id)| {
+            let (set, property) = name.split_once('.')?;
+            let kind = sps::property_kind(set, property)
+                .filter(|_| property != IS_EXTERNAL_PARAMETER_NAME)?;
+            Some((name, i64::from(id), kind))
+        })
+        .collect();
+    if parameters.is_empty() {
+        return;
+    }
+    let entry_kind = |kind: Kind| match kind {
+        Kind::Boolean | Kind::Count | Kind::Integer => EntryKind::Word,
+        Kind::Identifier | Kind::Label | Kind::Text => EntryKind::Text,
+        Kind::Length | Kind::PositiveLength | Kind::ThermalTransmittance => EntryKind::Real,
+    };
+    let wanted: Vec<(i64, EntryKind)> = parameters
+        .iter()
+        .map(|(_, id, kind)| (*id, entry_kind(*kind)))
+        .collect();
+    let owners: BTreeSet<u32> = groups
+        .iter()
+        .flat_map(|elements| elements.iter())
+        .filter_map(|element| element.id)
+        .collect();
+    let found = prp::scan_parameter_entries(rf, revit_version, &owners, &wanted);
+    for element in groups.into_iter().flat_map(|elements| elements.iter_mut()) {
+        let Some(id) = element.id else {
+            continue;
+        };
+        for (name, parameter, kind) in &parameters {
+            let Some(value) = found.get(parameter).and_then(|values| values.get(&id)) else {
+                continue;
+            };
+            let field = match (kind, value) {
+                (Kind::Boolean, EntryValue::Word(word @ (0 | 1))) => {
+                    InstanceField::Bool(*word == 1)
+                }
+                // How a negative integer is stored is not measured.
+                (Kind::Count | Kind::Integer, EntryValue::Word(count))
+                    if i32::try_from(*count).is_ok() =>
+                {
+                    InstanceField::Integer {
+                        value: i64::from(*count),
+                        signed: false,
+                        size: 4,
+                    }
+                }
+                (_, EntryValue::Text(text)) if !text.is_empty() => {
+                    InstanceField::String(text.clone())
+                }
+                (Kind::PositiveLength, EntryValue::Real(length)) if *length <= 0.0 => continue,
+                (_, EntryValue::Real(value)) if *value == 0.0 || value.is_normal() => {
+                    InstanceField::Float {
+                        value: *value,
+                        size: 8,
+                    }
+                }
+                _ => continue,
+            };
+            element
+                .fields
+                .push((format!("{NAMED_PARAMETER_FIELD_PREFIX}{name}"), field));
+        }
+    }
+}
+
+/// Field carrying the name of the phase an element was created in
+/// ([`crate::partition_phases`], spike 257).
+pub const PHASE_CREATED_FIELD: &str = "m_phase_created";
+
+/// Give each element the one phase its record's reference list names
+/// ([`crate::partition_phases::phase_created`]).
+fn attach_phases_created(rf: &mut RevitFile, groups: [&mut Vec<DecodedElement>; 6]) {
+    let phases = crate::partition_phases::phase_names(rf).unwrap_or_default();
+    if phases.is_empty() {
+        return;
+    }
+    for element in groups.into_iter().flat_map(|group| group.iter_mut()) {
+        let Some((references, _)) = record_references(rf, element) else {
+            continue;
+        };
+        if let Some((_, name)) = crate::partition_phases::phase_created(&references, &phases) {
+            element.fields.push((
+                PHASE_CREATED_FIELD.into(),
+                InstanceField::String(name.into()),
             ));
         }
     }
@@ -4762,6 +5272,186 @@ fn attach_pipe_axes(rf: &mut RevitFile, revit_version: u32, products: &mut [Deco
                 size: 8,
             },
         ));
+    }
+    // #847: the keys at each end say which of the pipe's connectors it is.
+    let mut ends = ppa::CurveEnds::new();
+    for element in products.iter().filter(|element| element.class == "Pipe") {
+        if let (Some(id), Some(stream), Some(body)) = (
+            element.id,
+            element_source_stream(element),
+            pipe_body_from_fields(&element.fields),
+        ) {
+            ends.entry(stream)
+                .or_default()
+                .push((id, [body.start, body.end]));
+        }
+    }
+    let Ok(keys) = ppa::scan_pipe_end_keys(rf, revit_version, &ends) else {
+        return;
+    };
+    for element in products
+        .iter_mut()
+        .filter(|element| element.class == "Pipe")
+    {
+        let Some(end_keys) = element.id.and_then(|id| keys.get(&id)) else {
+            continue;
+        };
+        for (name, keys) in PIPE_END_KEYS_FIELDS.iter().zip(end_keys) {
+            element.fields.push(((*name).into(), end_keys_field(keys)));
+        }
+    }
+}
+
+/// A duct's two ends ([`DUCT_ENDS_FIELDS`], #847), where its box gave them.
+pub fn duct_ends_from_fields(fields: &[(String, InstanceField)]) -> Option<[[f64; 3]; 2]> {
+    let field = |wanted: &str| {
+        fields.iter().find_map(|(name, value)| match value {
+            InstanceField::Float { value, .. } if name == wanted => Some(*value),
+            _ => None,
+        })
+    };
+    let point = |names: [&str; 3]| Some([field(names[0])?, field(names[1])?, field(names[2])?]);
+    Some([point(DUCT_ENDS_FIELDS[0])?, point(DUCT_ENDS_FIELDS[1])?])
+}
+
+/// The keys of the connector entries at a duct's two ends
+/// ([`DUCT_END_KEYS_FIELDS`], #847).
+pub fn duct_end_keys_from_fields(
+    fields: &[(String, InstanceField)],
+) -> [Vec<crate::partition_pipe_axes::EntryKey>; 2] {
+    end_keys_from_fields(fields, DUCT_END_KEYS_FIELDS)
+}
+
+/// The keys of the connector entries at a pipe's first and second end
+/// ([`PIPE_END_KEYS_FIELDS`], #847).
+pub fn pipe_end_keys_from_fields(
+    fields: &[(String, InstanceField)],
+) -> [Vec<crate::partition_pipe_axes::EntryKey>; 2] {
+    end_keys_from_fields(fields, PIPE_END_KEYS_FIELDS)
+}
+
+/// A vector-of-pairs keys field ([`PIPE_END_KEYS_FIELDS`]) for each of
+/// `names`.
+fn end_keys_from_fields(
+    fields: &[(String, InstanceField)],
+    names: [&str; 2],
+) -> [Vec<crate::partition_pipe_axes::EntryKey>; 2] {
+    let keys = |wanted: &str| {
+        fields
+            .iter()
+            .find_map(|(name, value)| match value {
+                InstanceField::Vector(pairs) if name == wanted => Some(
+                    pairs
+                        .iter()
+                        .filter_map(|pair| match pair {
+                            InstanceField::Vector(parts) => match parts.as_slice() {
+                                [
+                                    InstanceField::Integer { value: element, .. },
+                                    InstanceField::Integer { value: index, .. },
+                                ] => Some((
+                                    u64::try_from(*element).ok()?,
+                                    u32::try_from(*index).ok()?,
+                                )),
+                                _ => None,
+                            },
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
+    [keys(names[0]), keys(names[1])]
+}
+
+/// The keys field values for `keys` ([`PIPE_END_KEYS_FIELDS`]).
+fn end_keys_field(keys: &[crate::partition_pipe_axes::EntryKey]) -> InstanceField {
+    InstanceField::Vector(
+        keys.iter()
+            .map(|(element, index)| {
+                InstanceField::Vector(vec![
+                    InstanceField::Integer {
+                        value: i64::try_from(*element).unwrap_or(i64::MAX),
+                        signed: true,
+                        size: 8,
+                    },
+                    InstanceField::Integer {
+                        value: i64::from(*index),
+                        signed: false,
+                        size: 4,
+                    },
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// Give each duct along one of the model's axes its two ends, the centres of
+/// its record box's faces across its length (RE-134), and the keys of the
+/// connector entries there (#847), which say which of its connectors each
+/// end is, as for a pipe. A duct whose box leaves no single length axis is
+/// given neither.
+fn attach_duct_end_keys(rf: &mut RevitFile, revit_version: u32, products: &mut [DecodedElement]) {
+    use crate::partition_pipe_axes as ppa;
+    if !ppa::supports_revit_version(revit_version) {
+        return;
+    }
+    let mut ends = ppa::CurveEnds::new();
+    for element in products
+        .iter_mut()
+        .filter(|element| element.class == "Duct")
+    {
+        let (Some(id), Some(bbox), Some((width, height)), Some(stream)) = (
+            element.id,
+            element_record_bbox(element),
+            curve_size_from_fields(&element.fields),
+            element_source_stream(element),
+        ) else {
+            continue;
+        };
+        let dims = [bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2]];
+        let near = |a: f64, b: f64| (a - b).abs() <= CURVE_BOX_TOLERANCE_FEET;
+        let axes: Vec<usize> = (0..3)
+            .filter(|&axis| {
+                let (a, b) = (dims[(axis + 1) % 3], dims[(axis + 2) % 3]);
+                (near(a, width) && near(b, height)) || (near(a, height) && near(b, width))
+            })
+            .collect();
+        let [axis] = axes.as_slice() else {
+            continue;
+        };
+        let centre = [
+            (bbox[0] + bbox[3]) / 2.0,
+            (bbox[1] + bbox[4]) / 2.0,
+            (bbox[2] + bbox[5]) / 2.0,
+        ];
+        let mut start = centre;
+        let mut end = centre;
+        start[*axis] = bbox[*axis];
+        end[*axis] = bbox[*axis + 3];
+        for (names, point) in DUCT_ENDS_FIELDS.iter().zip([start, end]) {
+            for (name, value) in names.iter().zip(point) {
+                element
+                    .fields
+                    .push(((*name).into(), InstanceField::Float { value, size: 8 }));
+            }
+        }
+        ends.entry(stream).or_default().push((id, [start, end]));
+    }
+    let Ok(keys) = ppa::scan_pipe_end_keys(rf, revit_version, &ends) else {
+        return;
+    };
+    for element in products
+        .iter_mut()
+        .filter(|element| element.class == "Duct")
+    {
+        let Some(end_keys) = element.id.and_then(|id| keys.get(&id)) else {
+            continue;
+        };
+        for (name, keys) in DUCT_END_KEYS_FIELDS.iter().zip(end_keys) {
+            element.fields.push(((*name).into(), end_keys_field(keys)));
+        }
     }
 }
 
@@ -5797,14 +6487,11 @@ fn without_non_primary_options(
 /// the 2024 rule (RE-85) on 2023's reference lists, and every element to
 /// the one Level its list names (RE-107). No names, types, joins or design
 /// options: their 2023 layouts are not decoded.
-fn recover_2023_records(rf: &mut RevitFile, out: &mut PartitionSchemaMvp) {
+fn recover_2023_records(rf: &mut RevitFile, revit_version: u32, out: &mut PartitionSchemaMvp) {
     use crate::partition_element_records as per;
-    let records = crate::partition_element_records_2023::scan_records(
-        rf,
-        crate::partition_element_records_2023::REVIT_2023,
-    );
+    let records = crate::partition_element_records_2023::scan_records(rf, revit_version);
     let names = type_and_family_names_2023(rf, &records);
-    let system_types = system_type_names_2023(rf, &records);
+    let system_types = system_type_names_2023(rf, revit_version, &records);
     let selected = select_newest_instance_records(records);
     // Only a family instance can be nested; a host wall and the doors it
     // hosts name each other too (RE-76's class tag, at the same place on
@@ -5822,8 +6509,7 @@ fn recover_2023_records(rf: &mut RevitFile, out: &mut PartitionSchemaMvp) {
     };
     // Each record names its Level in its reference list, as on 2024
     // (RE-107).
-    let level_ids = level_element_ids(rf, crate::partition_element_records_2023::REVIT_2023)
-        .unwrap_or_default();
+    let level_ids = level_element_ids(rf, revit_version).unwrap_or_default();
     for record in selected.values() {
         if nested.contains(&record.element_id) {
             continue;
@@ -5917,12 +6603,7 @@ fn recover_2023_records(rf: &mut RevitFile, out: &mut PartitionSchemaMvp) {
     }
     // --- Rooms' numbers and names (RE-117) ---
     let room_ids: BTreeSet<u32> = out.rooms.iter().filter_map(|room| room.id).collect();
-    attach_room_parameter_entries(
-        rf,
-        crate::partition_element_records_2023::REVIT_2023,
-        &room_ids,
-        &mut out.rooms,
-    );
+    attach_room_parameter_entries(rf, revit_version, &room_ids, &mut out.rooms);
     let wall_ids: BTreeSet<u32> = out.walls.iter().filter_map(|wall| wall.id).collect();
     for element in out.doors.iter_mut().chain(out.windows.iter_mut()) {
         if let Some(record) = element.id.and_then(|id| selected.get(&id)) {
@@ -6057,6 +6738,7 @@ const SYSTEM_TYPE_CATEGORIES_2023: [i64; 4] = [
 /// records of more categories. No such one, no type.
 fn system_type_names_2023(
     rf: &mut RevitFile,
+    revit_version: u32,
     records: &[crate::partition_element_records::PartitionElementRecord],
 ) -> BTreeMap<u32, (u32, String)> {
     let Ok(table) = crate::elem_table::parse_records(rf) else {
@@ -6084,9 +6766,11 @@ fn system_type_names_2023(
         let Ok(inflated) = rf.inflated_partition(&stream) else {
             continue;
         };
-        for (id, name) in
-            crate::partition_names::find_element_data_names_2023(inflated.bytes(), &wanted)
-        {
+        for (id, name) in crate::partition_names::find_element_data_names_32(
+            inflated.bytes(),
+            revit_version,
+            &wanted,
+        ) {
             match names.get(&id) {
                 None => {
                     names.insert(id, Some(name));
@@ -6326,7 +7010,8 @@ pub fn slabs_from_partition_category_records(
             .entry(record.element_id)
             .or_insert([b[0], b[1], b[3], b[4]]);
     }
-    let profiles = sketch_plan_profiles(rf, revit_version, &sketch_lines, &plates);
+    let profiles =
+        sketch_plan_profiles(rf, revit_version, &sketch_lines, &plates, &BTreeSet::new());
 
     let mut out = Vec::new();
     for (category, class) in [
@@ -6374,6 +7059,7 @@ fn sketch_plan_profiles(
     revit_version: u32,
     sketch_lines: &[crate::partition_element_records::PartitionElementRecord],
     owners: &std::collections::BTreeMap<u32, [f64; 4]>,
+    skip: &BTreeSet<u32>,
 ) -> std::collections::BTreeMap<u32, crate::element_record_plan_profiles::PlanProfile> {
     use crate::element_record_plan_profiles as erpp;
     use std::collections::BTreeMap;
@@ -6385,6 +7071,10 @@ fn sketch_plan_profiles(
         erpp::scan_sketch_curve_lists(rf, revit_version, &line_ids)
             .into_iter()
             .filter(|(owner, _)| owners.contains_key(owner))
+            .map(|(owner, mut curves)| {
+                curves.retain(|id| !skip.contains(id));
+                (owner, curves)
+            })
             .collect();
     let listed: BTreeMap<u32, u32> = lists
         .iter()
@@ -6392,6 +7082,7 @@ fn sketch_plan_profiles(
         .collect();
     let remapped: Vec<crate::partition_element_records::PartitionElementRecord> = sketch_lines
         .iter()
+        .filter(|record| !skip.contains(&record.element_id))
         .filter_map(|record| {
             let owner = match listed.get(&record.element_id) {
                 Some(owner) => Some(*owner),
@@ -6407,7 +7098,10 @@ fn sketch_plan_profiles(
     // An element whose list differs from the lines naming it keeps an outline
     // only where it spans its record box, as an arc outline does (RE-96).
     let mut named: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
-    for record in sketch_lines {
+    for record in sketch_lines
+        .iter()
+        .filter(|record| !skip.contains(&record.element_id))
+    {
         if let Some(owner) = record.owner_reference {
             named.entry(owner).or_default().insert(record.element_id);
         }
@@ -6454,7 +7148,7 @@ fn sketch_plan_profiles(
         .flat_map(|lines| lines.keys().copied())
         .collect();
     let (Ok(lines), Ok(curves)) = (
-        crate::partition_beam_axes::scan_bounded_lines(rf, revit_version, &ids),
+        crate::partition_beam_axes::scan_sketch_bounded_lines(rf, revit_version, &ids),
         crate::partition_beam_axes::scan_sketch_curves(rf, revit_version, &ids),
     ) else {
         return profiles;
@@ -6600,7 +7294,14 @@ fn attach_roof_profiles(rf: &mut RevitFile, revit_version: u32, products: &mut [
     else {
         return;
     };
-    let profiles = sketch_plan_profiles(rf, revit_version, &sketch_lines, &roofs);
+    // RE-199: a slope arrow is one of its roof's sketch lines but no part of
+    // the outline.
+    let line_ids: BTreeSet<u32> = sketch_lines.iter().map(|line| line.element_id).collect();
+    let arrows: BTreeSet<u32> =
+        crate::partition_roof_slopes::scan_arrow_heights(rf, revit_version, &line_ids)
+            .map(|found| found.into_keys().collect())
+            .unwrap_or_default();
+    let profiles = sketch_plan_profiles(rf, revit_version, &sketch_lines, &roofs, &arrows);
     for roof in products
         .iter_mut()
         .filter(|element| SKETCHED_PRODUCT_CLASSES.contains(&element.class.as_str()))
@@ -6819,8 +7520,9 @@ fn shaft_outlines(
     out
 }
 
-/// Fields holding the plan start and end of the one roof edge that defines
-/// the roof's slope, model feet (RE-56).
+/// Fields holding the plan start and end of the (first) roof edge that
+/// defines the roof's slope, model feet (RE-56). Further edges of a gable or
+/// hip use [`roof_slope_edge_fields`] (RE-199).
 pub const ROOF_SLOPE_EDGE_FIELDS: [&str; 4] = [
     "m_roof_slope_edge_start_x",
     "m_roof_slope_edge_start_y",
@@ -6831,9 +7533,21 @@ pub const ROOF_SLOPE_EDGE_FIELDS: [&str; 4] = [
 pub const ROOF_SLOPE_ANGLE_FIELD: &str = "m_roof_slope_angle";
 /// Field holding the roof's type thickness, its layers summed (RE-56).
 pub const ROOF_TYPE_THICKNESS_FIELD: &str = "m_roof_type_thickness";
+/// Field holding how far the first defining edge's plane is raised at the
+/// edge, feet, written only when not 0 (RE-199); further edges add
+/// `_<index>` ([`roof_slope_plate_offset_field`]).
+pub const ROOF_SLOPE_PLATE_OFFSET_FIELD: &str = "m_roof_slope_plate_offset";
 
-/// A shed roof's slope: the one edge that defines it, its angle, and the
-/// roof's thickness measured square to the slope (RE-56).
+/// [`ROOF_SLOPE_PLATE_OFFSET_FIELD`] for the `index`th defining edge.
+pub fn roof_slope_plate_offset_field(index: usize) -> String {
+    match index {
+        0 => ROOF_SLOPE_PLATE_OFFSET_FIELD.to_string(),
+        _ => format!("{ROOF_SLOPE_PLATE_OFFSET_FIELD}_{index}"),
+    }
+}
+
+/// A roof edge's slope: the edge that defines it, its angle, and the roof's
+/// thickness measured square to the slope (RE-56).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RoofSlope {
     /// Plan start of the defining edge, model feet.
@@ -6844,24 +7558,61 @@ pub struct RoofSlope {
     pub angle_radians: f64,
     /// The roof type's layers summed, feet.
     pub thickness_feet: f64,
+    /// How far the edge's plane is raised at the edge, feet (RE-199).
+    pub plate_offset_feet: f64,
+}
+
+/// The names of the start, end and angle fields of a roof's `index`th
+/// defining edge: [`ROOF_SLOPE_EDGE_FIELDS`] and [`ROOF_SLOPE_ANGLE_FIELD`]
+/// for the first, the same names with `_<index>` after `edge` or `angle`
+/// for each further one (RE-199).
+pub fn roof_slope_edge_fields(index: usize) -> [String; 5] {
+    let names = [
+        ROOF_SLOPE_EDGE_FIELDS[0],
+        ROOF_SLOPE_EDGE_FIELDS[1],
+        ROOF_SLOPE_EDGE_FIELDS[2],
+        ROOF_SLOPE_EDGE_FIELDS[3],
+        ROOF_SLOPE_ANGLE_FIELD,
+    ];
+    names.map(|name| match index {
+        0 => name.to_string(),
+        _ => match name.find("_edge_") {
+            Some(at) => format!("{}_edge_{index}_{}", &name[..at], &name[at + 6..]),
+            None => format!("{name}_{index}"),
+        },
+    })
 }
 
 /// The slope [`ROOF_SLOPE_EDGE_FIELDS`], [`ROOF_SLOPE_ANGLE_FIELD`] and
-/// [`ROOF_TYPE_THICKNESS_FIELD`] record.
+/// [`ROOF_TYPE_THICKNESS_FIELD`] record: the first defining edge.
 pub fn roof_slope_from_fields(fields: &[(String, InstanceField)]) -> Option<RoofSlope> {
+    roof_slopes_from_fields(fields).into_iter().next()
+}
+
+/// Every defining edge a roof's fields record, in order
+/// ([`roof_slope_edge_fields`]); empty when none is.
+pub fn roof_slopes_from_fields(fields: &[(String, InstanceField)]) -> Vec<RoofSlope> {
     let float = |wanted: &str| {
         fields.iter().find_map(|(name, value)| match value {
             InstanceField::Float { value, .. } if name == wanted => Some(*value),
             _ => None,
         })
     };
-    let [sx, sy, ex, ey] = ROOF_SLOPE_EDGE_FIELDS.map(float);
-    Some(RoofSlope {
-        edge_start: [sx?, sy?],
-        edge_end: [ex?, ey?],
-        angle_radians: float(ROOF_SLOPE_ANGLE_FIELD)?,
-        thickness_feet: float(ROOF_TYPE_THICKNESS_FIELD)?,
-    })
+    let Some(thickness_feet) = float(ROOF_TYPE_THICKNESS_FIELD) else {
+        return Vec::new();
+    };
+    (0..)
+        .map_while(|index| {
+            let [sx, sy, ex, ey, angle] = roof_slope_edge_fields(index).map(|name| float(&name));
+            Some(RoofSlope {
+                edge_start: [sx?, sy?],
+                edge_end: [ex?, ey?],
+                angle_radians: angle?,
+                thickness_feet,
+                plate_offset_feet: float(&roof_slope_plate_offset_field(index)).unwrap_or(0.0),
+            })
+        })
+        .collect()
 }
 
 /// Give each roof whose sketch lines all carry a slope block, exactly one
@@ -6901,36 +7652,84 @@ fn attach_roof_slopes(rf: &mut RevitFile, revit_version: u32, products: &mut [De
     else {
         return;
     };
+    // RE-97: where a roof's Sketch lists its curves, that list is its
+    // membership; once the sketch is edited a line's owner reference names
+    // another element (RE-199, on 2025).
+    let all_lines: BTreeSet<u32> = sketch_lines.iter().map(|line| line.element_id).collect();
+    let lists =
+        crate::element_record_plan_profiles::scan_sketch_curve_lists(rf, revit_version, &all_lines);
     let mut edges: std::collections::BTreeMap<u32, BTreeSet<u32>> = Default::default();
     for line in &sketch_lines {
-        if let Some(owner) = line.owner_reference.filter(|owner| roofs.contains(owner)) {
+        if let Some(owner) = line
+            .owner_reference
+            .filter(|owner| roofs.contains(owner) && !lists.contains_key(owner))
+        {
             edges.entry(owner).or_default().insert(line.element_id);
         }
+    }
+    for (owner, curves) in lists.iter().filter(|(owner, _)| roofs.contains(owner)) {
+        edges
+            .entry(*owner)
+            .or_default()
+            .extend(curves.iter().copied());
     }
     let line_ids: BTreeSet<u32> = edges.values().flatten().copied().collect();
     let Ok(slopes) = prs::scan_edge_slopes(rf, revit_version, &line_ids) else {
         return;
     };
-    let mut defining: std::collections::BTreeMap<u32, (u32, f64)> = Default::default();
+    let unblocked: BTreeSet<u32> = line_ids
+        .iter()
+        .filter(|line| !slopes.contains_key(line))
+        .copied()
+        .collect();
+    let Ok(arrows) = prs::scan_arrow_heights(rf, revit_version, &unblocked) else {
+        return;
+    };
+    // Every defining edge of a roof whose edges all carry a block: one is a
+    // shed (RE-56), more a gable or hip (RE-199). A roof whose edges define
+    // none, with one slope arrow, rises along the arrow (RE-199).
+    let mut defining: std::collections::BTreeMap<u32, Vec<(u32, f64, f64)>> = Default::default();
+    let mut sloped_by_arrow: std::collections::BTreeMap<u32, (u32, prs::ArrowHeights)> =
+        Default::default();
     for (&roof, lines) in &edges {
-        if !lines.iter().all(|line| slopes.contains_key(line)) {
+        let (blocked, rest): (Vec<u32>, Vec<u32>) =
+            lines.iter().partition(|line| slopes.contains_key(line));
+        if let [arrow] = rest.as_slice() {
+            let flat = blocked.iter().all(|line| !slopes[line].defines_slope);
+            if let (true, Some(heights)) = (flat, arrows.get(arrow)) {
+                sloped_by_arrow.insert(roof, (*arrow, *heights));
+            }
             continue;
         }
-        let mut sloped = lines
+        if !rest.is_empty() {
+            continue;
+        }
+        let sloped: Vec<(u32, f64, f64)> = lines
             .iter()
             .filter_map(|line| slopes.get(line).map(|slope| (*line, slope)))
-            .filter(|(_, slope)| slope.defines_slope);
-        if let (Some((line, slope)), None) = (sloped.next(), sloped.next()) {
-            defining.insert(roof, (line, slope.angle_radians));
+            .filter(|(_, slope)| slope.defines_slope)
+            .map(|(line, slope)| (line, slope.angle_radians, slope.plate_offset_feet))
+            .collect();
+        if !sloped.is_empty() {
+            defining.insert(roof, sloped);
         }
     }
-    if defining.is_empty() {
+    if defining.is_empty() && sloped_by_arrow.is_empty() {
         return;
     }
-    let defining_lines: BTreeSet<u32> = defining.values().map(|(line, _)| *line).collect();
+    let defining_lines: BTreeSet<u32> = defining
+        .values()
+        .flatten()
+        .map(|(line, _, _)| *line)
+        .chain(sloped_by_arrow.values().map(|(line, _)| *line))
+        .collect();
     let types: BTreeSet<u32> = products
         .iter()
-        .filter(|element| element.id.is_some_and(|id| defining.contains_key(&id)))
+        .filter(|element| {
+            element
+                .id
+                .is_some_and(|id| defining.contains_key(&id) || sloped_by_arrow.contains_key(&id))
+        })
         .filter_map(type_of)
         .collect();
     let materials: BTreeSet<u32> = crate::partition_type_records::scan_type_records(
@@ -6943,8 +7742,15 @@ fn attach_roof_slopes(rf: &mut RevitFile, revit_version: u32, products: &mut [De
     .iter()
     .map(|record| record.element_id)
     .collect();
+    let sloped_roofs: BTreeSet<u32> = defining
+        .keys()
+        .chain(sloped_by_arrow.keys())
+        .copied()
+        .collect();
+    let fascia = prs::scan_fascia_depths(rf, revit_version, &sloped_roofs).unwrap_or_default();
+    let cuts = prs::scan_rafter_cuts(rf, revit_version, &sloped_roofs);
     let (Ok(lines), Ok(layers)) = (
-        crate::partition_beam_axes::scan_bounded_lines(rf, revit_version, &defining_lines),
+        crate::partition_beam_axes::scan_sketch_bounded_lines(rf, revit_version, &defining_lines),
         crate::partition_compound_structure::scan_type_layers(
             rf,
             revit_version,
@@ -6962,31 +7768,60 @@ fn attach_roof_slopes(rf: &mut RevitFile, revit_version: u32, products: &mut [De
         let (Some(id), Some(type_id)) = (roof.id, type_of(roof)) else {
             continue;
         };
-        let Some(&(line_id, angle)) = defining.get(&id) else {
+        let Some(type_layers) = layers.get(&type_id) else {
             continue;
         };
-        let (Some(line), Some(type_layers)) = (lines.get(&line_id), layers.get(&type_id)) else {
+        // An arrow is a shed whose edge runs through the arrow's tail square
+        // to it, rising from the tail's height to the head's along it.
+        let edges: Option<Vec<RoofEdgeSlope>> =
+            if let Some((line_id, heights)) = sloped_by_arrow.get(&id) {
+                lines.get(line_id).and_then(|line| {
+                    let (tail, head) = (line.start(), line.end());
+                    let run = (head[0] - tail[0]).hypot(head[1] - tail[1]);
+                    let slope = heights.rise_over_run(run);
+                    (run > 1e-9 && slope > 0.0 && slope.is_finite()).then(|| {
+                        let (ux, uy) = ((head[0] - tail[0]) / run, (head[1] - tail[1]) / run);
+                        let across = [tail[0] - uy, tail[1] + ux, tail[2]];
+                        vec![(tail, across, slope.atan(), 0.0)]
+                    })
+                })
+            } else {
+                defining.get(&id).and_then(|sloped| {
+                    sloped
+                        .iter()
+                        .map(|(line_id, angle, offset)| {
+                            lines
+                                .get(line_id)
+                                .map(|line| (line.start(), line.end(), *angle, *offset))
+                        })
+                        .collect()
+                })
+            };
+        let Some(edges) = edges else {
             continue;
         };
         let thickness: f64 = type_layers.iter().map(|layer| layer.width_feet).sum();
         if !(thickness.is_finite() && thickness > 0.0) {
             continue;
         }
-        let (start, end) = (line.start(), line.end());
-        for (name, value) in ROOF_SLOPE_EDGE_FIELDS
-            .iter()
-            .zip([start[0], start[1], end[0], end[1]])
-        {
-            roof.fields
-                .push(((*name).into(), InstanceField::Float { value, size: 8 }));
+        for (index, (start, end, angle, offset)) in edges.into_iter().enumerate() {
+            for (name, value) in roof_slope_edge_fields(index)
+                .into_iter()
+                .zip([start[0], start[1], end[0], end[1], angle])
+            {
+                roof.fields
+                    .push((name, InstanceField::Float { value, size: 8 }));
+            }
+            if offset != 0.0 {
+                roof.fields.push((
+                    roof_slope_plate_offset_field(index),
+                    InstanceField::Float {
+                        value: offset,
+                        size: 8,
+                    },
+                ));
+            }
         }
-        roof.fields.push((
-            ROOF_SLOPE_ANGLE_FIELD.into(),
-            InstanceField::Float {
-                value: angle,
-                size: 8,
-            },
-        ));
         roof.fields.push((
             ROOF_TYPE_THICKNESS_FIELD.into(),
             InstanceField::Float {
@@ -6994,8 +7829,54 @@ fn attach_roof_slopes(rf: &mut RevitFile, revit_version: u32, products: &mut [De
                 size: 8,
             },
         ));
+        if let Some(&depth) = fascia.get(&id) {
+            roof.fields.push((
+                ROOF_FASCIA_DEPTH_FIELD.into(),
+                InstanceField::Float {
+                    value: depth,
+                    size: 8,
+                },
+            ));
+        }
+        if let Some(cut) = cuts.get(&id) {
+            roof.fields.push((
+                ROOF_RAFTER_CUT_FIELD.into(),
+                InstanceField::String(cut.name().into()),
+            ));
+        }
     }
 }
+
+/// Field holding a roof's rafter cut, a [`crate::partition_roof_slopes::RafterCut`]
+/// name, where it is read (RE-199).
+pub const ROOF_RAFTER_CUT_FIELD: &str = "m_roof_rafter_cut";
+
+/// The [`ROOF_RAFTER_CUT_FIELD`] a roof's fields record.
+pub fn roof_rafter_cut_from_fields(
+    fields: &[(String, InstanceField)],
+) -> Option<crate::partition_roof_slopes::RafterCut> {
+    fields.iter().find_map(|(name, value)| match value {
+        InstanceField::String(cut) if name == ROOF_RAFTER_CUT_FIELD => {
+            crate::partition_roof_slopes::RafterCut::from_name(cut)
+        }
+        _ => None,
+    })
+}
+
+/// Field holding a roof's fascia depth, feet, where it is read (RE-199).
+pub const ROOF_FASCIA_DEPTH_FIELD: &str = "m_roof_fascia_depth";
+
+/// The [`ROOF_FASCIA_DEPTH_FIELD`] a roof's fields record.
+pub fn roof_fascia_depth_from_fields(fields: &[(String, InstanceField)]) -> Option<f64> {
+    fields.iter().find_map(|(name, value)| match value {
+        InstanceField::Float { value, .. } if name == ROOF_FASCIA_DEPTH_FIELD => Some(*value),
+        _ => None,
+    })
+}
+
+/// A roof edge's start and end, its slope angle, and how far its plane is
+/// raised at the edge (RE-199).
+type RoofEdgeSlope = ([f64; 3], [f64; 3], f64, f64);
 
 /// Classes whose type's layers stack from the top down (RE-57).
 pub const STACKED_LAYER_CLASSES: &[&str] = &["Floor", "BuildingPad", "Roof", "Ceiling"];
@@ -7012,9 +7893,11 @@ fn materials_and_names(
     revit_version: u32,
     declared: &BTreeSet<u32>,
 ) -> Option<(BTreeSet<u32>, BTreeMap<u32, String>)> {
-    if revit_version == crate::partition_element_records_2023::REVIT_2023 {
-        return Some(crate::partition_materials::scan_materials_2023(
-            rf, declared,
+    if crate::partition_element_records_2023::is_32bit_release(revit_version) {
+        return Some(crate::partition_materials::scan_materials_32(
+            rf,
+            revit_version,
+            declared,
         ));
     }
     let materials = crate::partition_type_records::scan_type_records(
@@ -7247,6 +8130,228 @@ pub fn column_instances_from_records(
             decoded
         })
         .collect()
+}
+
+/// Field naming the Level of an element whose record names it in an id list
+/// (RE-174), rather than in the association record.
+pub const LEVEL_FROM_LIST_FIELD: &str = "m_level_parameter_from_list";
+
+/// Field naming the highest of the several Levels an element's record names
+/// in its id lists: a beam's or brace's Reference Level (RE-175).
+pub const REFERENCE_LEVEL_FROM_LIST_FIELD: &str = "m_reference_level_from_list";
+
+/// Give `element` its level fields (RE-172, RE-174, RE-175, RE-176).
+fn attach_level_parameters(
+    rf: &mut RevitFile,
+    element: &mut DecodedElement,
+    parameters: &BTreeMap<u32, crate::partition_level_parameters::LevelParameters>,
+    names: &BTreeMap<u32, String>,
+    elevations: &BTreeMap<u32, f64>,
+) {
+    use crate::partition_level_parameters as lp;
+    let found = element
+        .id
+        .and_then(|id| parameters.get(&id))
+        // A stair's record is read as a stair's only for a stair.
+        .filter(|p| p.stair.is_none() || element.class == "Stair");
+    let push = |element: &mut DecodedElement, name: &str, value: String| {
+        element
+            .fields
+            .push((name.into(), InstanceField::String(value)));
+    };
+    if let Some(found) = found {
+        if let Some(level) = &found.level {
+            push(element, lp::LEVEL_PARAMETER_FIELD, level.clone());
+        }
+        if let Some(top) = &found.top {
+            push(element, lp::TOP_LEVEL_PARAMETER_FIELD, top.clone());
+        }
+        if let Some((_, top)) = &found.stair {
+            push(element, lp::TOP_LEVEL_PARAMETER_FIELD, top.clone());
+        }
+        return;
+    }
+    // The Level an element names in its record's id lists (RE-174): the
+    // second list's if it names any, else the first's, if exactly one
+    // recovered Level is named. A beam or brace naming more than one also
+    // lists the Level(s) below its own: its Reference Level is the highest
+    // (RE-175), kept apart as it is proven for those classes only.
+    let (Some(stream), Some(offset)) = (
+        element.fields.iter().find_map(|(n, v)| match v {
+            InstanceField::String(s) if n == "m_source_stream" => Some(s.clone()),
+            _ => None,
+        }),
+        element.fields.iter().find_map(|(n, v)| match v {
+            InstanceField::Integer { value, .. } if n == "m_source_offset" => {
+                usize::try_from(*value).ok()
+            }
+            _ => None,
+        }),
+    ) else {
+        return;
+    };
+    let Ok(inflated) = rf.inflated_partition(&stream) else {
+        return;
+    };
+    let buf = inflated.bytes();
+    let at = offset + crate::partition_element_records::REFERENCE_LIST_OFFSET;
+    let Some(first) = crate::partition_element_records::decode_reference_list(buf, at) else {
+        return;
+    };
+    let second = at
+        .checked_add(4 + first.len() * 8)
+        .and_then(|at| crate::partition_element_records::decode_reference_list(buf, at))
+        .unwrap_or_default();
+    let ids: BTreeSet<u32> = names.keys().copied().collect();
+    let mut named = crate::element_record_level_refs::named_levels(&second, &ids);
+    if named.is_empty() {
+        named = crate::element_record_level_refs::named_levels(&first, &ids);
+    }
+    if named.len() > 1 && element.class == "Stair" {
+        // A stair whose association record gives no Base and Top Level
+        // lists them, and at most the Level above its top (RE-176).
+        if let Some((base, top)) = stair_levels_from_list(&named, elevations) {
+            push(element, lp::LEVEL_PARAMETER_FIELD, names[&base].clone());
+            push(element, lp::TOP_LEVEL_PARAMETER_FIELD, names[&top].clone());
+            element
+                .fields
+                .push((LEVEL_FROM_LIST_FIELD.into(), InstanceField::Bool(true)));
+        }
+        return;
+    }
+    if named.len() > 1 {
+        if let Some(level) = highest_level(&named, elevations) {
+            push(
+                element,
+                REFERENCE_LEVEL_FROM_LIST_FIELD,
+                names[&level].clone(),
+            );
+        }
+        return;
+    }
+    if let [only] = named[..] {
+        push(element, lp::LEVEL_PARAMETER_FIELD, names[&only].clone());
+        element
+            .fields
+            .push((LEVEL_FROM_LIST_FIELD.into(), InstanceField::Bool(true)));
+    }
+}
+
+/// A stair's Base and Top Level from the Levels its record lists: the
+/// lowest and the next above it (RE-176). `None` unless every named Level
+/// has an elevation and the lowest three are at distinct elevations.
+fn stair_levels_from_list(named: &[u32], elevations: &BTreeMap<u32, f64>) -> Option<(u32, u32)> {
+    let mut by_height: Vec<(f64, u32)> = named
+        .iter()
+        .map(|id| Some((*elevations.get(id)?, *id)))
+        .collect::<Option<_>>()?;
+    by_height.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let above = |low: f64, high: f64| high - low > 1e-6;
+    match by_height[..] {
+        [(b, base), (t, top)] if above(b, t) => Some((base, top)),
+        [(b, base), (t, top), (n, _), ..] if above(b, t) && above(t, n) => Some((base, top)),
+        _ => None,
+    }
+}
+
+/// The Level of `named` with the highest elevation; `None` unless every
+/// named Level has an elevation and the highest is unique (RE-175).
+fn highest_level(named: &[u32], elevations: &BTreeMap<u32, f64>) -> Option<u32> {
+    let mut by_height: Vec<(f64, u32)> = named
+        .iter()
+        .map(|id| Some((*elevations.get(id)?, *id)))
+        .collect::<Option<_>>()?;
+    by_height.sort_by(|a, b| b.0.total_cmp(&a.0));
+    match by_height[..] {
+        [(top, id), (next, _), ..] if top - next > 1e-6 => Some(id),
+        _ => None,
+    }
+}
+
+/// Field recording where a column's bottom came from, when not its record.
+pub const COLUMN_Z_SOURCE_FIELD: &str = "m_column_z_source";
+/// Value of [`COLUMN_Z_SOURCE_FIELD`] for a bottom read from the geometry node.
+pub const COLUMN_Z_GEOMETRY_NODE: &str = "partition_geometry_node";
+
+/// Give each column whose record box starts at z = 0.0 the bottom its
+/// geometry node holds (RE-173).
+fn apply_column_node_bottoms(rf: &mut RevitFile, lists: [&mut Vec<DecodedElement>; 2]) {
+    let is_column = |e: &DecodedElement| matches!(e.class.as_str(), "Column" | "StructuralColumn");
+    let mut targets = BTreeMap::new();
+    for list in lists.iter() {
+        for element in list.iter().filter(|e| is_column(e)) {
+            if let (Some(id), Some(bbox)) = (element.id, element_record_bbox(element)) {
+                if bbox[2] == 0.0 {
+                    targets.insert(id, bbox);
+                }
+            }
+        }
+    }
+    let bottoms = crate::partition_column_nodes::column_bottoms(rf, &targets);
+    for list in lists {
+        for element in list.iter_mut().filter(|e| is_column(e)) {
+            let Some(&bottom) = element.id.and_then(|id| bottoms.get(&id)) else {
+                continue;
+            };
+            let Some(bbox) = targets.get(&element.id.unwrap_or_default()) else {
+                continue;
+            };
+            for (name, value) in element.fields.iter_mut() {
+                match name.as_str() {
+                    "m_locationZ" => {
+                        *value = InstanceField::Float {
+                            value: bottom,
+                            size: 8,
+                        }
+                    }
+                    "m_bboxHeight" => {
+                        *value = InstanceField::Float {
+                            value: bbox[5] - bottom,
+                            size: 8,
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            element.fields.push((
+                COLUMN_Z_SOURCE_FIELD.into(),
+                InstanceField::String(COLUMN_Z_GEOMETRY_NODE.into()),
+            ));
+        }
+    }
+}
+
+/// Bottom, feet, of a column's body after its geometry joins (RE-178). The
+/// column's own fields (`m_locationZ`, `m_bboxHeight`) keep its extent.
+pub const COLUMN_BODY_BOTTOM_FIELD: &str = "m_column_body_bottom";
+/// Top, feet, of a column's body after its geometry joins (RE-178).
+pub const COLUMN_BODY_TOP_FIELD: &str = "m_column_body_top";
+
+/// Give each column that a joined slab or roof cuts the z-range of its cut
+/// body, from its geometry node (RE-178). Only the body follows it.
+fn apply_column_cut_bodies(rf: &mut RevitFile, lists: [&mut Vec<DecodedElement>; 2]) {
+    let is_column = |e: &DecodedElement| matches!(e.class.as_str(), "Column" | "StructuralColumn");
+    let targets: BTreeMap<u32, [f64; 6]> = lists
+        .iter()
+        .flat_map(|list| list.iter().filter(|e| is_column(e)))
+        .filter_map(|e| Some((e.id?, element_record_bbox(e)?)))
+        .collect();
+    let extents = crate::partition_column_nodes::column_cut_extents(rf, &targets);
+    for list in lists {
+        for element in list.iter_mut().filter(|e| is_column(e)) {
+            let Some(&(bottom, top)) = element.id.and_then(|id| extents.get(&id)) else {
+                continue;
+            };
+            for (name, value) in [
+                (COLUMN_BODY_BOTTOM_FIELD, bottom),
+                (COLUMN_BODY_TOP_FIELD, top),
+            ] {
+                element
+                    .fields
+                    .push((name.into(), InstanceField::Float { value, size: 8 }));
+            }
+        }
+    }
 }
 
 /// Rewrite a column's placement and extents to the cut body, and say
@@ -7987,7 +9092,7 @@ fn level_decoded(name: &str, elevation: Option<f64>, index: usize) -> DecodedEle
 /// display-name strings stand in ([`materials_from_names`]).
 fn materials_from_records(rf: &mut RevitFile, revit_version: u32) -> Option<Vec<DecodedElement>> {
     use crate::partition_materials as pm;
-    let revit_2023 = revit_version == crate::partition_element_records_2023::REVIT_2023;
+    let revit_2023 = crate::partition_element_records_2023::is_32bit_release(revit_version);
     if !pm::MATERIALS_SUPPORTED_REVIT_VERSIONS.contains(&revit_version) && !revit_2023 {
         return None;
     }
@@ -7995,7 +9100,7 @@ fn materials_from_records(rf: &mut RevitFile, revit_version: u32) -> Option<Vec<
     // Revit 2023 has no material records; its materials are the objects
     // carrying the 2023 material tag (RE-113).
     let (ids, names) = if revit_2023 {
-        pm::scan_materials_2023(rf, &declared)
+        pm::scan_materials_32(rf, revit_version, &declared)
     } else {
         let ids: BTreeSet<u32> = crate::partition_type_records::scan_type_records(
             rf,

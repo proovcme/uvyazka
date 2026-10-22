@@ -59,6 +59,14 @@ pub struct TypedProductionAppend {
     /// flipped, by ElementId (B72): read in every quality mode, as the flip
     /// is part of the type's GlobalId (B74).
     pub element_flips: BTreeMap<u32, bool>,
+    /// The `Pset_PipeSegmentOccurrence` sets whose `InvertElevation` is a
+    /// pipe's invert worked out in model height, by index in the entities,
+    /// for `pipe_inverts_above_storeys` (RE-157).
+    pub computed_inverts: Vec<usize>,
+    /// The further pieces written inside their element's body rather than
+    /// as elements of their own (#823), by index in the entities
+    /// ([`super::IfcModel::body_pieces`]).
+    pub body_pieces: BTreeMap<usize, Vec<usize>>,
 }
 
 /// What a quality mode allows the document exporter to emit.
@@ -117,6 +125,12 @@ fn family_and_type(decoded: &DecodedElement) -> Option<(String, String)> {
 /// element's own thickness rather than an envelope height (#212).
 pub const SLAB_THICKNESS_CLASSES: &[&str] = &["Floor", "BuildingPad"];
 
+/// Classes whose sketch of separate loops Revit's export writes as one
+/// element with a body item per piece, where it writes a floor as one
+/// element per piece (#823, #331): the BIM4LCA office's compound ceilings
+/// (Measure run 39240535083).
+pub const PIECES_IN_BODY_CLASSES: &[&str] = &["Ceiling"];
+
 /// Value of the `ThicknessSource` property on a record-backed plate.
 pub const RECORD_BBOX_THICKNESS_SOURCE: &str = "partition_element_record_bbox_z_extent";
 
@@ -158,6 +172,8 @@ pub(crate) fn is_distribution_element(ifc_type: &str) -> bool {
                 | "IFCPIPEFITTING"
                 | "IFCAIRTERMINAL"
                 | "IFCSANITARYTERMINAL"
+                | "IFCWASTETERMINAL"
+                | "IFCFIRESUPPRESSIONTERMINAL"
                 | "IFCLIGHTFIXTURE"
                 | "IFCELECTRICAPPLIANCE"
                 | "IFCALARM"
@@ -235,6 +251,70 @@ fn identity_property_set(mut set: PropertySet, decoded: &DecodedElement) -> Prop
     set
 }
 
+/// An Area's ElementId, number, name and Level (#763), in the set a room's
+/// are written in, so the writer names its `IfcSpace` as it names a room's
+/// (`Name` the number and `LongName` the name, as Revit's export does) and
+/// `ifc::apply_record_level_reference_storeys` puts it in its Level's storey.
+fn area_property_set(decoded: &DecodedElement) -> PropertySet {
+    let text = |wanted: &str| {
+        decoded
+            .fields
+            .iter()
+            .find_map(|(field, value)| match value {
+                InstanceField::String(text) if field == wanted && !text.is_empty() => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+    };
+    let mut properties = Vec::new();
+    if let Some(id) = decoded.id {
+        properties.push(Property {
+            name: ROOM_ELEMENT_ID_PROPERTY.into(),
+            value: PropertyValue::Integer(i64::from(id)),
+        });
+    }
+    if let Some(number) = text(crate::partition_schema_mvp::ROOM_NUMBER_FIELD) {
+        properties.push(Property {
+            name: ROOM_NUMBER_PROPERTY.into(),
+            value: PropertyValue::Text(number),
+        });
+    }
+    if let Some(name) = text("m_name") {
+        properties.push(Property {
+            name: ROOM_NAME_PROPERTY.into(),
+            value: PropertyValue::Text(name),
+        });
+    }
+    let level = decoded
+        .fields
+        .iter()
+        .find_map(|(field, value)| match value {
+            InstanceField::ElementId { id, .. }
+                if field == crate::element_record_level_refs::LEVEL_REFERENCE_FIELD =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        });
+    if let Some(id) = level {
+        properties.push(Property {
+            name: crate::element_record_level_refs::LEVEL_ELEMENT_ID_PROPERTY.into(),
+            value: PropertyValue::Integer(i64::from(id)),
+        });
+        properties.push(Property {
+            name: "LevelBindSource".into(),
+            value: PropertyValue::Text(
+                crate::element_record_level_refs::LEVEL_REFERENCE_SOURCE.into(),
+            ),
+        });
+    }
+    PropertySet {
+        name: ELEMENT_RECORD_PROPERTY_SET.into(),
+        properties,
+    }
+}
+
 /// Strip placement / body / host claims so an export cannot over-claim geometry.
 pub fn strip_building_element_geometry(entities: &mut [entities::IfcEntity]) {
     for entity in entities.iter_mut() {
@@ -255,6 +335,16 @@ pub fn strip_building_element_geometry(entities: &mut [entities::IfcEntity]) {
             *solid_shape = None;
             *representation_map_index = None;
         }
+        // #847: a port's point and axis are geometry too.
+        if let entities::IfcEntity::Port {
+            location_feet,
+            direction,
+            ..
+        } = entity
+        {
+            *location_feet = None;
+            *direction = None;
+        }
     }
 }
 
@@ -270,11 +360,21 @@ pub fn append_typed_production_elements(
     // RE-84: doors and windows whose type draws no geometry.
     let mut without_geometry: std::collections::BTreeSet<usize> = Default::default();
     let mut pending_parts: Vec<(usize, u32)> = Vec::new();
+    // RE-194: each element's parameters named for a standard set's property,
+    // written once the entity it is written as is final.
+    let mut pending_named: Vec<(usize, Vec<(String, Property)>)> = Vec::new();
+    // #331, #816: each element written in pieces, and its further pieces.
+    let mut pieces_of: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
+    // #822: the sets holding `Reference` for each entity and predefined type
+    // written, worked out once.
+    let mut reference_kinds: ReferenceKinds = Default::default();
     // RE-138: the joins of ducts and pipes, by entity index and ElementId.
     let mut pending_joins: Vec<(usize, u32, crate::partition_schema_mvp::ConnectorJoins)> =
         Vec::new();
     // B54: each duct and pipe, by entity index and ElementId.
-    let mut curve_ends: Vec<(usize, u32)> = Vec::new();
+    let mut curve_ends: Vec<(usize, u32, &'static str)> = Vec::new();
+    // #847: each pipe's two ends and the connector entry keys at each.
+    let mut pipe_ends: BTreeMap<usize, PipeEnds> = BTreeMap::new();
     // RE-162: each MEP system's name and members, by its ElementId.
     let mut pending_systems: std::collections::BTreeMap<u32, (Option<String>, Vec<usize>)> =
         Default::default();
@@ -424,10 +524,18 @@ pub fn append_typed_production_elements(
         // entity type (#212, RE-22). Only values `category_map`
         // recognises are honoured; anything else keeps the class
         // mapping, so an unknown override can never invent a type.
+        // #864: Revit's export writes a mass only where its own "Export to
+        // IFC As" names an entity, as the BIM4LCA office's two VOLUME masses
+        // name IfcSpace.
+        if decoded.class == "Mass" && ifc_export_override(&decoded).is_none() {
+            continue;
+        }
         let effective = ifc_export_override(&decoded).unwrap_or(mapping);
         let ifc_type = effective.ifc_type.to_string();
+        let family_space = space_by_export_value(&decoded);
         // RE-45: the element's own or its type's IFC predefined type, when
-        // it is an enumerator of the entity it exports as.
+        // it is an enumerator of the entity it exports as; a family instance
+        // written as a space through its value takes its own (#763).
         let predefined_type = decoded
             .fields
             .iter()
@@ -435,7 +543,11 @@ pub fn append_typed_production_elements(
                 InstanceField::String(text)
                     if name == crate::partition_schema_mvp::IFC_PREDEFINED_TYPE_FIELD =>
                 {
-                    category_map::predefined_type_for(effective.ifc_type, text)
+                    category_map::predefined_type_for(effective.ifc_type, text).or_else(|| {
+                        family_space
+                            .then(|| category_map::space_predefined_type_for(text))
+                            .flatten()
+                    })
                 }
                 _ => None,
             })
@@ -564,6 +676,9 @@ pub fn append_typed_production_elements(
                             property_set = Some(geom);
                         }
                     }
+                    // #763: an Area's record holds no box, so its space has
+                    // no body, but it is named as a room's is.
+                    "Area" => property_set = Some(area_property_set(&decoded)),
                     _ => {}
                 }
             }
@@ -650,8 +765,41 @@ pub fn append_typed_production_elements(
             if !joins.is_empty() {
                 pending_joins.push((entity_index, id, joins));
             }
-            if matches!(decoded.class.as_str(), "Duct" | "Pipe") {
-                curve_ends.push((entity_index, id));
+            // #828: a duct's ports are DUCT ports, a pipe's PIPE ports.
+            match decoded.class.as_str() {
+                "Duct" => {
+                    curve_ends.push((entity_index, id, "DUCT"));
+                    if let Some(ends) =
+                        crate::partition_schema_mvp::duct_ends_from_fields(&decoded.fields)
+                    {
+                        pipe_ends.insert(
+                            entity_index,
+                            (
+                                ends,
+                                crate::partition_schema_mvp::duct_end_keys_from_fields(
+                                    &decoded.fields,
+                                ),
+                            ),
+                        );
+                    }
+                }
+                "Pipe" => {
+                    curve_ends.push((entity_index, id, "PIPE"));
+                    if let Some(body) =
+                        crate::partition_schema_mvp::pipe_body_from_fields(&decoded.fields)
+                    {
+                        pipe_ends.insert(
+                            entity_index,
+                            (
+                                [body.start, body.end],
+                                crate::partition_schema_mvp::pipe_end_keys_from_fields(
+                                    &decoded.fields,
+                                ),
+                            ),
+                        );
+                    }
+                }
+                _ => {}
             }
         }
         // RE-162: the MEP systems the element is a member of.
@@ -672,11 +820,18 @@ pub fn append_typed_production_elements(
         }
 
         let mut reference_sets = reference_type
-            .map(|type_name| reference_property_sets(&ifc_type, &type_name))
+            .map(|type_name| {
+                let kinds = reference_kinds
+                    .entry((ifc_type.clone(), predefined_type))
+                    .or_insert_with(|| reference_set_kinds(&ifc_type, predefined_type));
+                reference_property_sets(kinds, &type_name)
+            })
             .unwrap_or_default();
         add_is_external(&mut reference_sets, &ifc_type, &decoded, opening_only);
         add_covering_finish(&mut reference_sets, &ifc_type, &decoded);
-        let serial_sets = serial_number_property_sets(&decoded, &ifc_type);
+        let mut serial_sets = serial_number_property_sets(&decoded);
+        serial_sets.extend(revit_parameter_property_sets(&decoded));
+        let named = named_parameter_properties(&decoded);
         // RE-151: the name of the openings of a floor's tagged voids.
         // B55: the openings a wall's edited elevation profile cuts, in the
         // wall's plane relative to its placement.
@@ -735,6 +890,11 @@ pub fn append_typed_production_elements(
                 _ => format!("Opening for {name}"),
             }
         });
+        let level_set = level_parameter_property_set(&decoded, &ifc_type);
+        // #823: Revit's export writes a ceiling of separate loops as one
+        // covering whose body holds every piece, where it splits a floor.
+        let pieces_in_body =
+            PIECES_IN_BODY_CLASSES.contains(&decoded.class.as_str()) && solid_shape.is_none();
         entities.push(entities::IfcEntity::BuildingElement {
             ifc_type,
             name,
@@ -758,6 +918,7 @@ pub fn append_typed_production_elements(
         if !piece_bodies.is_empty() {
             if let Some(entities::IfcEntity::BuildingElement { .. }) = entities.last() {
                 let first = entities.last().cloned().expect("just pushed");
+                let start = entities.len();
                 for (index, body) in piece_bodies.into_iter().enumerate() {
                     let mut piece = first.clone();
                     if let entities::IfcEntity::BuildingElement {
@@ -769,6 +930,11 @@ pub fn append_typed_production_elements(
                     }
                     entities.push(piece);
                 }
+                if pieces_in_body {
+                    out.body_pieces
+                        .insert(entity_index, (start..entities.len()).collect());
+                }
+                pieces_of.push((entity_index, start..entities.len()));
             }
         }
         // RE-151: each tagged void of a floor's sketch is an opening voiding
@@ -798,6 +964,14 @@ pub fn append_typed_production_elements(
                 });
             }
         }
+        // RE-172: the Level parameters, in the `Constraints` set Revit's
+        // export writes them in.
+        if let Some(set) = level_set {
+            entities.push(entities::IfcEntity::ElementPropertySet {
+                element: entity_index,
+                set,
+            });
+        }
         // RE-47: a stair's or flight's riser and tread dimensions, in the
         // standard set Revit's export writes them in.
         if let Some(set) = stair_property_set(&decoded) {
@@ -806,35 +980,19 @@ pub fn append_typed_production_elements(
                 set,
             });
         }
-        // RE-153: a room's Pset_SpaceCommon.
-        if let Some(set) = space_common_property_set(&decoded) {
+        // RE-153: a room's Pset_SpaceCommon and its Floor Finish.
+        for set in space_common_property_set(&decoded)
+            .into_iter()
+            .chain(space_covering_property_set(&decoded))
+        {
             entities.push(entities::IfcEntity::ElementPropertySet {
                 element: entity_index,
                 set,
             });
         }
-        // #35: the two sets holding a room's name, as Revit's export gives
-        // every space.
-        if decoded.class == "Room" {
-            let name = decoded
-                .fields
-                .iter()
-                .find_map(|(field, value)| match value {
-                    InstanceField::String(text) if field == "m_name" && !text.is_empty() => {
-                        Some(text.as_str())
-                    }
-                    _ => None,
-                });
-            for set in name.map(PropertySet::name_sets).unwrap_or_default() {
-                entities.push(entities::IfcEntity::ElementPropertySet {
-                    element: entity_index,
-                    set,
-                });
-            }
-        }
-        // A pipe's or duct's length along its axis, which Revit's export gives
-        // in both flow-segment sets: a pipe's between its ends (RE-131), a
-        // duct's the dimension of its box its section leaves (RE-134).
+        // A pipe's or duct's length along its axis: a pipe's between its
+        // ends (RE-131), a duct's the dimension of its box its section leaves
+        // (RE-134).
         let segment_length = match decoded.class.as_str() {
             "Pipe" => {
                 crate::partition_schema_mvp::pipe_body_from_fields(&decoded.fields).map(|pipe| {
@@ -854,30 +1012,6 @@ pub fn append_typed_production_elements(
             }),
             _ => None,
         };
-        // RE-165 (B44): a pipe fitting's nominal size, the one diameter its
-        // connectors give, as Revit's export writes it: a list of one length.
-        let fitting_diameter = decoded.fields.iter().find_map(|(name, value)| match value {
-            InstanceField::Float { value, .. }
-                if name == crate::partition_schema_mvp::FITTING_NOMINAL_DIAMETER_FIELD =>
-            {
-                Some(*value)
-            }
-            _ => None,
-        });
-        if let Some(diameter) = fitting_diameter {
-            entities.push(entities::IfcEntity::ElementPropertySet {
-                element: entity_index,
-                set: PropertySet {
-                    name: "Pset_PipeFittingTypeCommon".into(),
-                    properties: vec![Property {
-                        name: "NominalDiameter".into(),
-                        value: PropertyValue::List(vec![PropertyValue::PositiveLengthFeet(
-                            diameter,
-                        )]),
-                    }],
-                },
-            });
-        }
         let duct_shape = decoded.fields.iter().find_map(|(name, value)| match value {
             InstanceField::String(shape)
                 if name == crate::partition_schema_mvp::DUCT_SHAPE_FIELD =>
@@ -888,63 +1022,77 @@ pub fn append_typed_production_elements(
         });
         // RE-157: a pipe's invert, here in model height; the storey's
         // elevation comes off once storeys are bound
-        // (`pipe_inverts_above_storeys`).
+        // (`pipe_inverts_above_storeys`). A pipe whose parameter named for
+        // the property gives it (RE-194) has that, as it is.
+        let explicit_invert = named.iter().any(|(set, property)| {
+            set == "Pset_PipeSegmentOccurrence" && property.name == INVERT_ELEVATION_PROPERTY
+        });
         let invert = match decoded.class.as_str() {
-            "Pipe" => pipe_invert_height(&decoded.fields),
+            "Pipe" if !explicit_invert => pipe_invert_height(&decoded.fields),
             _ => None,
         };
-        if let Some(length) = segment_length {
-            for name in ["Pset_FlowSegmentPipeSegment", "Pset_FlowSegmentDuctSegment"] {
-                let mut properties = vec![Property {
-                    name: "Length".into(),
-                    value: PropertyValue::PositiveLengthFeet(length),
-                }];
-                if let (Some(height), "Pset_FlowSegmentPipeSegment") = (invert, name) {
-                    properties.push(Property {
+        // #822: the length in IFC4's base quantities of the segment, where
+        // Revit's IFC4 export writes it (IFC2X3's flow-segment sets held it
+        // as a property), and a pipe's invert in Pset_PipeSegmentOccurrence,
+        // on an element written as a pipe or duct segment only, not one its
+        // Export to IFC As writes as another entity.
+        let segment_sets = match effective.ifc_type {
+            "IFCPIPESEGMENT" => Some((
+                "Qto_PipeSegmentBaseQuantities",
+                invert.map(|height| PropertySet {
+                    name: "Pset_PipeSegmentOccurrence".into(),
+                    properties: vec![Property {
                         name: INVERT_ELEVATION_PROPERTY.into(),
                         value: PropertyValue::LengthFeet(height),
-                    });
-                }
+                    }],
+                }),
+            )),
+            "IFCDUCTSEGMENT" => Some(("Qto_DuctSegmentBaseQuantities", None)),
+            _ => None,
+        };
+        if let Some((quantities, occurrence)) = segment_sets {
+            let quantities = segment_length.map(|length| PropertySet {
+                name: quantities.into(),
+                properties: vec![Property {
+                    name: "Length".into(),
+                    value: PropertyValue::PositiveLengthFeet(length),
+                }],
+            });
+            if let Some(set) = quantities {
                 entities.push(entities::IfcEntity::ElementPropertySet {
                     element: entity_index,
-                    set: PropertySet {
-                        name: name.into(),
-                        properties,
-                    },
+                    set,
+                });
+            }
+            if let Some(set) = occurrence {
+                out.computed_inverts.push(entities.len());
+                entities.push(entities::IfcEntity::ElementPropertySet {
+                    element: entity_index,
+                    set,
                 });
             }
         }
-        // A duct's Pset_DuctSegmentTypeCommon: its length, as on every RE1
-        // Mechanical duct, and its type's shape (B43), each where it is known.
-        if decoded.class == "Duct" {
-            let properties: Vec<Property> = segment_length
-                .map(|length| Property {
-                    name: "Length".into(),
-                    value: PropertyValue::PositiveLengthFeet(length),
-                })
-                .into_iter()
-                .chain(duct_shape.map(|shape| Property {
-                    name: "Shape".into(),
-                    value: PropertyValue::Enumerated(vec![shape]),
-                }))
-                .collect();
-            if !properties.is_empty() {
-                entities.push(entities::IfcEntity::ElementPropertySet {
-                    element: entity_index,
-                    set: PropertySet {
-                        name: "Pset_DuctSegmentTypeCommon".into(),
-                        properties,
-                    },
-                });
-            }
+        // A duct's Pset_DuctSegmentTypeCommon: its type's shape (B43), where
+        // it is known and the duct is written as a duct segment.
+        if let Some(shape) = duct_shape.filter(|_| effective.ifc_type == "IFCDUCTSEGMENT") {
+            entities.push(entities::IfcEntity::ElementPropertySet {
+                element: entity_index,
+                set: PropertySet {
+                    name: "Pset_DuctSegmentTypeCommon".into(),
+                    properties: vec![Property {
+                        name: "Shape".into(),
+                        value: PropertyValue::Enumerated(vec![shape]),
+                    }],
+                },
+            });
         }
         // RE-154: the common property sets' Reference, the type's name;
         // RE-156: the shared parameter Serial Number.
         for set in reference_sets.into_iter().chain(serial_sets) {
-            entities.push(entities::IfcEntity::ElementPropertySet {
-                element: entity_index,
-                set,
-            });
+            add_element_set(entities, entity_index, set);
+        }
+        if !named.is_empty() {
+            pending_named.push((entity_index, named));
         }
     }
 
@@ -1021,6 +1169,20 @@ pub fn append_typed_production_elements(
             )
     };
     let mut connections: std::collections::BTreeSet<[(usize, u32, u32); 2]> = Default::default();
+    // #847: each connector's joins, read from either side's list.
+    let mut joined: HashMap<(u32, u32), Vec<(u32, u32)>> = HashMap::new();
+    for (_, id, joins) in &pending_joins {
+        for &(index, other_id, other_index) in joins {
+            joined
+                .entry((*id, index))
+                .or_default()
+                .push((other_id, other_index));
+            joined
+                .entry((other_id, other_index))
+                .or_default()
+                .push((*id, index));
+        }
+    }
     for (entity, id, joins) in pending_joins {
         for (index, other_id, other_index) in joins {
             let Some(&other) = out.id_to_entity.get(&other_id) else {
@@ -1034,9 +1196,9 @@ pub fn append_typed_production_elements(
             connections.insert(ends);
         }
     }
-    let curve_ends: Vec<(usize, u32)> = curve_ends
+    let curve_ends: Vec<(usize, u32, &'static str)> = curve_ends
         .into_iter()
-        .filter(|(element, _)| is_distribution(*element))
+        .filter(|(element, _, _)| is_distribution(*element))
         .collect();
     for [(a, a_id, a_index), (b, b_id, b_index)] in connections {
         entities.push(entities::IfcEntity::PortConnection {
@@ -1049,9 +1211,20 @@ pub fn append_typed_production_elements(
         });
     }
     // B54: both ends of every duct and pipe, joined or not.
-    for (element, id) in curve_ends {
+    for (element, id, kind) in curve_ends {
         for index in 0..2 {
-            entities.push(entities::IfcEntity::Port { element, id, index });
+            let place = pipe_ends
+                .get(&element)
+                .and_then(|ends| pipe_port_point(id, index, ends, &joined));
+            entities.push(entities::IfcEntity::Port {
+                element,
+                id,
+                index,
+                predefined_type: Some(kind.to_string()),
+                flow_direction: None,
+                location_feet: place.map(|(point, _)| point),
+                direction: place.map(|(_, outward)| outward),
+            });
         }
     }
     for (id, (name, members)) in pending_systems {
@@ -1080,6 +1253,8 @@ pub fn append_typed_production_elements(
             }
         }
     }
+    add_named_parameter_sets(entities, pending_named);
+    add_piece_sets(entities, pieces_of);
 
     out
 }
@@ -1249,6 +1424,67 @@ fn wall_geometry_from_decoded(decoded: &DecodedElement) -> Option<RecoveredWallG
     })
 }
 
+/// Revit's `Constraints` properties for the Level an element's association
+/// record names (RE-172), under the names Revit's export uses for its class.
+fn level_parameter_property_set(decoded: &DecodedElement, ifc_type: &str) -> Option<PropertySet> {
+    use crate::partition_level_parameters as lp;
+    let text = |wanted: &str| {
+        decoded.fields.iter().find_map(|(name, value)| match value {
+            InstanceField::String(v) if name == wanted => Some(v.clone()),
+            _ => None,
+        })
+    };
+    let (level, from_list) = match text(lp::LEVEL_PARAMETER_FIELD) {
+        Some(level) => (
+            level,
+            decoded.fields.iter().any(|(name, value)| {
+                name == crate::partition_schema_mvp::LEVEL_FROM_LIST_FIELD
+                    && matches!(value, InstanceField::Bool(true))
+            }),
+        ),
+        // The highest of several listed Levels is the Reference Level of a
+        // beam or brace only (RE-175).
+        None if matches!(ifc_type, "IFCBEAM" | "IFCMEMBER") => (
+            text(crate::partition_schema_mvp::REFERENCE_LEVEL_FROM_LIST_FIELD)?,
+            true,
+        ),
+        None => return None,
+    };
+    let names: &[&str] = match ifc_type {
+        "IFCBEAM" => &["Reference Level"],
+        "IFCMEMBER" if from_list => &["Reference Level"],
+        "IFCWALL" | "IFCCURTAINWALL" => &["Base Constraint"],
+        "IFCCOLUMN" => &["Base Level", "Level"],
+        "IFCRAILING" | "IFCROOF" | "IFCSTAIR" => &["Base Level"],
+        "IFCDUCTSEGMENT" | "IFCPIPESEGMENT" => &["Reference Level"],
+        _ => &["Level"],
+    };
+    let mut properties: Vec<Property> = names
+        .iter()
+        .map(|name| Property {
+            name: (*name).into(),
+            value: PropertyValue::Label(level.clone()),
+        })
+        .collect();
+    if let Some(top) = text(lp::TOP_LEVEL_PARAMETER_FIELD) {
+        match ifc_type {
+            "IFCWALL" | "IFCCURTAINWALL" => properties.push(Property {
+                name: "Top Constraint".into(),
+                value: PropertyValue::Label(format!("Up to level: {top}")),
+            }),
+            "IFCSTAIR" => properties.push(Property {
+                name: "Top Level".into(),
+                value: PropertyValue::Label(top),
+            }),
+            _ => {}
+        }
+    }
+    Some(PropertySet {
+        name: "Constraints".into(),
+        properties,
+    })
+}
+
 /// `Pset_StairCommon` for a stair and `Pset_StairFlightCommon` for a
 /// flight, holding the number of risers, riser height and tread length
 /// their data records (RE-47), with the measure types those standard sets
@@ -1285,69 +1521,140 @@ fn stair_property_set(decoded: &DecodedElement) -> Option<PropertySet> {
     })
 }
 
-/// The property sets whose `Reference` Revit's export gives an element of
-/// `ifc_type` (RE-154), each holding the type's name: `Pset_QuantityTakeOff`,
-/// the entity's common set, and on walls and slabs its reinforcement-pitch
-/// set, which declares `Reference` an `IfcLabel`. Only the entities measured
-/// on the RE1 models' exports are listed, with the IFC4 subtypes rvt-rs writes
-/// for Revit's flow, furnishing and control elements; any other gets none.
-fn reference_property_sets(ifc_type: &str, type_name: &str) -> Vec<PropertySet> {
-    let common: &[(&str, bool)] = match ifc_type {
-        "IFCWALL" => &[
-            ("Pset_WallCommon", true),
-            ("Pset_ReinforcementBarPitchOfWall", false),
-        ],
-        "IFCSLAB" => &[
-            ("Pset_SlabCommon", true),
-            ("Pset_ReinforcementBarPitchOfSlab", false),
-        ],
-        "IFCDOOR" => &[("Pset_DoorCommon", true)],
-        "IFCCOVERING" => &[("Pset_CoveringCommon", true)],
-        "IFCCURTAINWALL" => &[("Pset_CurtainWallCommon", true)],
-        "IFCMEMBER" => &[("Pset_MemberCommon", true)],
-        "IFCPLATE" => &[("Pset_PlateCommon", true)],
-        "IFCRAILING" => &[("Pset_RailingCommon", true)],
-        "IFCBUILDINGELEMENTPROXY" => &[("Pset_BuildingElementProxyCommon", true)],
-        // Revit's export writes these as IfcFlowTerminal, IfcFlowFitting and
-        // IfcFlowSegment; rvt-rs writes the IFC4 subtypes.
-        "IFCFLOWTERMINAL"
-        | "IFCFLOWFITTING"
-        | "IFCFLOWSEGMENT"
-        | "IFCDUCTSEGMENT"
-        | "IFCPIPESEGMENT"
-        | "IFCDUCTFITTING"
-        | "IFCPIPEFITTING"
-        | "IFCAIRTERMINAL"
-        | "IFCSANITARYTERMINAL"
-        | "IFCLIGHTFIXTURE"
-        | "IFCELECTRICAPPLIANCE" => &[("Pset_DistributionFlowElementCommon", true)],
-        // IfcFurnishingElement and IfcDistributionControlElement in Revit's.
-        "IFCFURNISHINGELEMENT" | "IFCFURNITURE" | "IFCDISTRIBUTIONCONTROLELEMENT" | "IFCALARM" => {
-            &[]
-        }
-        _ => return Vec::new(),
-    };
-    std::iter::once(("Pset_QuantityTakeOff", true))
-        .chain(common.iter().copied())
-        .map(|(name, identifier)| PropertySet {
-            name: name.into(),
-            properties: vec![Property {
-                name: "Reference".into(),
-                value: if identifier {
-                    PropertyValue::Identifier(type_name.to_string())
-                } else {
-                    PropertyValue::Label(type_name.to_string())
-                },
-            }],
+/// The sets holding `Reference` of each entity and predefined type written
+/// ([`reference_set_kinds`]).
+type ReferenceKinds = std::collections::BTreeMap<
+    (String, Option<&'static str>),
+    Vec<(
+        &'static str,
+        super::standard_property_sets::StandardPropertyKind,
+    )>,
+>;
+
+/// The property sets whose `Reference` an element written as `ifc_type`, with
+/// the predefined type `predefined_type`, gets (RE-154, #822), each with the
+/// type it declares `Reference` as: every IFC4 standard set that applies to
+/// the entity and declares `Reference` (`IfcLabel` in the reinforcement
+/// sets). Revit's IFC4 export gives the BIM4LCA office's elements exactly
+/// these sets, but for those revit-ifc matches by a prefix of the entity's
+/// name, such as `Pset_StairFlightCommon` on a stair. None for a space,
+/// whose `Reference` is [`space_common_property_set`]'s.
+fn reference_set_kinds(
+    ifc_type: &str,
+    predefined_type: Option<&str>,
+) -> Vec<(
+    &'static str,
+    super::standard_property_sets::StandardPropertyKind,
+)> {
+    use super::standard_property_sets::STANDARD_PROPERTY_SETS;
+    if ifc_type == "IFCSPACE" {
+        return Vec::new();
+    }
+    STANDARD_PROPERTY_SETS
+        .iter()
+        .filter(|set| set.applies_to(ifc_type, predefined_type))
+        .filter_map(|set| Some((set.name, set.property_kind("Reference")?)))
+        .collect()
+}
+
+/// The sets `kinds` ([`reference_set_kinds`]), each holding `type_name` as
+/// its `Reference`.
+fn reference_property_sets(
+    kinds: &[(
+        &'static str,
+        super::standard_property_sets::StandardPropertyKind,
+    )],
+    type_name: &str,
+) -> Vec<PropertySet> {
+    use super::standard_property_sets::StandardPropertyKind as Kind;
+    kinds
+        .iter()
+        .filter_map(|(name, kind)| {
+            let value = match kind {
+                Kind::Identifier => PropertyValue::Identifier(type_name.to_string()),
+                Kind::Label => PropertyValue::Label(type_name.to_string()),
+                Kind::Text => PropertyValue::Text(type_name.to_string()),
+                _ => return None,
+            };
+            Some(PropertySet {
+                name: (*name).into(),
+                properties: vec![Property {
+                    name: "Reference".into(),
+                    value,
+                }],
+            })
         })
         .collect()
 }
 
-/// The sets Revit's export gives an element's shared parameter `Serial
-/// Number` in (RE-156): `Pset_ManufacturerOccurrence`, and on a
-/// building-element proxy also `Pset_PrecastConcreteElementGeneral`, each
-/// with `SerialNumber` (`IfcIdentifier`). Empty when the element has none.
-fn serial_number_property_sets(decoded: &DecodedElement, ifc_type: &str) -> Vec<PropertySet> {
+/// The set Revit's own IFC export writes an element's Category, family and
+/// type in, and its type object's Category and Family Name (spike 257).
+pub const REVIT_OTHER_SET: &str = "Other";
+
+/// The parameters Revit's own IFC export writes on an element for its
+/// category, family, type and phase, under its set and property names
+/// (spike 257): `Other` (Category, Family, Family and Type, Type, Type Id)
+/// and `Phasing` (Phase Created). Each is written only from a value the
+/// element carries. The type's own parameters (Family Name, Type Name) go on
+/// its type object, as Revit writes them.
+fn revit_parameter_property_sets(decoded: &DecodedElement) -> Vec<PropertySet> {
+    use crate::partition_schema_mvp as mvp;
+    let text = |key: &str| {
+        decoded.fields.iter().find_map(|(name, value)| match value {
+            InstanceField::String(v) if name == key => Some(v.clone()),
+            _ => None,
+        })
+    };
+    let label = |name: &str, value: String| Property {
+        name: name.into(),
+        value: PropertyValue::Label(value),
+    };
+    let mut other = Vec::new();
+    if let Some(category) = decoded.fields.iter().find_map(|(name, value)| match value {
+        InstanceField::Integer { value, .. } if name == "m_builtinCategory" => {
+            crate::partition_element_records::builtin_category_name(*value)
+        }
+        _ => None,
+    }) {
+        other.push(label("Category", category.into()));
+    }
+    let type_name = text(mvp::TYPE_NAME_FIELD);
+    if let (Some(family), Some(type_name)) = (text(mvp::FAMILY_NAME_FIELD), &type_name) {
+        other.push(label("Family", family.clone()));
+        other.push(label("Family and Type", format!("{family}: {type_name}")));
+    }
+    if let Some(type_name) = &type_name {
+        other.push(label("Type", type_name.clone()));
+    }
+    if let Some(type_id) = decoded.fields.iter().find_map(|(name, value)| match value {
+        InstanceField::ElementId { id, .. } if name == mvp::TYPE_ID_FIELD => Some(*id),
+        _ => None,
+    }) {
+        other.push(label("Type Id", type_id.to_string()));
+    }
+    let mut sets = Vec::new();
+    if !other.is_empty() {
+        sets.push(PropertySet {
+            name: REVIT_OTHER_SET.into(),
+            properties: other,
+        });
+    }
+    if let Some(phase) = text(mvp::PHASE_CREATED_FIELD) {
+        sets.push(PropertySet {
+            name: "Phasing".into(),
+            properties: vec![label("Phase Created", phase)],
+        });
+    }
+    sets
+}
+
+/// The set Revit's export gives an element's shared parameter `Serial
+/// Number` in (RE-156): `Pset_ManufacturerOccurrence.SerialNumber`
+/// (`IfcIdentifier`), where IFC4 declares it. Revit's IFC2X3 export of the
+/// RE1 models also gives a building-element proxy
+/// `Pset_PrecastConcreteElementGeneral.SerialNumber`, which IFC4's set does
+/// not have (#822). Empty when the element has none.
+fn serial_number_property_sets(decoded: &DecodedElement) -> Vec<PropertySet> {
     use crate::partition_schema_mvp as mvp;
     let serial = decoded
         .fields
@@ -1359,29 +1666,68 @@ fn serial_number_property_sets(decoded: &DecodedElement, ifc_type: &str) -> Vec<
     let Some(serial) = serial.filter(|text| !text.is_empty()) else {
         return Vec::new();
     };
-    let proxy = ifc_type == "IFCBUILDINGELEMENTPROXY";
-    [
-        "Pset_ManufacturerOccurrence",
-        "Pset_PrecastConcreteElementGeneral",
-    ]
-    .into_iter()
-    .filter(|set| proxy || *set == "Pset_ManufacturerOccurrence")
-    .map(|set| PropertySet {
-        name: set.into(),
+    vec![PropertySet {
+        name: "Pset_ManufacturerOccurrence".into(),
         properties: vec![Property {
             name: "SerialNumber".into(),
             value: PropertyValue::Identifier(serial.clone()),
         }],
-    })
-    .collect()
+    }]
 }
 
-/// Add `IsExternal` (`IfcBoolean`) to a door's `Pset_DoorCommon` or a
-/// slab's `Pset_SlabCommon` among `sets`, from its type's Function, 0
-/// interior or 1 exterior (RE-158), starting the set when the element has
-/// none (no type name for its `Reference`). Nothing for another Function,
-/// which RE1 does not show, when the type's Function was not read, or for a
-/// door written as its opening alone (RE-84).
+/// The common property set Revit's export writes `IsExternal` in on an
+/// element exported as `ifc_type` (RE-193).
+fn is_external_set(ifc_type: &str) -> Option<&'static str> {
+    Some(match ifc_type {
+        "IFCWALL" | "IFCWALLSTANDARDCASE" => "Pset_WallCommon",
+        "IFCCURTAINWALL" => "Pset_CurtainWallCommon",
+        "IFCDOOR" => "Pset_DoorCommon",
+        "IFCWINDOW" => "Pset_WindowCommon",
+        "IFCSLAB" => "Pset_SlabCommon",
+        "IFCROOF" => "Pset_RoofCommon",
+        "IFCCOLUMN" => "Pset_ColumnCommon",
+        "IFCBEAM" => "Pset_BeamCommon",
+        "IFCMEMBER" => "Pset_MemberCommon",
+        "IFCPLATE" => "Pset_PlateCommon",
+        "IFCCOVERING" => "Pset_CoveringCommon",
+        "IFCRAILING" => "Pset_RailingCommon",
+        "IFCRAMP" => "Pset_RampCommon",
+        "IFCSTAIR" => "Pset_StairCommon",
+        "IFCBUILDINGELEMENTPROXY" => "Pset_BuildingElementProxyCommon",
+        "IFCSPACE" => "Pset_SpaceCommon",
+        _ => return None,
+    })
+}
+
+/// An element's `IsExternal` in its common property set `set` (RE-193): the
+/// Yes/No parameter named `<set>.IsExternal` on the element, which revit-ifc's
+/// property set entry reads before anything else (`PropertySetEntry
+/// ("Pset_WallCommon.IsExternal", "IsExternal")` in its pset definitions,
+/// CLEANROOM.md source 5), else the value Revit's exporter calculates
+/// ([`crate::partition_schema_mvp::IS_EXTERNAL_FIELD`]). `None` where neither
+/// is read.
+fn is_external_value(decoded: &DecodedElement, set: &str) -> Option<bool> {
+    use crate::partition_schema_mvp as mvp;
+    let flag = |wanted: &str| {
+        decoded.fields.iter().find_map(|(name, value)| match value {
+            InstanceField::Bool(flag) if name == wanted => Some(*flag),
+            _ => None,
+        })
+    };
+    flag(&format!(
+        "{}{set}.{}",
+        mvp::NAMED_PARAMETER_FIELD_PREFIX,
+        mvp::IS_EXTERNAL_PARAMETER_NAME
+    ))
+    .or_else(|| flag(mvp::IS_EXTERNAL_FIELD))
+}
+
+/// Add `IsExternal` (`IfcBoolean`) to the common property set of the entity
+/// an element is exported as, among `sets` ([`is_external_value`], RE-193),
+/// starting the set when the element has none (no type name for its
+/// `Reference`). Nothing where no value is read, for a door written as its
+/// opening alone (RE-84), or for a space, whose set
+/// [`space_common_property_set`] writes.
 fn add_is_external(
     sets: &mut Vec<PropertySet>,
     ifc_type: &str,
@@ -1391,23 +1737,11 @@ fn add_is_external(
     if opening_only {
         return;
     }
-    let common = match ifc_type {
-        "IFCDOOR" => "Pset_DoorCommon",
-        "IFCSLAB" => "Pset_SlabCommon",
-        _ => return,
+    let Some(common) = is_external_set(ifc_type).filter(|set| *set != "Pset_SpaceCommon") else {
+        return;
     };
-    let function = decoded.fields.iter().find_map(|(name, value)| match value {
-        InstanceField::Integer { value, .. }
-            if name == crate::partition_schema_mvp::TYPE_FUNCTION_FIELD =>
-        {
-            Some(*value)
-        }
-        _ => None,
-    });
-    let external = match function {
-        Some(0) => false,
-        Some(1) => true,
-        _ => return,
+    let Some(external) = is_external_value(decoded, common) else {
+        return;
     };
     let property = Property {
         name: "IsExternal".into(),
@@ -1450,7 +1784,263 @@ fn add_covering_finish(sets: &mut [PropertySet], ifc_type: &str, decoded: &Decod
     }
 }
 
-/// The property of `Pset_FlowSegmentPipeSegment` holding a pipe's invert.
+/// The property Revit's exporter fills from a type's Fire Rating (RE-77).
+const FIRE_RATING_PROPERTY: &str = "FireRating";
+
+/// The values of the parameters named `<property set>.<property>` an element
+/// carries (RE-194), by set: the properties [`super::standard_property_sets`]
+/// lists, each as the IFC4 type it declares. `IsExternal` is
+/// [`add_is_external`]'s. Then its type's Fire Rating (RE-77) as the
+/// `FireRating` of each standard set declaring one that the element's own
+/// parameters leave without it: Revit's exporter reads the parameter named
+/// for the property first and the type's Fire Rating after it, as its
+/// export of the BIM4LCA office shows (26 walls with no such parameter carry
+/// their type's, and 4 whose parameter differs from their type's carry the
+/// parameter's).
+fn named_parameter_properties(decoded: &DecodedElement) -> Vec<(String, Property)> {
+    use super::standard_property_sets::{self as sps, StandardPropertyKind as Kind};
+    use crate::partition_schema_mvp as mvp;
+    let mut properties = Vec::new();
+    for (field, value) in &decoded.fields {
+        let Some((set, property)) = field
+            .strip_prefix(mvp::NAMED_PARAMETER_FIELD_PREFIX)
+            .and_then(|name| name.split_once('.'))
+        else {
+            continue;
+        };
+        if property == mvp::IS_EXTERNAL_PARAMETER_NAME {
+            continue;
+        }
+        let value = match (sps::property_kind(set, property), value) {
+            (Some(Kind::Boolean), InstanceField::Bool(flag)) => PropertyValue::Boolean(*flag),
+            (Some(Kind::Identifier), InstanceField::String(text)) => {
+                PropertyValue::Identifier(text.clone())
+            }
+            (Some(Kind::Label), InstanceField::String(text)) => PropertyValue::Label(text.clone()),
+            (Some(Kind::Text), InstanceField::String(text)) => PropertyValue::Text(text.clone()),
+            (Some(Kind::Count), InstanceField::Integer { value, .. }) => {
+                PropertyValue::CountValue(*value)
+            }
+            (Some(Kind::Integer), InstanceField::Integer { value, .. }) => {
+                PropertyValue::Integer(*value)
+            }
+            (Some(Kind::Length), InstanceField::Float { value, .. }) => {
+                PropertyValue::LengthFeet(*value)
+            }
+            (Some(Kind::PositiveLength), InstanceField::Float { value, .. }) => {
+                PropertyValue::PositiveLengthFeet(*value)
+            }
+            (Some(Kind::ThermalTransmittance), InstanceField::Float { value, .. }) => {
+                PropertyValue::ThermalTransmittance(*value)
+            }
+            _ => continue,
+        };
+        properties.push((
+            set.to_string(),
+            Property {
+                name: property.into(),
+                value,
+            },
+        ));
+    }
+    let type_fire_rating = decoded
+        .fields
+        .iter()
+        .find_map(|(field, value)| match value {
+            InstanceField::String(text)
+                if field.strip_prefix(mvp::TYPE_PARAMETER_FIELD_PREFIX) == Some("Fire Rating")
+                    && !text.is_empty() =>
+            {
+                Some(text.clone())
+            }
+            _ => None,
+        });
+    if let Some(rating) = type_fire_rating {
+        for set in sps::STANDARD_PROPERTY_SETS {
+            let named = properties
+                .iter()
+                .any(|(held, property)| held == set.name && property.name == FIRE_RATING_PROPERTY);
+            if named || sps::property_kind(set.name, FIRE_RATING_PROPERTY) != Some(Kind::Label) {
+                continue;
+            }
+            properties.push((
+                set.name.to_string(),
+                Property {
+                    name: FIRE_RATING_PROPERTY.into(),
+                    value: PropertyValue::Label(rating.clone()),
+                },
+            ));
+        }
+    }
+    properties
+}
+
+/// Put `property` in `set`, replacing a property of the same name there.
+fn set_property(set: &mut PropertySet, property: Property) {
+    match set
+        .properties
+        .iter_mut()
+        .find(|existing| existing.name == property.name)
+    {
+        Some(existing) => *existing = property,
+        None => set.properties.push(property),
+    }
+}
+
+/// Give the element at `element` among `entities` the set `set`: merged into
+/// the set of the same name already given to it, each property replacing one
+/// of the same name there, else as a set of its own.
+fn add_element_set(entities: &mut Vec<entities::IfcEntity>, element: usize, set: PropertySet) {
+    let held = entities
+        .iter_mut()
+        .skip(element)
+        .find_map(|entity| match entity {
+            entities::IfcEntity::ElementPropertySet {
+                element: owner,
+                set: held,
+            } if *owner == element && held.name == set.name => Some(held),
+            _ => None,
+        });
+    let Some(held) = held else {
+        entities.push(entities::IfcEntity::ElementPropertySet { element, set });
+        return;
+    };
+    for property in set.properties {
+        set_property(held, property);
+    }
+}
+
+/// Write each element's parameters named for a standard set's property
+/// (RE-194, [`named_parameter_properties`]) as Revit's exporter does: in
+/// each set that applies to the entity the element is finally written as,
+/// so a door or window written as its opening alone (RE-84) gets none, and
+/// in its set of the same name where it has one, each value replacing
+/// rvt-rs's own.
+fn add_named_parameter_sets(
+    entities: &mut Vec<entities::IfcEntity>,
+    pending: Vec<(usize, Vec<(String, Property)>)>,
+) {
+    use super::standard_property_sets as sps;
+    let mut held: BTreeMap<(usize, String), usize> = BTreeMap::new();
+    for (index, entity) in entities.iter().enumerate() {
+        if let entities::IfcEntity::ElementPropertySet { element, set } = entity {
+            held.entry((*element, set.name.clone())).or_insert(index);
+        }
+    }
+    for (element, properties) in pending {
+        let Some(entities::IfcEntity::BuildingElement {
+            ifc_type,
+            predefined_type,
+            ..
+        }) = entities.get(element)
+        else {
+            continue;
+        };
+        let (ifc_type, predefined_type) = (ifc_type.clone(), predefined_type.clone());
+        for (set, property) in properties {
+            if !sps::applies_to(&set, &ifc_type, predefined_type.as_deref()) {
+                continue;
+            }
+            match held.get(&(element, set.clone())) {
+                Some(&index) => {
+                    if let Some(entities::IfcEntity::ElementPropertySet { set: held_set, .. }) =
+                        entities.get_mut(index)
+                    {
+                        set_property(held_set, property);
+                    }
+                }
+                None => {
+                    held.insert((element, set.clone()), entities.len());
+                    entities.push(entities::IfcEntity::ElementPropertySet {
+                        element,
+                        set: PropertySet {
+                            name: set,
+                            properties: vec![property],
+                        },
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Give each further piece of an element written in pieces (#331) every
+/// further property set of the element, once they are final (#816): Revit's
+/// export gives each piece all of them (Snowdon Towers' architectural model:
+/// 19 elements in pieces, each `:2` piece with `Pset_SlabCommon` and the
+/// rest).
+fn add_piece_sets(
+    entities: &mut Vec<entities::IfcEntity>,
+    pieces_of: Vec<(usize, std::ops::Range<usize>)>,
+) {
+    for (element, pieces) in pieces_of {
+        let sets: Vec<PropertySet> = entities
+            .iter()
+            .filter_map(|entity| match entity {
+                entities::IfcEntity::ElementPropertySet {
+                    element: owner,
+                    set,
+                } if *owner == element => Some(set.clone()),
+                _ => None,
+            })
+            .collect();
+        for piece in pieces {
+            for set in &sets {
+                entities.push(entities::IfcEntity::ElementPropertySet {
+                    element: piece,
+                    set: set.clone(),
+                });
+            }
+        }
+    }
+}
+
+/// A pipe's two ends, model feet, and the connector entry keys at each
+/// (#847).
+type PipeEnds = (
+    [[f64; 3]; 2],
+    [Vec<crate::partition_pipe_axes::EntryKey>; 2],
+);
+
+/// The end of pipe `id` that is its connector `index` (#847), and the unit
+/// vector out of the pipe there: the one end whose connector entry keys name
+/// that connector, either the pipe itself with `index` or the element and
+/// connector `joined` says the pipe's `index` is joined to (RE-138). On the
+/// RE1 models every end with a port in Revit's export is named this way
+/// (Measure run 39370306743), and a port with no flow direction points out
+/// of its pipe (19 of 19). `None` where no end, or both, name it.
+fn pipe_port_point(
+    id: u32,
+    index: u32,
+    (points, keys): &PipeEnds,
+    joined: &HashMap<(u32, u32), Vec<(u32, u32)>>,
+) -> Option<([f64; 3], [f64; 3])> {
+    let own = u64::from(id);
+    let partners = joined.get(&(id, index));
+    let names = |keys: &[crate::partition_pipe_axes::EntryKey]| {
+        keys.iter().any(|&(element, key_index)| {
+            if element == own {
+                key_index == index
+            } else {
+                partners.is_some_and(|partners| {
+                    partners.iter().any(|&(other, other_index)| {
+                        u64::from(other) == element && other_index == key_index
+                    })
+                })
+            }
+        })
+    };
+    let (end, other) = match [names(&keys[0]), names(&keys[1])] {
+        [true, false] => (points[0], points[1]),
+        [false, true] => (points[1], points[0]),
+        _ => return None,
+    };
+    let out = [end[0] - other[0], end[1] - other[1], end[2] - other[2]];
+    let length = (out[0] * out[0] + out[1] * out[1] + out[2] * out[2]).sqrt();
+    (length > 0.0).then(|| (end, [out[0] / length, out[1] / length, out[2] / length]))
+}
+
+/// The property of `Pset_PipeSegmentOccurrence` holding a pipe's invert.
 const INVERT_ELEVATION_PROPERTY: &str = "InvertElevation";
 /// How far a pipe's two ends may differ, feet, along an axis it is taken to
 /// lie across.
@@ -1481,10 +2071,15 @@ fn pipe_invert_height(fields: &[(String, InstanceField)]) -> Option<f64> {
     Some(start[2] - inner / 2.0)
 }
 
-/// Take each pipe's storey elevation off its `InvertElevation`, which
-/// Revit's export gives above the pipe's storey (RE-157). A pipe on no storey
-/// keeps its height above the model's zero.
-pub(super) fn pipe_inverts_above_storeys(entities: &mut [entities::IfcEntity], storeys: &[Storey]) {
+/// Take each pipe's storey elevation off the `InvertElevation` worked out in
+/// model height, in the sets `computed` lists, which Revit's export gives
+/// above the pipe's storey (RE-157). A pipe on no storey keeps its height
+/// above the model's zero.
+pub(super) fn pipe_inverts_above_storeys(
+    entities: &mut [entities::IfcEntity],
+    storeys: &[Storey],
+    computed: &[usize],
+) {
     let elevations: Vec<f64> = entities
         .iter()
         .map(|entity| match entity {
@@ -1497,13 +2092,12 @@ pub(super) fn pipe_inverts_above_storeys(entities: &mut [entities::IfcEntity], s
             _ => 0.0,
         })
         .collect();
-    for entity in entities.iter_mut() {
-        let entities::IfcEntity::ElementPropertySet { element, set } = entity else {
+    for &index in computed {
+        let Some(entities::IfcEntity::ElementPropertySet { element, set }) =
+            entities.get_mut(index)
+        else {
             continue;
         };
-        if set.name != "Pset_FlowSegmentPipeSegment" {
-            continue;
-        }
         let elevation = elevations.get(*element).copied().unwrap_or(0.0);
         for property in &mut set.properties {
             if let (INVERT_ELEVATION_PROPERTY, PropertyValue::LengthFeet(height)) =
@@ -1517,11 +2111,18 @@ pub(super) fn pipe_inverts_above_storeys(entities: &mut [entities::IfcEntity], s
 
 /// The entities a room's space contains in Revit's export (B63): on RE1
 /// Architecture its furniture, sanitary terminals and equipment written as
-/// proxies, and no wall, door, slab, covering or curtain wall.
-const ROOM_CONTENT_TYPES: [&str; 3] = [
+/// proxies, and no wall, door, slab, covering or curtain wall. On the
+/// BIM4LCA office (#792) Revit's export also puts its waste, fire
+/// suppression and air terminals and electric appliances in their rooms'
+/// spaces.
+const ROOM_CONTENT_TYPES: [&str; 7] = [
     "IFCFURNITURE",
     "IFCSANITARYTERMINAL",
     "IFCBUILDINGELEMENTPROXY",
+    "IFCWASTETERMINAL",
+    "IFCFIRESUPPRESSIONTERMINAL",
+    "IFCAIRTERMINAL",
+    "IFCELECTRICAPPLIANCE",
 ];
 
 /// A closed plan loop, model feet.
@@ -1568,28 +2169,6 @@ fn space_plan_outline(
 /// its storey.
 pub(super) fn contain_in_spaces(entities: &mut Vec<entities::IfcEntity>) {
     use crate::element_record_plan_profiles::inside;
-    let mut spaces = Vec::new();
-    for (index, entity) in entities.iter().enumerate() {
-        let entities::IfcEntity::BuildingElement {
-            ifc_type,
-            storey_index: Some(storey),
-            location_feet: Some(location),
-            rotation_radians,
-            extrusion: Some(extrusion),
-            ..
-        } = entity
-        else {
-            continue;
-        };
-        if ifc_type != "IFCSPACE" {
-            continue;
-        }
-        if let Some((outer, voids)) =
-            space_plan_outline(location, rotation_radians.unwrap_or(0.0), extrusion)
-        {
-            spaces.push((index, *storey, outer, voids));
-        }
-    }
     let is_family_instance = |set: &Option<PropertySet>| {
         set.as_ref().is_some_and(|set| {
             set.properties.iter().any(|p| {
@@ -1598,6 +2177,31 @@ pub(super) fn contain_in_spaces(entities: &mut Vec<entities::IfcEntity>) {
             })
         })
     };
+    let mut spaces = Vec::new();
+    for (index, entity) in entities.iter().enumerate() {
+        let entities::IfcEntity::BuildingElement {
+            ifc_type,
+            storey_index: Some(storey),
+            location_feet: Some(location),
+            rotation_radians,
+            extrusion: Some(extrusion),
+            property_set,
+            ..
+        } = entity
+        else {
+            continue;
+        };
+        // #763: a family instance written as a space holds nothing; the
+        // furniture around it stays in its room.
+        if ifc_type != "IFCSPACE" || is_family_instance(property_set) {
+            continue;
+        }
+        if let Some((outer, voids)) =
+            space_plan_outline(location, rotation_radians.unwrap_or(0.0), extrusion)
+        {
+            spaces.push((index, *storey, outer, voids));
+        }
+    }
     let mut contents: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (index, entity) in entities.iter().enumerate() {
         let entities::IfcEntity::BuildingElement {
@@ -1658,12 +2262,15 @@ pub(super) fn contain_in_spaces(entities: &mut Vec<entities::IfcEntity>) {
     }
 }
 
-/// A room's `Pset_SpaceCommon` (RE-153), as Revit's export writes it:
-/// `Reference` (`IfcIdentifier`) its name and number, and `FloorCovering`
-/// (`IfcLabel`) its Floor Finish. `None` when neither was read.
+/// A room's or an Area's `Pset_SpaceCommon` (RE-153, #763), as Revit's
+/// export writes it: `Reference` (`IfcIdentifier`) its name and number, or
+/// its name alone where it has no number (RE-196), and `IsExternal`
+/// (RE-193). `None` when none was read. A room's Floor Finish is in
+/// [`space_covering_property_set`].
 fn space_common_property_set(decoded: &DecodedElement) -> Option<PropertySet> {
     use crate::partition_schema_mvp as mvp;
-    if decoded.class != "Room" {
+    let family_space = space_by_export_value(decoded);
+    if decoded.class != "Room" && decoded.class != "Area" && !family_space {
         return None;
     }
     let text = |wanted: &str| {
@@ -1678,16 +2285,30 @@ fn space_common_property_set(decoded: &DecodedElement) -> Option<PropertySet> {
             })
     };
     let mut properties = Vec::new();
-    if let (Some(name), Some(number)) = (text("m_name"), text(mvp::ROOM_NUMBER_FIELD)) {
+    if family_space {
+        // #763: a family instance written as a space is referred to by its
+        // type's name, as Revit's export writes it.
+        if let Some((_, type_name)) = family_and_type(decoded) {
+            properties.push(Property {
+                name: "Reference".into(),
+                value: PropertyValue::Identifier(type_name),
+            });
+        }
+    } else if let Some(name) = text("m_name") {
+        // A room with no number is referred to by its name alone (RE-196).
+        let reference = match text(mvp::ROOM_NUMBER_FIELD) {
+            Some(number) => format!("{name} {number}"),
+            None => name,
+        };
         properties.push(Property {
             name: "Reference".into(),
-            value: PropertyValue::Identifier(format!("{name} {number}")),
+            value: PropertyValue::Identifier(reference),
         });
     }
-    if let Some(finish) = text(mvp::ROOM_FLOOR_FINISH_FIELD) {
+    if let Some(external) = is_external_value(decoded, "Pset_SpaceCommon") {
         properties.push(Property {
-            name: "FloorCovering".into(),
-            value: PropertyValue::Label(finish),
+            name: "IsExternal".into(),
+            value: PropertyValue::Boolean(external),
         });
     }
     (!properties.is_empty()).then(|| PropertySet {
@@ -1696,10 +2317,53 @@ fn space_common_property_set(decoded: &DecodedElement) -> Option<PropertySet> {
     })
 }
 
+/// A room's `Pset_SpaceCoveringRequirements`: `FloorCovering` (`IfcLabel`)
+/// its Floor Finish (RE-153). IFC4 puts a space's coverings in this set;
+/// IFC2X3's `Pset_SpaceCommon`, where Revit's IFC2X3 export of RE1
+/// Architecture writes the same value, has them (#35). `None` when no
+/// finish was read.
+fn space_covering_property_set(decoded: &DecodedElement) -> Option<PropertySet> {
+    use crate::partition_schema_mvp as mvp;
+    if decoded.class != "Room" {
+        return None;
+    }
+    let finish = decoded
+        .fields
+        .iter()
+        .find_map(|(field, value)| match value {
+            InstanceField::String(text)
+                if field == mvp::ROOM_FLOOR_FINISH_FIELD && !text.is_empty() =>
+            {
+                Some(text.clone())
+            }
+            _ => None,
+        })?;
+    Some(PropertySet {
+        name: "Pset_SpaceCoveringRequirements".into(),
+        properties: vec![Property {
+            name: "FloorCovering".into(),
+            value: PropertyValue::Label(finish),
+        }],
+    })
+}
+
 /// The IFC entity mapping a per-element "IFC Export As" override
-/// names, when the decoded element carries one and
-/// [`category_map::lookup_export_override`] recognises the value.
+/// names, when the decoded element carries one,
+/// [`category_map::lookup_export_override`] recognises the value, and
+/// Revit's exporter of the file's release acts on it for this element
+/// ([`category_map::export_override_applies`], RE-188).
 fn ifc_export_override(decoded: &DecodedElement) -> Option<&'static category_map::Mapping> {
+    let release = decoded.fields.iter().find_map(|(name, value)| match value {
+        InstanceField::Integer { value, .. }
+            if name == crate::partition_schema_mvp::IFC_EXPORT_RELEASE_FIELD =>
+        {
+            u32::try_from(*value).ok()
+        }
+        _ => None,
+    });
+    if !category_map::export_override_applies(&decoded.class, release) {
+        return None;
+    }
     decoded
         .fields
         .iter()
@@ -1709,6 +2373,48 @@ fn ifc_export_override(decoded: &DecodedElement) -> Option<&'static category_map
             }
             _ => None,
         })
+        // #763: a room, area or space is a space already; it keeps its own
+        // mapping and predefined type.
+        .filter(|target| {
+            target.ifc_type != "IFCSPACE"
+                || category_map::lookup(&decoded.class).is_none_or(|own| own.ifc_type != "IFCSPACE")
+        })
+}
+
+/// Whether the element is written as `IfcSpace` through its own "Export to
+/// IFC As" value (#763), a family instance rather than a room.
+fn space_by_export_value(decoded: &DecodedElement) -> bool {
+    ifc_export_override(decoded).is_some_and(|target| target.ifc_type == "IFCSPACE")
+}
+
+/// The "Export to IFC As" value of an element the export writes as another
+/// entity than the value names (#792): a value no target lists, or one
+/// Revit's exporter does not act on for this element (RE-188). `None` for
+/// an element the export does not write, or writes as its value says.
+pub(crate) fn unapplied_export_value(decoded: &DecodedElement) -> Option<&str> {
+    if is_misleading_proxy_class(&decoded.class)
+        || matches!(
+            decoded.class.as_str(),
+            "Material" | "ArcWall" | "ArcWallRectOpening"
+        )
+    {
+        return None;
+    }
+    let mapping = category_map::lookup(&decoded.class)?;
+    let value = decoded
+        .fields
+        .iter()
+        .find_map(|(name, value)| match value {
+            InstanceField::String(text)
+                if name == crate::partition_schema_mvp::IFC_EXPORT_AS_FIELD =>
+            {
+                Some(text.as_str())
+            }
+            _ => None,
+        })?;
+    let written = ifc_export_override(decoded).unwrap_or(mapping).ifc_type;
+    let entity = value.split('.').next().unwrap_or(value);
+    (!written.eq_ignore_ascii_case(entity)).then_some(value)
 }
 
 /// True when this element came from a partition element record.
@@ -1754,6 +2460,10 @@ type VoidBody = (usize, u32, Vec<(f64, f64)>, f64);
 /// up the wall, the wall's axis turn in its placement, the sketch plane's
 /// offset to the axis's left, and the wall's thickness.
 type ProfileOpening = (u32, Vec<(f64, f64)>, f64, f64, f64);
+
+/// `BodyHeightSource` of a column drawn as its body after geometry joins: the
+/// box at id-48 of its geometry node (RE-178).
+pub const COLUMN_CUT_BODY_HEIGHT_SOURCE: &str = "partition_geometry_node_after_joins";
 
 /// `BodySource` of a body that is the element record's bounding box, where
 /// no carrier refines it (#409).
@@ -1838,6 +2548,10 @@ pub const FILLER_OPENING_PROPERTIES: [&str; 7] = [
     "OpeningWidth",
     "OpeningHeight",
 ];
+
+/// Properties holding a door's Width and Height from its type (RE-187,
+/// [`crate::partition_schema_mvp::DOOR_TYPE_SIZE_FIELDS`]), feet.
+pub const DOOR_TYPE_SIZE_PROPERTIES: [&str; 2] = ["TypeWidth", "TypeHeight"];
 
 /// Classes whose body another rule draws, which a family instance's turn
 /// leaves alone: columns (their type's section), beams (their line), and
@@ -2069,6 +2783,163 @@ fn roof_slope_solid(
         |p| sign * offset(p) * rise,
         vertical,
     )?;
+    Some(entities::SolidShape::FacetedBrep {
+        vertices_feet: mesh.vertices,
+        triangles: mesh
+            .triangles
+            .into_iter()
+            .map(|[a, b, c]| entities::BrepTriangle(a, b, c))
+            .collect(),
+    })
+}
+
+/// Whether `p` lies inside the ring `ring` (even-odd rule).
+fn point_in_ring((px, py): (f64, f64), ring: &[(f64, f64)]) -> bool {
+    let mut inside = false;
+    for i in 0..ring.len() {
+        let ((ax, ay), (bx, by)) = (ring[i], ring[(i + 1) % ring.len()]);
+        if (ay > py) != (by > py) && px < ax + (py - ay) * (bx - ax) / (by - ay) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+/// A gable or hip roof's body (RE-199): each defining edge's plane rises
+/// from it into the roof at its angle (raised by the edge's plate offset).
+/// A plane counts within its edge's straight-skeleton wedge: on the edge's
+/// side, between the lines where it meets its neighbouring defining edges'
+/// planes, which converge at a hip and part at a valley. The roof's top is
+/// the lowest counting plane at each point, so hips and valleys both come
+/// out right over convex and L-shaped footprints. The planes' tops meet the
+/// outline at one eave height, `T / cos θ` of the shallowest edge; each
+/// plane's underside lies its own `T / cos θ` below its top, never below
+/// the record box's base.
+///
+/// With `rafter_cut`, a two-cut rafter's fascia depth `F`, the eave height
+/// is `F` instead, and each plane is cut level at the base raised by its
+/// plate offset: `F = 0` (the default) sets the plain roof down by the
+/// thickness's vertical extent, `F = T / cos θ` is the plain roof. The
+/// plumb and square two-cuts coincide at `F = 0`.
+///
+/// Revit's export of the roofs of #356's `R2025_Models.zip` has this shape:
+/// sheds, a gable, hips at 30° and at 15° and 35°, two-cuts with plate
+/// offsets, and L-shaped hips with a raised edge and a hole. `None` unless the
+/// highest point of the top reproduces `height` within
+/// [`ROOF_SLOPE_CLOSURE_FEET`].
+fn roof_planes_solid(
+    slopes: &[crate::partition_schema_mvp::RoofSlope],
+    [x, y]: [f64; 2],
+    outer: &[(f64, f64)],
+    inner: &[Vec<(f64, f64)>],
+    height: f64,
+    rafter_cut: Option<f64>,
+) -> Option<entities::SolidShape> {
+    if outer.len() < 3 {
+        return None;
+    }
+    let mut planes: Vec<(super::body_geometry::PlanPlane, f64)> = Vec::new();
+    let mut domains: Vec<Vec<super::body_geometry::PlanPlane>> = Vec::new();
+    // Each edge's ends and a point just inside its middle, local feet.
+    let mut ends: Vec<[(f64, f64); 2]> = Vec::new();
+    let mut probes: Vec<(f64, f64)> = Vec::new();
+    for slope in slopes {
+        let [sx, sy] = slope.edge_start;
+        let [ex, ey] = slope.edge_end;
+        let length = (ex - sx).hypot(ey - sy);
+        let angle = slope.angle_radians;
+        if !(length > 1e-9
+            && angle.is_finite()
+            && angle > 0.0
+            && angle < std::f64::consts::FRAC_PI_2
+            && slope.thickness_feet > 0.0)
+        {
+            return None;
+        }
+        let (ux, uy) = ((ex - sx) / length, (ey - sy) / length);
+        // Distance from the edge in local coordinates: -uy·px + ux·py + c.
+        let c = (x - sx) * -uy + (y - sy) * ux;
+        // The plane rises into the roof: the side of the edge that a point
+        // just inside its midpoint lies on. Over a non-convex footprint the
+        // outline crosses the edge's line, and the plane's domain ends there.
+        let mid = ((sx + ex) / 2.0 - x, (sy + ey) / 2.0 - y);
+        let probe = (mid.0 - uy * 1e-3, mid.1 + ux * 1e-3);
+        let sign = if point_in_ring(probe, outer) {
+            1.0
+        } else {
+            -1.0
+        };
+        let rise = sign * angle.tan();
+        domains.push(vec![[-uy * sign, ux * sign, c * sign]]);
+        ends.push([(sx - x, sy - y), (ex - x, ey - y)]);
+        probes.push((mid.0 - uy * sign * 1e-3, mid.1 + ux * sign * 1e-3));
+        planes.push((
+            [-uy * rise, ux * rise, c * rise + slope.plate_offset_feet],
+            slope.thickness_feet / angle.cos(),
+        ));
+    }
+    // The wedge of each edge: at each end it shares with another defining
+    // edge, the side of the line where their planes meet that holds the
+    // edge's own middle.
+    let at = |[a, b, c]: super::body_geometry::PlanPlane, (px, py): (f64, f64)| a * px + b * py + c;
+    for i in 0..planes.len() {
+        for j in 0..planes.len() {
+            let shared = i != j
+                && ends[i].iter().any(|&(px, py)| {
+                    ends[j]
+                        .iter()
+                        .any(|&(qx, qy)| (px - qx).abs() < 1e-6 && (py - qy).abs() < 1e-6)
+                });
+            if !shared {
+                continue;
+            }
+            let (pi, pj) = (planes[i].0, planes[j].0);
+            let mut line = [pi[0] - pj[0], pi[1] - pj[1], pi[2] - pj[2]];
+            if line[0].hypot(line[1]) < 1e-12 {
+                continue;
+            }
+            if at(line, probes[i]) < 0.0 {
+                line = line.map(|v| -v);
+            }
+            domains[i].push(line);
+        }
+    }
+    let eave = if let Some(fascia) = rafter_cut {
+        fascia
+    } else {
+        planes
+            .iter()
+            .map(|(_, vertical)| *vertical)
+            .fold(f64::INFINITY, f64::min)
+    };
+    let tops: Vec<_> = planes
+        .iter()
+        .map(|([a, b, c], _)| [*a, *b, c + eave])
+        .collect();
+    // A two-cut plane is cut level at its own eave's top, the base raised by
+    // its plate offset; otherwise at the base.
+    let undersides: Vec<_> = planes
+        .iter()
+        .zip(slopes)
+        .map(|(([a, b, c], vertical), slope)| {
+            let floor = if rafter_cut.is_some() {
+                slope.plate_offset_feet
+            } else {
+                0.0
+            };
+            ([*a, *b, c + eave - vertical], floor)
+        })
+        .collect();
+    let mesh =
+        super::body_geometry::envelope_slab_mesh(outer, inner, &tops, &undersides, &domains)?;
+    let highest = mesh
+        .vertices
+        .iter()
+        .map(|v| v[2])
+        .fold(f64::NEG_INFINITY, f64::max);
+    if (highest - height).abs() > ROOF_SLOPE_CLOSURE_FEET {
+        return None;
+    }
     Some(entities::SolidShape::FacetedBrep {
         vertices_feet: mesh.vertices,
         triangles: mesh
@@ -2512,6 +3383,7 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
     let mut column_body_source = None;
     let mut beam_body_source = None;
     let mut column_cut_walls = None;
+    let mut column_body_z = (None, None);
     let mut type_symbol_id = None;
     let mut type_profile = (None, None);
     let mut level_id = None;
@@ -2598,6 +3470,14 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
             ("m_bboxWidth", InstanceField::Float { value, .. }) => width = Some(*value),
             ("m_bboxDepth", InstanceField::Float { value, .. }) => depth = Some(*value),
             ("m_bboxHeight", InstanceField::Float { value, .. }) => height = Some(*value),
+            (
+                crate::partition_schema_mvp::COLUMN_BODY_BOTTOM_FIELD,
+                InstanceField::Float { value, .. },
+            ) => column_body_z.0 = Some(*value),
+            (
+                crate::partition_schema_mvp::COLUMN_BODY_TOP_FIELD,
+                InstanceField::Float { value, .. },
+            ) => column_body_z.1 = Some(*value),
             ("m_locationX", InstanceField::Float { value, .. }) => x = Some(*value),
             ("m_locationY", InstanceField::Float { value, .. }) => y = Some(*value),
             ("m_locationZ", InstanceField::Float { value, .. }) => z = Some(*value),
@@ -2628,6 +3508,17 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
     if width <= 0.0 || depth <= 0.0 || height <= 0.0 {
         return None;
     }
+    // RE-178: a column that a joined slab or roof cuts is drawn as its cut
+    // body. Its placement stays at its own base, so storeys do not move, and
+    // `BoundingBoxHeight` keeps its own extent; a body that starts higher is
+    // placed `body_offset` above the base.
+    let record_height = height;
+    let (body_offset, height) = match column_body_z {
+        (Some(bottom), Some(top)) if bottom.is_finite() && top > bottom => {
+            (bottom - z, top - bottom)
+        }
+        _ => (0.0, height),
+    };
     // RE-49: a beam whose location line the record box supports runs along
     // that line instead of filling its box.
     let beam = if class == "StructuralFraming" {
@@ -2771,10 +3662,14 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
             .and_then(|axis| turned_box(axis, width, depth))
     };
     // RE-56: a shed roof whose slope reproduces its record box rises along
-    // it.
+    // it. RE-199: a gable or hip roof, its planes' lowest envelope, and
+    // either cut level at its base when that is what its box records.
     let roof_slope = if class == "Roof" {
         profile.as_ref().and_then(|profile| {
-            let slope = crate::partition_schema_mvp::roof_slope_from_fields(&decoded.fields)?;
+            let slopes = crate::partition_schema_mvp::roof_slopes_from_fields(&decoded.fields);
+            let fascia =
+                crate::partition_schema_mvp::roof_fascia_depth_from_fields(&decoded.fields)
+                    .unwrap_or(0.0);
             let outer: Vec<(f64, f64)> = profile
                 .outer_xy
                 .iter()
@@ -2785,7 +3680,28 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
                 .iter()
                 .map(|ring| ring.iter().map(|(px, py)| (px - x, py - y)).collect())
                 .collect();
-            roof_slope_solid(slope, [x, y], &outer, &inner, height)
+            use crate::partition_roof_slopes::RafterCut;
+            let plain = || match slopes.as_slice() {
+                [] => None,
+                [slope] => roof_slope_solid(*slope, [x, y], &outer, &inner, height),
+                _ => roof_planes_solid(&slopes, [x, y], &outer, &inner, height, None),
+            };
+            let two_cut = || {
+                (!slopes.is_empty())
+                    .then(|| {
+                        roof_planes_solid(&slopes, [x, y], &outer, &inner, height, Some(fascia))
+                    })
+                    .flatten()
+            };
+            // RE-199: the roof's own rafter cut where it is read; elsewhere
+            // the plain body, else the two-cut one its record box singles out.
+            match crate::partition_schema_mvp::roof_rafter_cut_from_fields(&decoded.fields) {
+                Some(RafterCut::Plumb) => plain(),
+                Some(RafterCut::TwoCutPlumb) => two_cut(),
+                // A square two-cut with a fascia is not measured.
+                Some(RafterCut::TwoCutSquare) => (fascia == 0.0).then(two_cut).flatten(),
+                None => plain().or_else(two_cut),
+            }
         })
     } else {
         None
@@ -2895,9 +3811,15 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
         },
         Property {
             name: "BoundingBoxHeight".into(),
-            value: PropertyValue::LengthFeet(height),
+            value: PropertyValue::LengthFeet(record_height),
         },
     ];
+    if column_body_z.0.is_some() && (height - record_height).abs() > 1e-9 {
+        properties.push(Property {
+            name: "BodyHeightSource".into(),
+            value: PropertyValue::Text(COLUMN_CUT_BODY_HEIGHT_SOURCE.into()),
+        });
+    }
     // #219 / RE-27: the host Level the record's counted reference list
     // names. `ifc::apply_record_level_reference_storeys` reads it back
     // off the emitted element, so the two sides share one carrier.
@@ -3003,6 +3925,37 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
             properties.push(Property {
                 name: (*name).into(),
                 value,
+            });
+        }
+    }
+    // RE-165 (B44): a pipe fitting reports its nominal size, the one diameter
+    // its connectors give. Revit's IFC2X3 export writes it in
+    // Pset_PipeFittingTypeCommon, which in IFC4 has no NominalDiameter, and
+    // its IFC4 Reference View export writes none of the port sets that hold
+    // one (#822).
+    let fitting_diameter = decoded.fields.iter().find_map(|(name, value)| match value {
+        InstanceField::Float { value, .. }
+            if name == crate::partition_schema_mvp::FITTING_NOMINAL_DIAMETER_FIELD =>
+        {
+            Some(*value)
+        }
+        _ => None,
+    });
+    if let Some(diameter) = fitting_diameter {
+        properties.push(Property {
+            name: "NominalDiameter".into(),
+            value: PropertyValue::PositiveLengthFeet(diameter),
+        });
+    }
+    // RE-187: a door reports its type's Width and Height.
+    if let Some(size) = crate::partition_schema_mvp::door_type_size_from_fields(&decoded.fields) {
+        for (name, feet) in DOOR_TYPE_SIZE_PROPERTIES
+            .iter()
+            .zip([size.width_feet, size.height_feet])
+        {
+            properties.push(Property {
+                name: (*name).into(),
+                value: PropertyValue::PositiveLengthFeet(feet),
             });
         }
     }
@@ -3300,6 +4253,22 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
             };
             ([x, y, z], rotation, body, solid)
         }
+    };
+    let solid = match solid {
+        None if body_offset.abs() > 1e-9 => Some(entities::SolidShape::PlacedExtrusion {
+            profile: body
+                .profile_override
+                .clone()
+                .unwrap_or(entities::ProfileDef::Rectangle {
+                    width_feet: body.width_feet,
+                    depth_feet: body.depth_feet,
+                }),
+            origin_feet: [0.0, 0.0, body_offset],
+            axis: [0.0, 0.0, 1.0],
+            ref_direction: [1.0, 0.0, 0.0],
+            depth_feet: body.height_feet,
+        }),
+        solid => solid,
     };
     Some(RecordGeometry {
         location,

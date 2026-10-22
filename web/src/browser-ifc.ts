@@ -128,10 +128,22 @@ export async function importIfc(api: any, data: Uint8Array, filename: string, sh
     for(const [name,parent,children] of [['IfcRelAggregates','RelatingObject','RelatedObjects'],['IfcRelNests','RelatingObject','RelatedObjects'],['IfcRelVoidsElement','RelatingBuildingElement','RelatedOpeningElement'],['IfcRelFillsElement','RelatingOpeningElement','RelatedBuildingElement'],['IfcRelContainedInSpatialStructure','RelatingStructure','RelatedElements'],['IfcRelAssignsToGroup','RelatingGroup','RelatedObjects']]) {
       for(const rel of lines(name.toUpperCase()))relationships.push({step_id:rel.expressID,class:name,parent_id:String(value(rel[parent])),child_ids:ids(rel[children]).map(String)});
     }
-    const systems:{id:string;name:string;class:string;member_ids:string[];connectivity_verified:false}[]=[];
+    const systems:NonNullable<ModelPackage['systems']>=[];
     for(const code of api.GetIfcEntityList(handle))if(hierarchy[type(code)]?.includes('IfcSystem')){
       const vector=api.GetLineIDsWithType(handle,code);
-      for(let i=0;i<vector.size();i++){const id=vector.get(i),row=read(id);systems.push({id:String(id),name:String(value(row.Name)||''),class:hierarchy[type(code)][0],member_ids:relationships.filter(r=>r.class==='IfcRelAssignsToGroup'&&r.parent_id===String(id)).flatMap(r=>r.child_ids).filter(id=>byId.get(Number(id))?.role==='element'),connectivity_verified:false});}
+      for(let i=0;i<vector.size();i++){
+        const id=vector.get(i),row=read(id),property_sets:Record<string,Record<string,unknown>>={};
+        for(const rel of lines('IFCRELDEFINESBYPROPERTIES').filter(r=>ids(r.RelatedObjects).includes(id))){
+          for(const pid of ids(rel.RelatingPropertyDefinition)){
+            const set=read(pid);if(type(set?.type)!=='IFCPROPERTYSET')continue;
+            const fields:Record<string,unknown>={};
+            for(const fieldId of ids(set.HasProperties)){const field=read(fieldId);if(type(field?.type)==='IFCPROPERTYSINGLEVALUE')fields[String(value(field.Name))]=value(field.NominalValue);}
+            property_sets[String(value(set.Name))]=fields;
+          }
+        }
+        systems.push({id:String(id),name:String(value(row.Name)||''),class:hierarchy[type(code)][0],global_id:String(value(row.GlobalId)||''),description:value(row.Description)??null,property_sets,
+          member_ids:[...new Set(relationships.filter(r=>r.class==='IfcRelAssignsToGroup'&&r.parent_id===String(id)).flatMap(r=>r.child_ids))],connectivity_verified:false});
+      }
     }
     const storeys=elements.filter(e=>e.class==='IfcBuildingStorey').map(e=>({id:e.id,name:e.name,elevation_m:Number.isFinite(value(read(e.step_id).Elevation))?value(read(e.step_id).Elevation)*length:null,placement_origin_m:null,element_count:0}));
     const parent=new Map<string,string>();for(const r of relationships.filter(r=>['IfcRelAggregates','IfcRelContainedInSpatialStructure'].includes(r.class)))for(const id of r.child_ids)parent.set(id,r.parent_id);

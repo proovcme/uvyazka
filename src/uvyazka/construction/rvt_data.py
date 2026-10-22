@@ -14,8 +14,9 @@ from .planning import Planning, bounded
 from .rvt_runtime import binary_path, sha256
 from .simulation import canonical_hash
 
-VERSION = '0.2.0'
+VERSION = '0.3.0'
 SYSTEM_CLASSES = {'RbsHvacSystem', 'RbsPipingSystem', 'RbsElectricalSystem'}
+ENGINEERING_ROOTS = {'FamilyInstance', 'RbsCurve', 'RbsSystem', 'Level', 'RoomElem'}
 SQL = [
     'create table if not exists rvt_extractions(extraction_id text primary key,payload text not null)',
     'create table if not exists rvt_native_records(extraction_id text,record_id integer,element_id text,class_name text,kind text,name text,status text,payload text,primary key(extraction_id,record_id))',
@@ -36,6 +37,16 @@ def kind_for(name, classes):
     if 'DBView' in chain: return 'view'
     if set(chain)&{'Viewport','ScheduleInstanceBase'}: return 'placement'
     return 'element'
+
+
+def selected_classes(profile,classes):
+    """Choose by schema ancestry, not by substrings or guessed equipment names."""
+    if profile=='all':return []
+    if profile in {'engineering','systems'}:
+        roots=ENGINEERING_ROOTS if profile=='engineering' else SYSTEM_CLASSES
+        return [name for name in classes if set(ancestry(name,classes)) & roots]
+    kinds={'view','schedule','placement'} if profile=='views' else {'schedule'}
+    return [name for name in classes if kind_for(name,classes) in kinds]
 
 
 def objects(record):
@@ -186,7 +197,7 @@ class RvtData:
         return path
 
     def extract(self,project_id,doc_id,request_id,profile='all'):
-        if profile not in {'all','views','schedules'}:raise ValueError('profile: all, views or schedules')
+        if profile not in {'all','views','schedules','engineering','systems'}:raise ValueError('profile: all, views, schedules, engineering or systems')
         if not request_id or len(request_id)>128:raise ValueError('request_id: 1–128 characters')
         document,source=self.workspace.source_record(project_id,doc_id)
         if source.suffix.lower()!='.rvt' or not 0<source.stat().st_size<=512*1024*1024:raise ValueError('Choose a registered RVT <=512 MiB')
@@ -221,7 +232,7 @@ class RvtData:
         self.invoke(binary,copied,request,inventory_path)
         inventory=json.loads(inventory_path.read_text(encoding='utf-8'))
         classes={c['name']:c for c in inventory['classes']}
-        selected=[] if profile=='all' else [name for name in classes if kind_for(name,classes) in ({'view','schedule','placement'} if profile=='views' else {'schedule'})]
+        selected=selected_classes(profile,classes)
         output=folder/'records.ndjson';summary_path=folder/'records.summary.json'
         if profile!='all' and not selected:
             output.write_text('',encoding='utf-8');summary_path.write_text(encode({'status':'unsupported_profile','record_count':0,'error':'Requested class roots not found; absence of records is not established'}),encoding='utf-8')
@@ -283,7 +294,7 @@ class RvtData:
         snapshot=self.snapshot(project_id,extraction_id)
         scope={'project_id':project_id,'extraction_id':extraction_id,'source':snapshot['source'],'snapshot_status':snapshot['status'],'profile':snapshot['profile']}
         if section=='systems':
-            if snapshot['profile']!='all':raise ValueError('System inventory requires an all-profile extraction; a views/schedules snapshot cannot establish system absence')
+            if snapshot['profile'] not in {'all','engineering','systems'}:raise ValueError('System inventory requires an all-profile, engineering or systems extraction; a views/schedules snapshot cannot establish system absence')
             scope['engineering_connectivity_verified']=False
             scope['absence_verified']=False
         if section=='summary':return snapshot
@@ -319,6 +330,66 @@ class RvtData:
         if section=='value':
             return {**scope,**json_fragment(record,json_path,offset,max_chars)}
         return {**scope,'section':section,**preview_page(project_record(record,section),offset,limit)}
+
+    def search_parameters(self,project_id,extraction_id,query='',element_id='',class_name='',cursor=None,limit=40,max_scan_records=25):
+        """Search saved metadata in bounded batches; never reopen the RVT or evaluate values."""
+        snapshot=self.snapshot(project_id,extraction_id)
+        if not all(isinstance(v,str) and len(v)<=1000 for v in (query,element_id,class_name)):
+            raise ValueError('query, element_id and class_name must be strings of at most 1000 characters')
+        if type(limit) is not int or not 1<=limit<=100 or type(max_scan_records) is not int or not 1<=max_scan_records<=100:
+            raise ValueError('limit and max_scan_records: integers from 1 to 100')
+        fingerprint=canonical_hash(['rvt-parameter-search-v1',project_id,extraction_id,query,element_id,class_name])
+        start_record=0;start_parameter=0
+        if cursor is not None:
+            if not isinstance(cursor,dict) or cursor.get('fingerprint')!=fingerprint:
+                raise ValueError('Cursor belongs to a different RVT parameter search')
+            start_record=cursor.get('record_id');start_parameter=cursor.get('parameter_offset')
+            if any(type(v) is not int or v<0 for v in (start_record,start_parameter)):
+                raise ValueError('Invalid RVT parameter cursor')
+        def continuation(record_id,parameter_offset=0):
+            return {'fingerprint':fingerprint,'record_id':record_id,'parameter_offset':parameter_offset}
+        where=['extraction_id=?','record_id>=?'];args=[extraction_id,start_record]
+        for column,value in [('element_id',element_id),('class_name',class_name)]:
+            if value:where.append(column+'=?');args.append(value)
+        items=[];scanned=0;checked=0;without_metadata=0;budget=0;next_cursor=None
+        with connection(self.workspace.db_path(project_id),readonly=True) as db:
+            # Stream one bounded record at a time instead of loading a whole model.
+            rows=db.execute('select record_id,element_id,class_name,name,status,payload from rvt_native_records where '+
+                ' and '.join(where)+' order by record_id limit ?',(*args,max_scan_records+1))
+            for stored in rows:
+                rid=stored['record_id']
+                if scanned>=max_scan_records:
+                    next_cursor=continuation(rid);break
+                record=json.loads(stored['payload']);scanned+=1
+                if not record.get('saved_metadata'):without_metadata+=1
+                parameters=project_record(record,'parameters')
+                begin=start_parameter if rid==start_record else 0
+                for index in range(begin,len(parameters)):
+                    parameter=parameters[index];checked+=1
+                    if query.casefold() not in encode(parameter).casefold():continue
+                    scope={'record_id':rid,'element_id':stored['element_id'],'class_name':stored['class_name'],
+                        'name':stored['name'],'record_status':stored['status'],
+                        'native_source':record.get('source'),'json_path':parameter['json_path'],
+                        'projection':parameter.get('projection','parameter_sets')}
+                    raw=encode(parameter)
+                    shown={**scope,'parameter':parameter} if len(raw)<=2500 else {
+                        **scope,'truncated':True,'json_preview':raw[:1800],
+                        'note':'Use get_rvt_record(section=value, record_id, json_path) for the complete saved parameter'}
+                    size=len(encode(shown))
+                    if items and (len(items)>=limit or budget+size>20000):
+                        next_cursor=continuation(rid,index);break
+                    items.append(shown);budget+=size
+                if next_cursor is not None:break
+        return {'project_id':project_id,'extraction_id':extraction_id,'source':snapshot['source'],
+            'snapshot_status':snapshot['status'],'profile':snapshot['profile'],
+            'query':query,'element_id':element_id,'class_name':class_name,'items':items,
+            'returned_count':len(items),'scanned_records':scanned,'checked_parameter_entries':checked,
+            'scanned_records_without_metadata':without_metadata,'snapshot_record_count':snapshot['record_count'],
+            'next_cursor':next_cursor,'search_exhausted':next_cursor is None,
+            'absence_verified':False,'value_semantics':'serialized_not_evaluated',
+            'coverage_note':'Searches saved parameter projections only, including definitions and unresolved slots. '
+                'Counts describe this batch, not model completeness. Follow next_cursor even when items is empty. '
+                'No match does not establish that the parameter or equipment is absent from the RVT.'}
 
     def export_record(self,project_id,extraction_id,record_id,format='json'):
         """Export a cached record; CSV is a long table of saved cells, not an evaluated schedule."""

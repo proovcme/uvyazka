@@ -114,6 +114,19 @@ fn element_tail_for(ifc_upper: &str) -> ElementTail {
     }
 }
 
+/// IFC4's `IfcFlowDirectionEnum`, the values a port's `FlowDirection` is
+/// written with (#828).
+const PORT_FLOW_DIRECTIONS: [&str; 4] = ["SOURCE", "SINK", "SOURCEANDSINK", "NOTDEFINED"];
+/// IFC4's `IfcDistributionPortTypeEnum` but `USERDEFINED`, which needs an
+/// `ObjectType` a port is written without: the values a port's
+/// `PredefinedType` is written with (#828).
+const PORT_TYPES: [&str; 5] = ["CABLE", "CABLECARRIER", "DUCT", "PIPE", "NOTDEFINED"];
+
+/// `raw` as a token of `allowed`, an IFC4 enumeration, or `None`.
+fn step_enum_of(raw: &str, allowed: &[&str]) -> Option<String> {
+    step_enum_token(raw).filter(|token| allowed.contains(&token.as_str()))
+}
+
 /// Accept a `PredefinedType` token only when it is a well-formed STEP
 /// enumeration name: uppercase ASCII letters, digits and underscores,
 /// starting with a letter.
@@ -152,6 +165,8 @@ fn type_entity_for(ifc_upper: &str, predefined: Option<&str>) -> Option<(String,
     let tail = match ifc_upper {
         "IFCDOOR" | "IFCWINDOW" => format!("{pt},.NOTDEFINED.,$,$"),
         "IFCFURNITURE" => format!(".NOTDEFINED.,{pt}"),
+        // #763: a family instance written as a space; `LongName` follows.
+        "IFCSPACE" => format!("{pt},$"),
         "IFCWALL"
         | "IFCSLAB"
         | "IFCBEAM"
@@ -177,11 +192,17 @@ fn type_entity_for(ifc_upper: &str, predefined: Option<&str>) -> Option<(String,
         | "IFCPIPEFITTING"
         | "IFCPIPESEGMENT"
         | "IFCSANITARYTERMINAL"
+        | "IFCWASTETERMINAL"
+        | "IFCFIRESUPPRESSIONTERMINAL"
         | "IFCTRANSPORTELEMENT" => pt,
         _ => return None,
     };
     Some((format!("{ifc_upper}TYPE"), tail))
 }
+
+/// A port's element (index into the model's entities), its point (model
+/// feet) and the direction its Z axis points along (#847).
+type PortPoint = (usize, [f64; 3], Option<[f64; 3]>);
 
 /// revit-ifc's name for a type entity the writer emits (its `IFCEntityType`
 /// enum), as its GUID keys spell it (B73).
@@ -215,7 +236,10 @@ fn revit_ifc_type_entity_name(step_name: &str) -> Option<&'static str> {
         "IFCPIPEFITTINGTYPE" => "IfcPipeFittingType",
         "IFCPIPESEGMENTTYPE" => "IfcPipeSegmentType",
         "IFCSANITARYTERMINALTYPE" => "IfcSanitaryTerminalType",
+        "IFCWASTETERMINALTYPE" => "IfcWasteTerminalType",
+        "IFCFIRESUPPRESSIONTERMINALTYPE" => "IfcFireSuppressionTerminalType",
         "IFCTRANSPORTELEMENTTYPE" => "IfcTransportElementType",
+        "IFCSPACETYPE" => "IfcSpaceType",
         _ => return None,
     })
 }
@@ -279,6 +303,69 @@ impl StepWriter {
     /// shared `solid_position` and the body's `depth_m`, or, for a cut with
     /// its own height (RE-93), a placement that far above the element's and
     /// that height.
+    /// A port's `IfcLocalPlacement` at `point_feet` (model feet), its Z axis
+    /// along `direction` (model axes) where given, in the frame of its
+    /// element's placement `parent`, which sits at `element_location` turned
+    /// by `rotation` about Z (#847).
+    fn port_placement(
+        &mut self,
+        parent: usize,
+        element_location: Option<[f64; 3]>,
+        rotation: Option<f64>,
+        point_feet: [f64; 3],
+        direction: Option<[f64; 3]>,
+    ) -> usize {
+        let [ox, oy, oz] = element_location.unwrap_or([0.0; 3]);
+        let (dx, dy, dz) = (point_feet[0] - ox, point_feet[1] - oy, point_feet[2] - oz);
+        let angle = rotation.unwrap_or(0.0);
+        let (c, s) = (angle.cos(), angle.sin());
+        let local = [c * dx + s * dy, -s * dx + c * dy, dz];
+        let point = self.id();
+        self.emit_entity(
+            point,
+            format!(
+                "IFCCARTESIANPOINT(({:.6},{:.6},{:.6}))",
+                local[0] * 0.3048,
+                local[1] * 0.3048,
+                local[2] * 0.3048
+            ),
+        );
+        // The Z axis along `direction`, and a reference direction across
+        // it: up for a port that does not point up or down, else +X. Nothing
+        // read gives the port's X axis, and IFC's default (+X) leaves none
+        // for a Z axis along -X.
+        let axes = direction.map(|[x, y, z]| {
+            let local = [c * x + s * y, -s * x + c * y, z];
+            let z_id = self.id();
+            self.emit_entity(
+                z_id,
+                format!(
+                    "IFCDIRECTION(({:.6},{:.6},{:.6}))",
+                    local[0], local[1], local[2]
+                ),
+            );
+            let reference = if local[2].abs() < 0.9 {
+                "IFCDIRECTION((0.,0.,1.))"
+            } else {
+                "IFCDIRECTION((1.,0.,0.))"
+            };
+            let x_id = self.id();
+            self.emit_entity(x_id, reference);
+            (z_id, x_id)
+        });
+        let axis = self.id();
+        self.emit_entity(
+            axis,
+            match axes {
+                Some((z_id, x_id)) => format!("IFCAXIS2PLACEMENT3D(#{point},#{z_id},#{x_id})"),
+                None => format!("IFCAXIS2PLACEMENT3D(#{point},$,$)"),
+            },
+        );
+        let placement = self.id();
+        self.emit_entity(placement, format!("IFCLOCALPLACEMENT(#{parent},#{axis})"));
+        placement
+    }
+
     fn opening_solid_position(
         &mut self,
         solid_position: usize,
@@ -325,14 +412,17 @@ impl StepWriter {
     /// `IfcPropertySet` holding them (GlobalId `set_gid`) and the
     /// `IfcRelDefinesByProperties` (GlobalId `rel_gid`) relating it to
     /// `object`.
-    fn emit_property_set(
+    /// Emit a property set and its properties, with no relationship: the
+    /// set id, for a type object's `HasPropertySets`.
+    fn emit_bare_property_set(
         &mut self,
         owner_hist: usize,
-        object: usize,
         pset: &PropertySet,
         set_gid: &str,
-        rel_gid: &str,
-    ) {
+    ) -> usize {
+        if pset.name.starts_with("Qto_") {
+            return self.emit_element_quantity(owner_hist, pset, set_gid);
+        }
         let mut prop_ids: Vec<usize> = Vec::with_capacity(pset.properties.len());
         for prop in &pset.properties {
             let p_id = self.id();
@@ -357,6 +447,61 @@ impl StepWriter {
             set_id,
             format!("IFCPROPERTYSET('{set_gid}',#{owner_hist},'{set_name}',$,({refs}))"),
         );
+        set_id
+    }
+
+    /// A `Qto_` set as IFC4's `IfcElementQuantity` (#822): each value that is
+    /// a quantity ([`super::entities::PropertyValue::quantity`]) as its simple
+    /// quantity, any other left out. [`Self::emit_property_set`] writes no set
+    /// that has none.
+    fn emit_element_quantity(
+        &mut self,
+        owner_hist: usize,
+        pset: &PropertySet,
+        set_gid: &str,
+    ) -> usize {
+        let mut quantity_ids: Vec<usize> = Vec::with_capacity(pset.properties.len());
+        for prop in &pset.properties {
+            let Some((entity, value)) = prop.value.quantity() else {
+                continue;
+            };
+            let q_id = self.id();
+            let name_esc = escape(&prop.name);
+            self.emit_entity(q_id, format!("{entity}('{name_esc}',$,$,{value},$)"));
+            quantity_ids.push(q_id);
+        }
+        let refs = quantity_ids
+            .iter()
+            .map(|id| format!("#{id}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let set_id = self.id();
+        let set_name = escape(&pset.name);
+        self.emit_entity(
+            set_id,
+            format!("IFCELEMENTQUANTITY('{set_gid}',#{owner_hist},'{set_name}',$,$,({refs}))"),
+        );
+        set_id
+    }
+
+    fn emit_property_set(
+        &mut self,
+        owner_hist: usize,
+        object: usize,
+        pset: &PropertySet,
+        set_gid: &str,
+        rel_gid: &str,
+    ) {
+        // An IfcElementQuantity holds a quantity at least (#822).
+        if pset.name.starts_with("Qto_")
+            && pset
+                .properties
+                .iter()
+                .all(|prop| prop.value.quantity().is_none())
+        {
+            return;
+        }
+        let set_id = self.emit_bare_property_set(owner_hist, pset, set_gid);
         let rel_id = self.id();
         self.emit_entity(
             rel_id,
@@ -987,9 +1132,11 @@ impl StepWriter {
     /// pounds on the way out and writes angles in radians, so these are
     /// the units a reader must apply. `model.units`, Revit's display units
     /// (IFC-40), describe the source model and stay out of it; the export
-    /// diagnostics report them.
-    fn emit_unit_assignment(&mut self) -> Vec<usize> {
-        [
+    /// diagnostics report them. A model with a thermal transmittance in any
+    /// element's property set also gets kelvin and W/(m²·K), the derived unit
+    /// its values are in (RE-194), as Revit's export declares it.
+    fn emit_unit_assignment(&mut self, model: &IfcModel) -> Vec<usize> {
+        let mut units: Vec<usize> = [
             ("LENGTHUNIT", "$", "METRE"),
             ("AREAUNIT", "$", "SQUARE_METRE"),
             ("VOLUMEUNIT", "$", "CUBIC_METRE"),
@@ -1003,7 +1150,58 @@ impl StepWriter {
             self.emit_entity(id, format!("IFCSIUNIT(*,.{unit_type}.,{prefix},.{name}.)"));
             id
         })
-        .collect()
+        .collect();
+        fn thermal_value(value: &super::entities::PropertyValue) -> bool {
+            match value {
+                super::entities::PropertyValue::ThermalTransmittance(_) => true,
+                super::entities::PropertyValue::List(items) => items.iter().any(thermal_value),
+                _ => false,
+            }
+        }
+        let thermal = model.entities.iter().any(|entity| {
+            let set = match entity {
+                super::entities::IfcEntity::ElementPropertySet { set, .. } => Some(set),
+                super::entities::IfcEntity::BuildingElement { property_set, .. } => {
+                    property_set.as_ref()
+                }
+                _ => None,
+            };
+            set.is_some_and(|set| {
+                set.properties
+                    .iter()
+                    .any(|property| thermal_value(&property.value))
+            })
+        });
+        if thermal {
+            let (kilogram, second) = (units[4], units[5]);
+            let kelvin = self.id();
+            self.emit_entity(
+                kelvin,
+                "IFCSIUNIT(*,.THERMODYNAMICTEMPERATUREUNIT.,$,.KELVIN.)",
+            );
+            let elements: Vec<usize> = [(kilogram, 1), (kelvin, -1), (second, -3)]
+                .into_iter()
+                .map(|(unit, exponent)| {
+                    let id = self.id();
+                    self.emit_entity(id, format!("IFCDERIVEDUNITELEMENT(#{unit},{exponent})"));
+                    id
+                })
+                .collect();
+            let derived = self.id();
+            self.emit_entity(
+                derived,
+                format!(
+                    "IFCDERIVEDUNIT(({}),.THERMALTRANSMITTANCEUNIT.,$)",
+                    elements
+                        .iter()
+                        .map(|id| format!("#{id}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            );
+            units.extend([kelvin, derived]);
+        }
+        units
     }
 
     fn emit_header(&mut self, model: &IfcModel) {
@@ -1061,7 +1259,7 @@ impl StepWriter {
         );
 
         // Unit assignment (IFC-40, #403).
-        let unit_entity_ids = self.emit_unit_assignment();
+        let unit_entity_ids = self.emit_unit_assignment(model);
         let unit_assignment = self.id();
         let unit_refs = unit_entity_ids
             .iter()
@@ -1228,14 +1426,14 @@ impl StepWriter {
             );
         }
 
-        // #35: the sets Revit's export gives every storey and the building
-        // on the RE1 models. A model with no decoded Level has neither.
-        for (index, storey) in storeys.iter().enumerate() {
-            for set in &PropertySet::storey_sets(&storey.name) {
-                let key = [storey_gids[index].as_str(), set.name.as_str()].join("\u{1f}");
+        // #35: the sets Revit's export gives every storey and the building.
+        // A model with no decoded Level has neither.
+        for (storey_gid, &storey_id) in storey_gids.iter().zip(&storey_ids) {
+            for set in &PropertySet::storey_sets() {
+                let key = [storey_gid.as_str(), set.name.as_str()].join("\u{1f}");
                 self.emit_property_set(
                     owner_hist,
-                    storey_ids[index],
+                    storey_id,
                     set,
                     &gid(&["property-set", &key]),
                     &gid(&["defines-by-properties", &key]),
@@ -1696,6 +1894,12 @@ impl StepWriter {
         // and putting them on a named storey would state a containment
         // nothing measured.
         let mut unplaced_elements: Vec<usize> = Vec::new();
+        // A space is a spatial element, not a contained one: it is an
+        // aggregated part of its storey (or of the building when no storey
+        // join reached it), never in `IfcRelContainedInSpatialStructure`
+        // (buildingSMART validation rules SPS002 and SPS007).
+        let mut per_storey_spaces: Vec<Vec<usize>> = vec![Vec::new(); storeys.len()];
+        let mut unplaced_spaces: Vec<usize> = Vec::new();
         // B63: the elements a space contains, by the space's entity index;
         // they are left out of their storey's containment.
         let space_of: HashMap<usize, usize> = model
@@ -1793,8 +1997,43 @@ impl StepWriter {
             *occurrence += 1;
             element_gids[entity_idx] = Some(element_gid);
         }
+        // #823: the further pieces of an element of separate loops that are
+        // written as items of its body: where the element and the piece are
+        // both plain extrusions, or neither has geometry. Any other piece is
+        // written as an element of its own.
+        let plain_body = |index: usize| match model.entities.get(index) {
+            Some(super::entities::IfcEntity::BuildingElement {
+                extrusion,
+                solid_shape: None,
+                representation_map_index: None,
+                ..
+            }) => Some(extrusion.as_ref()),
+            _ => None,
+        };
+        let mut piece_bodies: BTreeMap<usize, Vec<&Extrusion>> = BTreeMap::new();
+        let mut folded_pieces: std::collections::BTreeSet<usize> = Default::default();
+        for (owner, pieces) in &model.body_pieces {
+            let Some(owner_body) = plain_body(*owner) else {
+                continue;
+            };
+            for piece in pieces {
+                match (owner_body, plain_body(*piece)) {
+                    (Some(_), Some(Some(body))) => {
+                        piece_bodies.entry(*owner).or_default().push(body);
+                        folded_pieces.insert(*piece);
+                    }
+                    (None, Some(None)) => {
+                        folded_pieces.insert(*piece);
+                    }
+                    _ => {}
+                }
+            }
+        }
         let mut el_id_to_gid: HashMap<usize, &str> = HashMap::new();
         for (entity_idx, entity) in model.entities.iter().enumerate() {
+            if folded_pieces.contains(&entity_idx) {
+                continue;
+            }
             if let super::entities::IfcEntity::BuildingElement {
                 ifc_type,
                 name,
@@ -2010,6 +2249,30 @@ impl StepWriter {
                             "IFCEXTRUDEDAREASOLID(#{profile_id},#{position},#{z_axis},{depth:.6})"
                         ),
                     );
+                    // #823: each further piece written in this element's
+                    // body, a solid of its own in the same frame.
+                    let mut items = vec![format!("#{solid_id}")];
+                    for piece in piece_bodies.get(&entity_idx).into_iter().flatten() {
+                        let origin = self.id();
+                        self.emit_entity(origin, "IFCCARTESIANPOINT((0.000000,0.000000))");
+                        let x_axis = self.id();
+                        self.emit_entity(x_axis, "IFCDIRECTION((1.,0.))");
+                        let placement = self.id();
+                        self.emit_entity(
+                            placement,
+                            format!("IFCAXIS2PLACEMENT2D(#{origin},#{x_axis})"),
+                        );
+                        let piece_profile = self.emit_profile_def(piece, placement);
+                        let piece_solid = self.id();
+                        self.emit_entity(
+                            piece_solid,
+                            format!(
+                                "IFCEXTRUDEDAREASOLID(#{piece_profile},#{solid_position},#{z_axis},{:.6})",
+                                piece.height_feet * 0.3048
+                            ),
+                        );
+                        items.push(format!("#{piece_solid}"));
+                    }
                     // The representation groups the solid inside the
                     // project's 3D geometric context (#geom_ctx) with
                     // the IFC4-standard identifier + type for a
@@ -2018,7 +2281,8 @@ impl StepWriter {
                     self.emit_entity(
                         rep_id,
                         format!(
-                            "IFCSHAPEREPRESENTATION(#{geom_ctx},'Body','SweptSolid',(#{solid_id}))"
+                            "IFCSHAPEREPRESENTATION(#{geom_ctx},'Body','SweptSolid',({}))",
+                            items.join(",")
                         ),
                     );
                     let prod_shape_id = self.id();
@@ -2052,10 +2316,26 @@ impl StepWriter {
                 // An `IfcSpace` is named by its room number and described
                 // by its room name, as Revit's own exporter writes it
                 // (RE-117): `Name` the number, `LongName` the name. A room
-                // with no number keeps the `Room-<ElementId>` Name, and one
-                // with no name has no LongName.
+                // with a name and no number is named `<name>:<ElementId>`,
+                // the name Revit's exporter falls back to (RE-196); one with
+                // neither keeps the `Room-<ElementId>` Name, and one with no
+                // name has no LongName.
+                let room_name = property_set.as_ref().and_then(|set| {
+                    set.properties.iter().find_map(|p| match &p.value {
+                        super::entities::PropertyValue::Text(text)
+                            if p.name == super::export_content::ROOM_NAME_PROPERTY
+                                && !text.trim().is_empty() =>
+                        {
+                            Some(text.as_str())
+                        }
+                        _ => None,
+                    })
+                });
+                let unnumbered = room_name.zip(type_guid.as_deref()).map(|(room_name, tag)| {
+                    quoted_or_dollar(&escape(&format!("{room_name}:{tag}")))
+                });
                 let name_quoted = is_space
-                    .then(|| room_text(super::export_content::ROOM_NUMBER_PROPERTY))
+                    .then(|| room_text(super::export_content::ROOM_NUMBER_PROPERTY).or(unnumbered))
                     .flatten()
                     .unwrap_or_else(|| quoted_or_dollar(&escape(name)));
                 let long_name_quoted = room_text(super::export_content::ROOM_NAME_PROPERTY)
@@ -2116,7 +2396,12 @@ impl StepWriter {
                     })
                 };
                 let [.., width_key, height_key] = super::export_content::FILLER_OPENING_PROPERTIES;
-                let overall = property_length(height_key).zip(property_length(width_key));
+                // RE-187: a door with no opening read takes its type's Width and
+                // Height, which Revit's export writes there too.
+                let [type_width, type_height] = super::export_content::DOOR_TYPE_SIZE_PROPERTIES;
+                let overall = property_length(height_key)
+                    .zip(property_length(width_key))
+                    .or_else(|| property_length(type_height).zip(property_length(type_width)));
                 let tail = element_attribute_tail(
                     &ifc_upper,
                     &tag_quoted,
@@ -2141,6 +2426,11 @@ impl StepWriter {
                     void_fill_triples.push((*h_idx, el_id, None, global_id.to_string()));
                 } else if let Some(&space) = space_of.get(&entity_idx) {
                     per_space_elements.entry(space).or_default().push(el_id);
+                } else if ifc_upper == "IFCSPACE" {
+                    match idx {
+                        Some(index) => per_storey_spaces[index].push(el_id),
+                        None => unplaced_spaces.push(el_id),
+                    }
                 } else if !aggregate_parts.contains(&entity_idx) {
                     match idx {
                         Some(index) => per_storey_elements[index].push(el_id),
@@ -2606,8 +2896,10 @@ impl StepWriter {
         }
 
         // RE-138 (#528): the joins of ducts and pipes. A connector is an
-        // `IfcDistributionPort` named after its element and index, with no
-        // flow direction (the file's lists carry none), nested in its element
+        // `IfcDistributionPort` named after its element and index, with
+        // `SOURCEANDSINK` where its connector's domain gives it no direction
+        // and `NOTDEFINED` where the direction is the connector's, which is
+        // not read (RE-197), nested in its element
         // by one `IfcRelNests` per element, as Revit's IFC4 export nests them
         // (B83, B84): IFC4 keeps `IfcRelConnectsPortToElement` for a dynamic
         // connection and restricts it to distribution elements. A join is an
@@ -2615,6 +2907,79 @@ impl StepWriter {
         // join it is in.
         let mut ports: HashMap<(u32, u32), usize> = HashMap::new();
         let mut nested: BTreeMap<u32, (usize, Vec<usize>)> = BTreeMap::new();
+        // #828: each connector's flow direction, `.NOTDEFINED.` where none
+        // is read (RE-197), and port type, `$` where none is read.
+        let port_attributes: HashMap<(u32, u32), String> = model
+            .entities
+            .iter()
+            .filter_map(|entity| match entity {
+                super::entities::IfcEntity::Port {
+                    id,
+                    index,
+                    predefined_type,
+                    flow_direction,
+                    ..
+                } => Some((
+                    (*id, *index),
+                    format!(
+                        ".{}.,{}",
+                        flow_direction
+                            .as_deref()
+                            .and_then(|flow| step_enum_of(flow, &PORT_FLOW_DIRECTIONS))
+                            .unwrap_or_else(|| "NOTDEFINED".into()),
+                        predefined_type
+                            .as_deref()
+                            .and_then(|kind| step_enum_of(kind, &PORT_TYPES))
+                            .map_or("$".to_string(), |kind| format!(".{kind}."))
+                    ),
+                )),
+                _ => None,
+            })
+            .collect();
+        let port_attribute = |id: u32, index: u32| {
+            port_attributes
+                .get(&(id, index))
+                .map_or(".NOTDEFINED.,$", String::as_str)
+                .to_string()
+        };
+        // #847: where each connector is, by its element, when it is read.
+        let port_points: HashMap<(u32, u32), PortPoint> = model
+            .entities
+            .iter()
+            .filter_map(|entity| match entity {
+                super::entities::IfcEntity::Port {
+                    element,
+                    id,
+                    index,
+                    location_feet: Some(point),
+                    direction,
+                    flow_direction,
+                    ..
+                } => {
+                    // Revit's export points a port into its pipe where its
+                    // flow is SINK, and out of it otherwise (#847).
+                    let sink = flow_direction
+                        .as_deref()
+                        .is_some_and(|flow| flow.eq_ignore_ascii_case("SINK"));
+                    let direction = direction.map(|d| if sink { [-d[0], -d[1], -d[2]] } else { d });
+                    Some(((*id, *index), (*element, *point, direction)))
+                }
+                _ => None,
+            })
+            .collect();
+        let element_frames: HashMap<usize, (Option<[f64; 3]>, Option<f64>)> = model
+            .entities
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entity)| match entity {
+                super::entities::IfcEntity::BuildingElement {
+                    location_feet,
+                    rotation_radians,
+                    ..
+                } => Some((index, (*location_feet, *rotation_radians))),
+                _ => None,
+            })
+            .collect();
         for entity in &model.entities {
             let super::entities::IfcEntity::PortConnection {
                 a,
@@ -2640,13 +3005,23 @@ impl StepWriter {
                     port_ids[slot] = port;
                     continue;
                 }
+                let placement = port_points
+                    .get(&(id, index))
+                    .and_then(|(owner, point, direction)| {
+                        let parent = entity_index_to_placement.get(*owner).copied().flatten()?;
+                        let (location, rotation) =
+                            element_frames.get(owner).copied().unwrap_or((None, None));
+                        Some(self.port_placement(parent, location, rotation, *point, *direction))
+                    })
+                    .map_or("$".to_string(), |placement| format!("#{placement}"));
                 let (id_text, index_text) = (id.to_string(), index.to_string());
                 let port = self.id();
                 self.emit_entity(
                     port,
                     format!(
-                        "IFCDISTRIBUTIONPORT('{}',#{owner_hist},'Port_{id}_{index}',$,$,$,$,.NOTDEFINED.,$,$)",
+                        "IFCDISTRIBUTIONPORT('{}',#{owner_hist},'Port_{id}_{index}',$,$,{placement},$,{},$)",
                         gid(&["port", &id_text, &index_text]),
+                        port_attribute(id, index),
                     ),
                 );
                 nested
@@ -2677,7 +3052,10 @@ impl StepWriter {
 
         // B54: a duct's or pipe's connector no join has given a port.
         for entity in &model.entities {
-            let super::entities::IfcEntity::Port { element, id, index } = entity else {
+            let super::entities::IfcEntity::Port {
+                element, id, index, ..
+            } = entity
+            else {
                 continue;
             };
             if ports.contains_key(&(*id, *index)) {
@@ -2687,13 +3065,23 @@ impl StepWriter {
             else {
                 continue;
             };
+            let placement = port_points
+                .get(&(*id, *index))
+                .and_then(|(owner, point, direction)| {
+                    let parent = entity_index_to_placement.get(*owner).copied().flatten()?;
+                    let (location, rotation) =
+                        element_frames.get(owner).copied().unwrap_or((None, None));
+                    Some(self.port_placement(parent, location, rotation, *point, *direction))
+                })
+                .map_or("$".to_string(), |placement| format!("#{placement}"));
             let (id_text, index_text) = (id.to_string(), index.to_string());
             let port = self.id();
             self.emit_entity(
                 port,
                 format!(
-                    "IFCDISTRIBUTIONPORT('{}',#{owner_hist},'Port_{id}_{index}',$,$,$,$,.NOTDEFINED.,$,$)",
+                    "IFCDISTRIBUTIONPORT('{}',#{owner_hist},'Port_{id}_{index}',$,$,{placement},$,{},$)",
                     gid(&["port", &id_text, &index_text]),
+                    port_attribute(*id, *index),
                 ),
             );
             nested
@@ -2883,6 +3271,28 @@ impl StepWriter {
             global_id: Option<String>,
             first_element: u32,
             elements: Vec<usize>,
+            family: String,
+            type_name: String,
+            category: Option<String>,
+        }
+        // Spike 257: the Category an element's `Other` set names, which its
+        // type object's own `Other` set repeats, as Revit writes it.
+        let mut categories: HashMap<usize, String> = HashMap::new();
+        for entity in &model.entities {
+            let super::entities::IfcEntity::ElementPropertySet { element, set } = entity else {
+                continue;
+            };
+            if set.name != super::export_content::REVIT_OTHER_SET {
+                continue;
+            }
+            if let Some(super::entities::PropertyValue::Label(category)) = set
+                .properties
+                .iter()
+                .find(|p| p.name == "Category")
+                .map(|p| &p.value)
+            {
+                categories.insert(*element, category.clone());
+            }
         }
         let mut type_groups: Vec<TypeGroup> = Vec::new();
         for (entity_idx, entity) in model.entities.iter().enumerate() {
@@ -2950,8 +3360,17 @@ impl StepWriter {
                 }
                 None => type_groups.push(TypeGroup {
                     type_id: *type_id,
+                    // #763: Revit names a family instance's `IfcSpaceType`
+                    // after its type alone.
+                    name: if entity_name == "IFCSPACETYPE" {
+                        type_name.clone()
+                    } else {
+                        format!("{family}:{type_name}")
+                    },
                     entity: entity_name,
-                    name: format!("{family}:{type_name}"),
+                    category: categories.get(&entity_idx).cloned(),
+                    family,
+                    type_name,
                     tail,
                     predefined: predefined_type
                         .as_deref()
@@ -2989,6 +3408,9 @@ impl StepWriter {
                 predefined,
                 global_id,
                 elements,
+                family,
+                type_name,
+                category,
                 ..
             },
         ) in type_groups.iter().enumerate()
@@ -3015,12 +3437,47 @@ impl StepWriter {
                 Some(global_id) if used_gids.insert(global_id.clone()) => global_id,
                 _ => gid(&["type", entity_name, &tag]),
             };
+            // Spike 257: Revit's type parameters Category, Family Name and
+            // Type Name, in the sets Revit's export gives a type object.
+            let text = |name: &str, value: String| super::entities::Property {
+                name: name.into(),
+                value: super::entities::PropertyValue::Text(value),
+            };
+            let mut other = Vec::new();
+            if let Some(category) = category {
+                other.push(super::entities::Property {
+                    name: "Category".into(),
+                    value: super::entities::PropertyValue::Label(category.clone()),
+                });
+            }
+            other.push(text("Family Name", family.clone()));
+            let type_sets = [
+                PropertySet {
+                    name: super::export_content::REVIT_OTHER_SET.into(),
+                    properties: other,
+                },
+                PropertySet {
+                    name: "Identity Data".into(),
+                    properties: vec![text("Type Name", type_name.clone())],
+                },
+            ];
+            let set_ids: Vec<String> = type_sets
+                .iter()
+                .map(|set| {
+                    let set_gid = gid(&["type-pset", &type_gid, &set.name]);
+                    format!(
+                        "#{}",
+                        self.emit_bare_property_set(owner_hist, set, &set_gid)
+                    )
+                })
+                .collect();
             let type_el_id = self.id();
             self.emit_entity(
                 type_el_id,
                 format!(
-                    "{entity_name}('{type_gid}',#{owner_hist},{},$,$,$,$,'{tag}',$,{tail})",
+                    "{entity_name}('{type_gid}',#{owner_hist},{},$,$,({}),$,'{tag}',$,{tail})",
                     quoted_or_dollar(&escape(name)),
+                    set_ids.join(","),
                 ),
             );
             let rel_id = self.id();
@@ -3040,8 +3497,9 @@ impl StepWriter {
 
         // B78: each room is typed by an `IfcSpaceType` of its own, as Revit's
         // export types all 116 of Core Interior's: named `<name> <number>:
-        // <ElementId>`, its Tag the room's ElementId, and its GlobalId the
-        // room's as a sub-element (`InstanceAsType`).
+        // <ElementId>`, or `<name>:<ElementId>` for a room with no number
+        // (RE-196), its Tag the room's ElementId, and its GlobalId the room's
+        // as a sub-element (`InstanceAsType`).
         for (entity_idx, entity) in model.entities.iter().enumerate() {
             let super::entities::IfcEntity::BuildingElement {
                 ifc_type,
@@ -3070,12 +3528,15 @@ impl StepWriter {
                     })
                 })
             };
-            let (Some(number), Some(room_name), Some(space_gid)) = (
-                room_text(super::export_content::ROOM_NUMBER_PROPERTY),
+            let (Some(room_name), Some(space_gid)) = (
                 room_text(super::export_content::ROOM_NAME_PROPERTY),
                 el_id_to_gid.get(&el_id),
             ) else {
                 continue;
+            };
+            let display = match room_text(super::export_content::ROOM_NUMBER_PROPERTY) {
+                Some(number) => format!("{room_name} {number}"),
+                None => room_name,
             };
             let type_gid =
                 crate::revit_global_ids::sub_element_global_id(space_gid, super::INSTANCE_AS_TYPE)
@@ -3086,7 +3547,7 @@ impl StepWriter {
                 type_el_id,
                 format!(
                     "IFCSPACETYPE('{type_gid}',#{owner_hist},'{}',$,$,$,$,'{}',$,.NOTDEFINED.,$)",
-                    escape(&format!("{room_name} {number}:{tag}")),
+                    escape(&format!("{display}:{tag}")),
                     escape(tag),
                 ),
             );
@@ -3124,6 +3585,30 @@ impl StepWriter {
                 format!(
                     "IFCRELCONTAINEDINSPATIALSTRUCTURE('{container_gid}',#{owner_hist},$,$,({refs_list}),#{target_storey})",
                 ),
+            );
+        }
+        for (idx, space_ids) in per_storey_spaces
+            .iter()
+            .enumerate()
+            .map(|(idx, ids)| (Some(idx), ids))
+            .chain(std::iter::once((None, &unplaced_spaces)))
+        {
+            if space_ids.is_empty() {
+                continue;
+            }
+            let (parent, rel_gid) = match idx {
+                Some(index) => (storey_ids[index], gid(&["aggregates", &storey_gids[index]])),
+                None => (building_id, gid(&["aggregates", "building", "spaces"])),
+            };
+            let rel_id = self.id();
+            let refs_list = space_ids
+                .iter()
+                .map(|id| format!("#{id}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            self.emit_entity(
+                rel_id,
+                format!("IFCRELAGGREGATES('{rel_gid}',#{owner_hist},$,$,#{parent},({refs_list}))"),
             );
         }
         // B63: each space's furniture, fixtures and equipment.

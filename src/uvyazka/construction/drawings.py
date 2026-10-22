@@ -37,7 +37,7 @@ def source_info(path):
             "length_to_m": factor, "space": "modelspace", "interpretation": "unverified"}
     if path.suffix.lower() == ".dwg":
         return {"format": "dwg", "pages": 1, "status": "requires_adapter",
-            "reason": "Нужен экспорт DXF/PDF через CAD-коннектор; бинарный DWG здесь не разбирается"}
+            "reason": "Этот инструмент пока не извлекает объекты DWG. Прямой просмотр доступен через LibreDWG в CAD-приложении; перенос его данных в базу/MCP ещё не реализован. Установленный AutoCAD не требуется для просмотра"}
     with Image.open(path) as image:
         if image.width * image.height > 80_000_000:
             raise ValueError("Изображение превышает 80 миллионов пикселей")

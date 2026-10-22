@@ -241,10 +241,10 @@ pub const MAPPINGS: &[Mapping] = &[
     //
     // `.SPACE.` rather than `.INTERNAL.` (#220): Revit writes
     // `.SPACE.` on all 116 `IFCSPACE` rows of
-    // `2024_Core_Interior_slim.ifc`. `Area` and `Space` keep `None` —
-    // no recorded edge shows what the witness does with those two
-    // Revit classes, and inventing a value is the thing this table
-    // exists to avoid.
+    // `2024_Core_Interior_slim.ifc`, and on the 30 Areas of the BIM4LCA
+    // office (#763). `Space` keeps `None`: no recorded edge shows what
+    // the witness does with that Revit class, and inventing a value is
+    // the thing this table exists to avoid.
     Mapping {
         revit_class: "Room",
         ifc_type: "IFCSPACE",
@@ -253,7 +253,7 @@ pub const MAPPINGS: &[Mapping] = &[
     Mapping {
         revit_class: "Area",
         ifc_type: "IFCSPACE",
-        predefined_type: None,
+        predefined_type: Some("SPACE"),
     },
     Mapping {
         revit_class: "Space",
@@ -439,10 +439,11 @@ pub fn lookup(revit_class: &str) -> Option<&'static Mapping> {
 /// [`crate::partition_ifc_export_overrides`] returns whatever value
 /// string the parameter block holds — but acting on a value is a
 /// claim, so only values proven against a reference export are
-/// listed. An unlisted value leaves the element on its class mapping
-/// and is reported as an unhonoured override rather than guessed at.
+/// listed. An unlisted value leaves the element on its class mapping,
+/// and the export diagnostics count it in their warnings, by value and
+/// class, rather than guessing (#792).
 ///
-/// `IfcShadingDevice` is the one proven value: on
+/// `IfcShadingDevice` is proven on floors, not on every element: on
 /// `2024_Core_Interior.rvt` the twenty `OST_Floors` instances that
 /// carry it are exactly the twenty `IFCSHADINGDEVICE` rows in
 /// Revit's own export, and the remaining seventy-nine plus the one
@@ -452,7 +453,9 @@ pub fn lookup(revit_class: &str) -> Option<&'static Mapping> {
 /// `IFC Exports/2024_Core_Interior_slim.ifc`, the same recorded choice
 /// that moved `IFCWALL` off `.STANDARD.`. Before #235 this slot was `$`
 /// on the grounds that rvt-rs decodes no value for it; the witness is
-/// the value.
+/// the value. On curtain walls it is disproven for Revit 2024: the 124
+/// BIM4LCA office curtain walls that carry it are `IfcCurtainWall` in
+/// Revit's export ([`export_override_applies`], RE-188).
 ///
 /// RE-45 adds two targets, each proven against a reference export:
 /// `IfcSlab`, which the two Core Interior floors carrying `ifcSlab` (with
@@ -461,6 +464,29 @@ pub fn lookup(revit_class: &str) -> Option<&'static Mapping> {
 /// (with `CLADDING`) are. The override's own predefined type replaces the
 /// target's default when it is an enumerator of that entity
 /// ([`predefined_type_for`]).
+///
+/// #792 adds five targets, proven on the two BIM4LCA office files (Revit
+/// 2024) against Revit's export of each: `IfcWasteTerminal` on 78 plumbing
+/// fixtures whose types carry `IfcWasteTerminalType` (Revit writes
+/// `FLOORTRAP` on 62 and `ROOFDRAIN` on 16), `IfcElectricAppliance` on 51
+/// items of electrical equipment, `IfcFireSuppressionTerminal` on 40 items of
+/// specialty equipment (`HOSEREEL`), `IfcSanitaryTerminal` on 15 casework
+/// elements (`WASHHANDBASIN`) and `IfcAirTerminal` on one item of electrical
+/// equipment. Each value's elements are exactly the ones Revit's export
+/// writes as its entity, and their predefined types are the ones it writes.
+///
+/// #792 adds two more: `IfcStair`, which 2 generic models of each office
+/// file carry and Revit writes as `IfcStair .NOTDEFINED.`, and `IfcDoor`,
+/// which a curtain panel carries with `DOOR` and Revit writes as
+/// `IfcDoor .DOOR.`. Every element of Revit's export of either file that
+/// carries one of the two values as its own is that entity there (16 and
+/// 268), as the other elements carrying `IfcStair` or `IfcDoor` already were.
+///
+/// #763 adds `IfcSpace`, which 42 `Turning Free Space` family instances of
+/// each office file carry, with `USERDEFINED` as their own predefined type,
+/// and which Revit writes as `IfcSpace .USERDEFINED.` typed by an
+/// `IfcSpaceType` named after the family type ([`space_predefined_type_for`]).
+/// A Room, Area or Space is a space already and keeps its own mapping.
 pub const EXPORT_OVERRIDE_TARGETS: &[Mapping] = &[
     Mapping {
         revit_class: "IfcShadingDevice",
@@ -477,11 +503,82 @@ pub const EXPORT_OVERRIDE_TARGETS: &[Mapping] = &[
         ifc_type: "IFCCOVERING",
         predefined_type: Some("NOTDEFINED"),
     },
+    Mapping {
+        revit_class: "IfcWasteTerminal",
+        ifc_type: "IFCWASTETERMINAL",
+        predefined_type: Some("NOTDEFINED"),
+    },
+    Mapping {
+        revit_class: "IfcElectricAppliance",
+        ifc_type: "IFCELECTRICAPPLIANCE",
+        predefined_type: Some("NOTDEFINED"),
+    },
+    Mapping {
+        revit_class: "IfcFireSuppressionTerminal",
+        ifc_type: "IFCFIRESUPPRESSIONTERMINAL",
+        predefined_type: Some("NOTDEFINED"),
+    },
+    Mapping {
+        revit_class: "IfcSanitaryTerminal",
+        ifc_type: "IFCSANITARYTERMINAL",
+        predefined_type: Some("NOTDEFINED"),
+    },
+    Mapping {
+        revit_class: "IfcAirTerminal",
+        ifc_type: "IFCAIRTERMINAL",
+        predefined_type: Some("NOTDEFINED"),
+    },
+    Mapping {
+        revit_class: "IfcStair",
+        ifc_type: "IFCSTAIR",
+        predefined_type: Some("NOTDEFINED"),
+    },
+    Mapping {
+        revit_class: "IfcDoor",
+        ifc_type: "IFCDOOR",
+        predefined_type: Some("DOOR"),
+    },
+    Mapping {
+        revit_class: "IfcSpace",
+        ifc_type: "IFCSPACE",
+        predefined_type: Some("NOTDEFINED"),
+    },
 ];
+
+/// The IFC4 `IfcSpaceTypeEnum` enumerator `value` names, for an element
+/// written as `IfcSpace` through its own "Export to IFC As" value (#763):
+/// Revit writes the 42 `Turning Free Space` instances of the office files,
+/// whose own predefined type is `USERDEFINED`, as `IfcSpace .USERDEFINED.`.
+/// Rooms are not looked up here: their own value is not measured against
+/// Revit's export, so they keep [`Mapping::predefined_type`]. `None` for a
+/// value that is not an enumerator.
+pub fn space_predefined_type_for(value: &str) -> Option<&'static str> {
+    const SPACE_TYPES: &[&str] = &[
+        "SPACE",
+        "PARKING",
+        "GFA",
+        "INTERNAL",
+        "EXTERNAL",
+        "USERDEFINED",
+        "NOTDEFINED",
+    ];
+    let value = value.trim();
+    SPACE_TYPES
+        .iter()
+        .copied()
+        .find(|enumerator| enumerator.eq_ignore_ascii_case(value))
+}
 
 /// IFC4 `PredefinedType` enumerators of the entities an export override
 /// can name, as the IFC4 schema lists them (`IfcSlabTypeEnum`,
-/// `IfcCoveringTypeEnum`, `IfcShadingDeviceTypeEnum`, `IfcRoofTypeEnum`).
+/// `IfcCoveringTypeEnum`, `IfcShadingDeviceTypeEnum`, `IfcRoofTypeEnum`,
+/// `IfcWasteTerminalTypeEnum`, `IfcElectricApplianceTypeEnum`,
+/// `IfcFireSuppressionTerminalTypeEnum`, `IfcSanitaryTerminalTypeEnum`,
+/// `IfcAirTerminalTypeEnum`). `IfcStair` and `IfcDoor`, honoured as targets
+/// since #792, are not listed, because listing them would apply every door's
+/// and stair's own predefined type as well, which is not measured. An
+/// element exported as either through its value takes the target's
+/// default, the one Revit writes on the elements measured.
 const PREDEFINED_TYPE_ENUMERATORS: &[(&str, &[&str])] = &[
     (
         "IFCSLAB",
@@ -535,6 +632,83 @@ const PREDEFINED_TYPE_ENUMERATORS: &[(&str, &[&str])] = &[
             "NOTDEFINED",
         ],
     ),
+    (
+        "IFCWASTETERMINAL",
+        &[
+            "FLOORTRAP",
+            "FLOORWASTE",
+            "GULLYSUMP",
+            "GULLYTRAP",
+            "ROOFDRAIN",
+            "WASTEDISPOSALUNIT",
+            "WASTETRAP",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
+    (
+        "IFCELECTRICAPPLIANCE",
+        &[
+            "DISHWASHER",
+            "ELECTRICCOOKER",
+            "FREESTANDINGELECTRICHEATER",
+            "FREESTANDINGFAN",
+            "FREESTANDINGWATERHEATER",
+            "FREESTANDINGWATERCOOLER",
+            "FREEZER",
+            "FRIDGE_FREEZER",
+            "HANDDRYER",
+            "KITCHENMACHINE",
+            "MICROWAVE",
+            "PHOTOCOPIER",
+            "REFRIGERATOR",
+            "TUMBLEDRYER",
+            "VENDINGMACHINE",
+            "WASHINGMACHINE",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
+    (
+        "IFCFIRESUPPRESSIONTERMINAL",
+        &[
+            "BREECHINGINLET",
+            "FIREHYDRANT",
+            "HOSEREEL",
+            "SPRINKLER",
+            "SPRINKLERDEFLECTOR",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
+    (
+        "IFCSANITARYTERMINAL",
+        &[
+            "BATH",
+            "BIDET",
+            "CISTERN",
+            "SHOWER",
+            "SINK",
+            "SANITARYFOUNTAIN",
+            "TOILETPAN",
+            "URINAL",
+            "WASHHANDBASIN",
+            "WCSEAT",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
+    (
+        "IFCAIRTERMINAL",
+        &[
+            "DIFFUSER",
+            "GRILLE",
+            "LOUVRE",
+            "REGISTER",
+            "USERDEFINED",
+            "NOTDEFINED",
+        ],
+    ),
 ];
 
 /// The IFC4 enumerator `value` names for `ifc_type`'s `PredefinedType`
@@ -550,6 +724,37 @@ pub fn predefined_type_for(ifc_type: &str, value: &str) -> Option<&'static str> 
         .iter()
         .copied()
         .find(|enumerator| enumerator.eq_ignore_ascii_case(value))
+}
+
+/// Whether Revit's exporter acts on an "Export to IFC As" value on an
+/// element of `revit_class`, in a file Revit `revit_version` saved (RE-188).
+///
+/// Revit 2024's exporter never reads a curtain wall's value: revit-ifc's
+/// `CurtainSystemExporter.ExportBase`, from `IFC_v24.1.0` to `IFC_v24.3.40`,
+/// creates every curtain wall as `IfcCurtainWall`. The 124 curtain walls
+/// of the two BIM4LCA office files set to `IfcShadingDevice` are
+/// `IfcCurtainWall` in Revit's export of each. From `IFC_v25.2.0` on,
+/// `ExportBase` takes the entity from the same lookup as other elements,
+/// so a 2025 or 2026 curtain wall keeps its value here. That is read from
+/// the exporter's source: no Revit 2025 or 2026 export of a curtain wall
+/// carrying a value has been measured. The file's release stands for the
+/// exporter's, since exporting from a later Revit upgrades the file first.
+/// An unknown release keeps the value.
+///
+/// Nor does Revit 2024's export act on a wall sweep's value (RE-192). On
+/// both BIM4LCA office files 9 wall sweeps each carry their own
+/// `IfcCovering` (predefined type `ROOFING`) in their own data object, and
+/// Revit's export of each file writes all 9 as `IfcBuildingElementProxy`.
+/// This is measured, not read from the exporter's source: revit-ifc's
+/// `WallSweepExporter` exports a sweep through `GenericElementExporter`,
+/// which takes the entity from the same lookup as other elements, so the
+/// value seems not to reach that lookup. No other release's wall sweep
+/// carrying a value has been measured.
+pub fn export_override_applies(revit_class: &str, revit_version: Option<u32>) -> bool {
+    !(matches!(
+        revit_class,
+        crate::partition_schema_mvp::CURTAIN_WALL_CLASS | "WallSweep"
+    ) && revit_version == Some(2024))
 }
 
 /// Look up the IFC entity type a "IFC Export As" override value names.

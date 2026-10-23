@@ -274,6 +274,7 @@ function renderSystemSummary(){
 function parameterDraft():ParameterFilter{return {name:el<HTMLInputElement>('parameter-name').value,value:el<HTMLInputElement>('parameter-value').value,operator:el<HTMLSelectElement>('parameter-operator').value as ParameterOperator};}
 function renderParameterFilters(){const host=el('parameter-active');host.replaceChildren();parameterFilters.forEach((filter,index)=>{const row=document.createElement('div');row.className='parameter-chip';const text=document.createElement('span');const operator=[...el<HTMLSelectElement>('parameter-operator').options].find(o=>o.value===filter.operator)?.textContent??filter.operator;text.textContent=filter.name+' · '+operator+' '+filter.value;const remove=document.createElement('button');remove.textContent='×';remove.setAttribute('aria-label','Убрать условие '+filter.name);remove.onclick=()=>{parameterFilters.splice(index,1);renderParameterFilters();applySceneVisibility();};row.append(text,remove);host.append(row);});}
 function renderElements() {
+  if(cadFrame)return;
   const query=el<HTMLInputElement>('element-search').value.trim(),levels=levelFacet.selected(),categories=categoryFacet.selected();
   const system=el<HTMLSelectElement>('system-filter').value,members=systemMembers(model,system),filters=[...parameterFilters,parameterDraft()];
   const combine=el<HTMLSelectElement>('parameter-combine').value as 'all'|'any';
@@ -320,6 +321,7 @@ async function openCad(file:File) {
   closeCad();selectElement(null);setMode('view');el('canvas').hidden=true;el('cad-host').hidden=false;el('no-model').hidden=true;document.body.classList.add('cad-open');
   el<HTMLButtonElement>('mode-simulate').disabled=true;el('file-title').textContent=file.name;el('geometry-kind').textContent='DWG / DXF · чертёж';
   el<HTMLButtonElement>('open-model-data').disabled=true;
+  el('inspector-title').textContent='Чертёж DWG / DXF';el('inspector').textContent='Чтение '+file.name;
   const iframe=document.createElement('iframe');iframe.title='Просмотр DWG / DXF';iframe.src='./cad/';cadFrame=iframe;el('cad-host').append(iframe);renderState();
   await new Promise<void>((resolve,reject)=>{
     const job=crypto.randomUUID();let opened=false,panel:ReturnType<typeof cadTreePanel>|null=null;
@@ -329,6 +331,7 @@ async function openCad(file:File) {
       if(event.data.job!==job)return;
       if(event.data.kind==='error'){if(opened)error(event.data.message);else finish(event.data.message);}
       if(event.data.kind==='opened'){
+        el('inspector').innerHTML=`<dl><dt>Файл</dt><dd>${copyValue(event.data.filename)}</dd><dt>Объектов в модели</dt><dd>${copyValue(event.data.entityCount)}</dd><dt>Слоёв</dt><dd>${copyValue(event.data.layers.length)}</dd></dl>`;el('workspace-status').textContent=`${event.data.entityCount} объектов · ${event.data.layers.length} слоёв · DWG / DXF`;
         el<HTMLDialogElement>('file-dialog').close();panel=cadTreePanel(el('element-tree'),command=>iframe.contentWindow?.postMessage({channel:'uvyazka-cad',job,...command},location.origin));panel.update(event.data.tree as CadTreeState);finish();
       }
       if(event.data.kind==='tree-state')panel?.update(event.data as CadTreeState);

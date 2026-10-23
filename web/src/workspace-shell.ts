@@ -54,7 +54,7 @@ export const workspaceShell=`
   <section class="simulation-dock simulation-only" aria-label="Управление симуляцией">
    <div class="playback">
     <span class="dock-label">4D<span>Ход строительства</span></span>
-    <button id="play" aria-label="Воспроизвести" class="primary" disabled>▶</button><button id="rewind" aria-label="В начало" disabled>↶</button>
+    <button id="calculate-current" class="primary" hidden>Рассчитать график</button><button id="play" aria-label="Воспроизвести" class="primary" disabled>▶</button><button id="rewind" aria-label="В начало" disabled>↶</button>
     <select id="rate" aria-label="Скорость"><option value="1">1×</option><option value="10">10×</option><option value="60" selected>60×</option><option value="240">240×</option></select>
     <select id="scenes" aria-label="Сцена работ"><option value="">Выберите этап</option></select>
     <span id="clock">0 мин</span><input id="time" type="range" min="0" max="1" value="0" aria-label="Виртуальное время" disabled>

@@ -70,9 +70,18 @@ buildingSMART International**, из [Community Sample Test Files](https://github
 В GIF изменены представление, цвета и состояние элементов для демонстрации.
 Сам IFC в репозиторий не включён. Это иллюстрация 0.4, не запись всех функций 0.5.
 
-Статическое демо locia.work/uvyazka использует сгенерированные кодом учебные
-АР и ОВ: 22 условных элемента. Реальных чертежей, адресов, файлов заказчика,
-проектной базы и доступа к локальным MCP в нём нет.
+Статическое демо locia.work/uvyazka включает опубликованные данные **BSI (2020)
+"Medical-Dental Test Files," buildingSMART International**, из
+[Community Sample Test Files](https://github.com/buildingsmart-community/Community-Sample-Test-Files/tree/7ddf57a201f88a0c213d5322b02ed15e94a60a40/IFC%202.3.0.1%20%28IFC%202x3%29/Medical-Dental%20Clinic),
+CC BY 4.0: архитектура, ОВ и ЭОМ. Изменения: триангуляция IFC в ModelPackage,
+отдельные измерения геометрии и федерация с идентификаторами источников.
+Пример RVT RE1-Mechanical взят из
+[Drshelden/IFC-ECS](https://github.com/Drshelden/IFC-ECS/tree/9e8b37175a0fba1397f7011aeee917fe52de7623),
+MIT, Copyright (c) 2026 Drshelden. Публикуется неизменённый RVT и его MIT LICENSE;
+результат экспериментального чтения не равен полной модели Revit.
+Фиксированные URL, SHA-256 и размеры: `tools/public-demo-sources.json`.
+22 условных элемента АР/ОВ остаются дополнительным примером. Файлов заказчика,
+проектной базы и доступа к локальным MCP в публичном демо нет.
 
 ## Браузерная обработка
 

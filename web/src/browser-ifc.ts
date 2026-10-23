@@ -89,7 +89,7 @@ export async function importIfc(api: any, data: Uint8Array, filename: string, sh
       const vector=api.GetLineIDsWithType(handle,code);
       for(let i=0;i<vector.size();i++) {
         const id=vector.get(i),row=read(id),role=chain.includes('IfcFeatureElement')?'feature':chain.includes('IfcElement')?'element':chain.includes('IfcSpace')?'space':chain.includes('IfcSpatialElement')||chain.includes('IfcSpatialStructureElement')?'spatial':'other';
-        byId.set(id,{id:String(id),step_id:id,global_id:value(row.GlobalId)||'',class:chain[0],hierarchy:chain,name:value(row.Name)||'#'+id,role,storey_id:null,predefined_type:value(row.PredefinedType)||null,materials:[],property_sets:{},quantity_sets:{},quantities:{},measured_quantities:{},source:{kind:'explicit',file_sha256:sha256,step_id:id},mesh:null,geometry_error:null});
+        byId.set(id,{id:String(id),step_id:id,global_id:value(row.GlobalId)||'',class:chain[0],hierarchy:chain,name:value(row.Name)||'#'+id,long_name:value(row.LongName)||null,role,storey_id:null,predefined_type:value(row.PredefinedType)||null,materials:[],property_sets:{},quantity_sets:{},quantities:{},measured_quantities:{},source:{kind:'explicit',file_sha256:sha256,step_id:id},mesh:null,geometry_error:null});
       }
     }
     const elements=[...byId.values()];

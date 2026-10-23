@@ -47,8 +47,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
   const diagnosticReport=(report:unknown)=>{el('browser-diagnostics').hidden=false;section.querySelector('pre')!.textContent=JSON.stringify(report,null,2);download('browser-report',new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),'uvyazka-diagnostics.json');};
   el('browser-cancel').onclick=()=>{current=fallback;callbacks.cancelDrawing();stop('Отменено пользователем.');status('Обработка отменена. События сохранены в журнале.');};
   el('browser-demo').onclick=async()=>{stop('Переход к учебному примеру.');await journal.flush();location.href=base;};
-  el<HTMLInputElement>('browser-file').onchange=async()=>{
-    const input=el<HTMLInputElement>('browser-file'),file=input.files?.[0];if(!file)return;input.value='';
+  const openFile=async(file:File,appendMode?:boolean)=>{
     document.querySelector<HTMLDialogElement>('#file-dialog')!.close();
     stop();const job=active;await log.ready;if(job!==active)return;
     run=journal.begin('import',file.name,file.size);const jobRun=run;log.select(run);processing.begin(file.name,file.size);
@@ -58,7 +57,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
     if(policy.warning)journal.event(run,'warning',policy.warning);
     const memoryMiB=Number(el<HTMLSelectElement>('browser-memory').value);
     journal.event(run,'info','Настройки обработки',{ifc_memory_budget_mib:memoryMiB,rvt_reader_max_bytes:2*1024**3,processing:'browser-local'});
-    const append=el<HTMLInputElement>('browser-append').checked&&!/\.(dwg|dxf)$/i.test(file.name);
+    const append=(appendMode??el<HTMLInputElement>('browser-append').checked)&&!/\.(dwg|dxf)$/i.test(file.name);
     fallback=append?current:null;current=null;callbacks.reset(append);busy(true);status('Чтение '+file.name);
     for(const [id,url] of urls){URL.revokeObjectURL(url);el(id).hidden=true;}urls.clear();el('browser-diagnostics').hidden=true;
     try{
@@ -114,6 +113,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
       importer.postMessage({job,buffer,filename:file.name,base,memoryMiB},[buffer]);
     }catch(e){if(job===active)fail(String(e),{stack:e instanceof Error?e.stack:undefined});}
   };
+  el<HTMLInputElement>('browser-file').onchange=()=>{const input=el<HTMLInputElement>('browser-file'),file=input.files?.[0];input.value='';if(file)void openFile(file);};
   el('browser-plan').onclick=async()=>{
     if(!current)return;
     const curingDays=Number(el<HTMLInputElement>('browser-curing').value);if(!Number.isInteger(curingDays)||curingDays<1||curingDays>365){status('Выдержка бетона: целое число от 1 до 365 суток');return;}
@@ -138,4 +138,5 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
   };
   document.addEventListener('scene-model-changed',((event:CustomEvent<ModelPackage|null>)=>{stop('Изменён состав или размещение сцены.');current=event.detail;busy(false);}) as EventListener);
   addEventListener('pagehide',()=>{if(run?.state==='running')finishRun(run,'interrupted','Вкладка закрыта или перезагружена до завершения.');stop();for(const url of urls.values())URL.revokeObjectURL(url);});
+  return {openFile,stop};
 }

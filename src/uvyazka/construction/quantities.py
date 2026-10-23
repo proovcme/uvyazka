@@ -39,6 +39,33 @@ def explicit_quantities(product, model):
     return result
 
 
+def source_quantity_values(product, model):
+    """All named IFC quantity sets for inspection, independent of planner selection."""
+    import ifcopenshell.util.element as elements
+    import ifcopenshell.util.unit as units
+    specs = {"IfcQuantityVolume": ("VolumeValue", "VOLUMEUNIT", "m3"),
+             "IfcQuantityArea": ("AreaValue", "AREAUNIT", "m2"),
+             "IfcQuantityLength": ("LengthValue", "LENGTHUNIT", "m"),
+             "IfcQuantityWeight": ("WeightValue", "MASSUNIT", "kg"),
+             "IfcQuantityCount": ("CountValue", None, "1")}
+    result = {}
+    for name,values in elements.get_psets(product,qtos_only=True,should_inherit=True).items():
+        fields = {}
+        for item in model.by_id(values['id']).Quantities:
+            spec=specs.get(item.is_a())
+            if spec is None:continue
+            attribute,unit_type,symbol=spec;raw=getattr(item,attribute)
+            if not math.isfinite(raw):continue
+            unit=item.Unit or (units.get_project_unit(model,unit_type) if unit_type else None)
+            factor=units.get_unit_scale(unit) if unit else (1 if unit_type is None else None)
+            if factor is not None and unit_type=='MASSUNIT':factor/=1000
+            fields[item.Name]={'value':raw*factor if factor is not None else raw,'unit':symbol if factor is not None else None,
+                'kind':'explicit' if factor is not None else 'explicit_unit_unresolved','method':'ifc_quantity_record',
+                'quantity_id':item.id(),'quantity_set':name,'source_value':raw,'unit_id':unit.id() if unit else None}
+        if fields:result[name]=fields
+    return result
+
+
 def mesh_quantities(vertices, faces):
     """Closed mesh volume; one-sided horizontal/vertical area and form contact.
 

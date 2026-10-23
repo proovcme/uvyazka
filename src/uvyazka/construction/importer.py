@@ -15,9 +15,9 @@ import ifcopenshell.util.element as elements
 import ifcopenshell.util.placement as placements
 import ifcopenshell.util.unit as units
 import numpy as np
-from .quantities import explicit_quantities, mesh_quantities
+from .quantities import explicit_quantities, mesh_quantities, source_quantity_values
 
-IMPORTER_VERSION = "0.4.1"
+IMPORTER_VERSION = "0.4.2"
 CONTRACT_VERSION = "0.1.0"
 
 
@@ -156,13 +156,13 @@ def import_model(source_path: str, output_path: str, source_name: str | None = N
         role = ("space" if "IfcSpace" in chain else "feature" if "IfcFeatureElement" in chain else
                 "element" if "IfcElement" in chain else "spatial" if "IfcSpatialStructureElement" in chain or "IfcSpatialElement" in chain else "other")
         row = {"id": str(product.id()), "step_id": product.id(), "global_id": product.GlobalId,
-            "class": name, "hierarchy": chain, "name": product.Name or name,
+            "class": name, "hierarchy": chain, "name": product.Name or name, "long_name": getattr(product,'LongName',None),
             "role": role, "storey_id": resolve_storey(product),
             "predefined_type": elements.get_predefined_type(product),
             "materials": [material.Name or "Без названия" for material in elements.get_materials(product) if material is not None],
             "property_sets": jsonable(elements.get_psets(product, psets_only=True)),
             "quantity_sets": jsonable(elements.get_psets(product, qtos_only=True)),
-            "quantities": explicit_quantities(product, model), "measured_quantities": {},
+            "quantities": explicit_quantities(product, model), "source_quantities": source_quantity_values(product,model), "measured_quantities": {},
             "source": {"kind": "explicit", "file_sha256": digest, "step_id": product.id()},
             "mesh": None, "geometry_error": None}
         evidence = geometry_evidence(row["property_sets"], model.header.file_name.preprocessor_version or "")

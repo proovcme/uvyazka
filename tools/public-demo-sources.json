@@ -1,0 +1,41 @@
+{
+  "clinic": {
+    "repo": "buildingsmart-community/Community-Sample-Test-Files",
+    "revision": "7ddf57a201f88a0c213d5322b02ed15e94a60a40",
+    "license": "CC-BY-4.0",
+    "attribution": "BSI (2020) Medical-Dental Test Files, buildingSMART International"
+  },
+  "files": [
+    {
+      "name": "Clinic_Architectural.ifc",
+      "url": "https://media.githubusercontent.com/media/buildingsmart-community/Community-Sample-Test-Files/7ddf57a201f88a0c213d5322b02ed15e94a60a40/IFC%202.3.0.1%20%28IFC%202x3%29/Medical-Dental%20Clinic/Clinic_Architectural.ifc",
+      "sha256": "2ac970ce065ecac4e0c9e5f453a257169e90d0067f419b7e33533a64ef837880",
+      "size": 13003205,
+      "kind": "ifc"
+    },
+    {
+      "name": "Clinic_Electrical.ifc",
+      "url": "https://media.githubusercontent.com/media/buildingsmart-community/Community-Sample-Test-Files/7ddf57a201f88a0c213d5322b02ed15e94a60a40/IFC%202.3.0.1%20%28IFC%202x3%29/Medical-Dental%20Clinic/Clinic_Electrical.ifc",
+      "sha256": "70c436de1f1e8a860acfba61b68da1c9243d18dcbbddb98b88b550a642d95d32",
+      "size": 6800204,
+      "kind": "ifc"
+    },
+    {
+      "name": "Clinic_HVAC.ifc",
+      "url": "https://media.githubusercontent.com/media/buildingsmart-community/Community-Sample-Test-Files/7ddf57a201f88a0c213d5322b02ed15e94a60a40/IFC%202.3.0.1%20%28IFC%202x3%29/Medical-Dental%20Clinic/Clinic_HVAC.ifc",
+      "sha256": "39c88a79f48fbe56da86afb0fb3ebd188f8930df3df7dbfbd9ecaa535aaeab9b",
+      "size": 26914597,
+      "kind": "ifc"
+    },
+    {
+      "name": "RE1-Mechanical.rvt",
+      "url": "https://raw.githubusercontent.com/Drshelden/IFC-ECS/9e8b37175a0fba1397f7011aeee917fe52de7623/data/RE1/RE1-Mechanical.rvt",
+      "sha256": "d559720177aa0ec435133f804e7c45d60da2deb9d5585bb3d55f4830139c014b",
+      "size": 3379200,
+      "kind": "rvt",
+      "license": "MIT",
+      "attribution": "Copyright (c) 2026 Drshelden; IFC-ECS RE1 sample",
+      "license_url": "https://raw.githubusercontent.com/Drshelden/IFC-ECS/9e8b37175a0fba1397f7011aeee917fe52de7623/LICENSE"
+    }
+  ]
+}

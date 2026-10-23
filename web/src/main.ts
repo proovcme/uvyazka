@@ -13,6 +13,7 @@ import type { BrowserRun } from './browser-panel';
 import { workScenes } from './scenes';
 import {rvtDocumentPanel} from './rvt-document-panel';
 import {viewOrientation} from './rvt-document';
+import {modelDataPanel} from './model-data-panel';
 const DEMO = import.meta.env.VITE_UVYAZKA_DEMO === '1';
 import { Viewer } from './viewer';
 import type { ModelPackage } from './model';
@@ -34,6 +35,7 @@ let requestedRun = new URL(location.href).searchParams.get('run') || '';
 let viewer: Viewer | null = null, model: ModelPackage | null = null, run: RunPackage | null = null, clock: PlaybackClock | null = null, frame = 0, last = 0, generation = 0, modelGeneration = 0;
 document.getElementById('app')!.innerHTML = workspaceShell;
 initTheme();
+modelDataPanel(()=>model,id=>{selectElement(id);viewer?.focusTargets([id]);});
 const documentPanel=DEMO?rvtDocumentPanel(record=>{
   const orientation=viewOrientation(record);if(!orientation||!viewer||!model)return;
   setMode('view');el('reset-visibility').click();viewer.orient(orientation.direction,orientation.up);
@@ -69,7 +71,7 @@ async function loadModel(id: string) {
   if (!id) { model = null;loadedBinary=null;el('file-title').textContent='Модель не выбрана'; el('no-model').hidden = false; el('geometry-kind').textContent = 'Без геометрии'; viewer?.show(new Set<string>());renderModelTree();renderState();return; }
   const [pkg, binary] = browserModel?.model_id===id&&browserBinary ? [browserModel,browserBinary] : await Promise.all([api<ModelPackage>('model?model_id=' + encodeURIComponent(id)), fetch(path('geometry.bin?model_id=' + encodeURIComponent(id))).then(async r => {if(!r.ok) throw Error('Не удалось загрузить геометрию');return r.arrayBuffer();})]);
   if (token !== modelGeneration) return;
-  model = pkg;loadedBinary=binary; el("workspace-status").textContent=`${pkg.statistics.physical_elements} элементов · ${pkg.storeys.length} уровней${pkg.source.schema==='SyntheticDemo'?' · Учебная модель':''}`; el("file-title").textContent=pkg.source.filename; renderModelTree(); viewer?.load(pkg,binary); viewer?.setSourceColors(false); viewer?.show(new Set(pkg.elements.filter(e => e.role === 'element'&&sceneVisible(e.source_instance_id)).map(e=>e.id))); el('no-model').hidden = true;
+  model = pkg;loadedBinary=binary; el("workspace-status").textContent=`${pkg.statistics.physical_elements} элементов · ${pkg.storeys.length} уровней${pkg.source.schema==='SyntheticDemo'?' · Учебная модель':''}`; el("file-title").textContent=pkg.source.filename; renderModelTree(); viewer?.load(pkg,binary); viewer?.setSourceColors(pkg.source.schema!=='SyntheticDemo'); document.dispatchEvent(new Event('model-data-changed')); viewer?.show(new Set(pkg.elements.filter(e => e.role === 'element'&&sceneVisible(e.source_instance_id)).map(e=>e.id))); el('no-model').hidden = true;
   el('geometry-kind').textContent = pkg.source.schema === 'SyntheticDemo' ? 'Синтетическая сводная модель · АР + ОВ' : pkg.source.schema === 'DocumentSpatialModel' ? 'Условная геометрия по документам' : pkg.federation ? 'Сводная геометрия · совмещение требует проверки' : pkg.source.format==='rvt' ? 'RVT → IFC · экспериментальная геометрия' : 'Геометрия IFC'; renderState();
 }
 async function loadRun(id: string) {
@@ -135,7 +137,7 @@ async function loadProject(id:string) {
   const requested=runs.items.find(r=>r.run_id===requestedRun);
   if(requested){el<HTMLSelectElement>('runs').value=requested.run_id;await loadRun(requested.run_id);}
   else if(models.items.some(m=>m.model_id===requestedModel)){el<HTMLSelectElement>('models').value=requestedModel;await loadRun('');await loadModel(requestedModel);}
-  else if(runs.items.length){el<HTMLSelectElement>('runs').value=runs.items.at(-1)!.run_id; await loadRun(runs.items.at(-1)!.run_id);} else {await loadRun(''); await loadModel(models.items[0]?.model_id||'');el<HTMLSelectElement>('models').value=models.items[0]?.model_id||'';}
+  else if(runs.items.length&&!DEMO){el<HTMLSelectElement>('runs').value=runs.items.at(-1)!.run_id; await loadRun(runs.items.at(-1)!.run_id);} else {await loadRun(''); await loadModel(models.items[0]?.model_id||'');el<HTMLSelectElement>('models').value=models.items[0]?.model_id||'';}
   requestedModel='';requestedRun='';
 }
 let touring=false,tourIndex=0,tourElapsed=0;
@@ -281,7 +283,7 @@ function browserDownload(kind:string,data:RunPackage) {
   }
   const url=URL.createObjectURL(new Blob([text],{type:mime}));browserUrls.push(url);el<HTMLAnchorElement>(kind).download=kind==='csv'?'uvyazka-schedule.csv':'uvyazka-run.json';return url;
 }
-if(DEMO)browserPanel({
+const browser=DEMO?browserPanel({
   openDocument:()=>documentPanel?.open(),
   noGeometry:(filename,message)=>{el('file-title').textContent=filename;el('geometry-kind').textContent='RVT · 3D недоступна';el<HTMLButtonElement>('mode-simulate').disabled=true;el<HTMLSelectElement>('models').innerHTML='<option>Геометрия не прочитана</option>';el('inspector-title').textContent='Результат чтения RVT';el('inspector').innerHTML=`<p><strong>${esc(filename)}</strong></p><p>${esc(message)}</p>`;},
   document:(data,message)=>documentPanel?.set(data,message),
@@ -297,8 +299,43 @@ if(DEMO)browserPanel({
     await presentMembers([...existing,candidate]);documentPanel?.geometryReady(!!viewer&&pkg.statistics.meshes>0);el<HTMLDialogElement>('file-dialog').close();return browserModel!;
   },
   run:async(data)=>{setMode('simulate');browserRun=data;for(const url of browserUrls)URL.revokeObjectURL(url);browserUrls.length=0;el<HTMLSelectElement>('runs').innerHTML=`<option value="${esc(data.run_id)}">${esc(data.scenario.name||'Браузерный расчёт')}</option>`;await loadRun(data.run_id);el<HTMLDialogElement>('file-dialog').close();}
-});
-void (async()=>{try{const r=await fetch(DEMO?'./demo/projects.json':'/api/projects');const d=await r.json();if(project==='browser-local')return;el<HTMLSelectElement>('projects').innerHTML=d.projects.map((p:{id:string;name:string})=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');project=project||d.default_project;if(project){el<HTMLSelectElement>('projects').value=project;await loadProject(project);}else error('Сначала зарегистрируйте проект или запустите uvyazka demo.');}catch(e){error(e);}})();
+}):null;
+if(DEMO){el('calculate-current').hidden=false;el('calculate-current').onclick=()=>el<HTMLDialogElement>('file-dialog').showModal();}
+type DemoExample={id:string;kind:'model'|'rvt';name:string;url?:string;sha256?:string;size?:number};
+const initialExample=new URL(location.href).searchParams.get('example');
+async function demoExamples(){
+  if(!DEMO||!browser)return;
+  const response=await fetch('./demo/examples.json');if(!response.ok)throw Error('Не удалось загрузить каталог примеров');
+  const examples=(await response.json()).items as DemoExample[];
+  const bar=document.createElement('div');bar.className='demo-toolbar';bar.innerHTML='<label>Пример<select id="demo-example" aria-label="Демонстрационная модель"></select></label><span role="status" id="demo-status">IFC / RVT · данные и 3D на устройстве</span><a href="./demo/ATTRIBUTION.txt" target="_blank" rel="noopener">Источники и лицензии ↗</a>';
+  document.querySelector('.app-header')!.after(bar);
+  const picker=el<HTMLSelectElement>('demo-example');picker.replaceChildren(...examples.map(e=>new Option(e.name,e.id)));
+  async function openExample(id:string){
+    const item=examples.find(e=>e.id===id);if(!item)return;picker.value=id;picker.disabled=true;
+    el('demo-status').textContent='Открываем '+item.name+'…';
+    try{
+      browser!.stop('Выбран другой демонстрационный пример.');
+      if(item.kind==='rvt'){
+        const response=await fetch(new URL(item.url!,location.href));if(!response.ok)throw Error('Не удалось скачать демонстрационный RVT');
+        const buffer=await response.arrayBuffer();const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',buffer))).map(x=>x.toString(16).padStart(2,'0')).join('');
+        if(digest!==item.sha256||buffer.byteLength!==item.size)throw Error('Контрольная сумма примера RVT не совпала');
+        await browser!.openFile(new File([buffer],'RE1-Mechanical.rvt'),false);
+      }else{
+        browserModel=null;browserBinary=null;browserRun=null;documentPanel?.set(null);closeCad();
+        el<HTMLSelectElement>('projects').innerHTML='<option value="demo-a">Публичные примеры</option>';
+        for(const key of ['projects','models','runs'])el<HTMLSelectElement>(key).disabled=false;
+        requestedModel=item.id;requestedRun='';await loadProject('demo-a');setMode('view');
+        document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:model}));
+      }
+      const url=new URL(location.href);url.searchParams.set('example',id);history.replaceState(null,'',url);
+      el('demo-status').textContent=item.kind==='rvt'?'RVT: результат и покрытие — в журнале обработки.':'Данные доступны в «Данные модели». Расчёт — в «Симуляции».';
+    }catch(e){error(e);el('demo-status').textContent=String(e);}finally{picker.disabled=false;}
+  }
+  picker.onchange=()=>void openExample(picker.value);
+  if(initialExample&&examples.some(e=>e.id===initialExample))await openExample(initialExample);
+  else {picker.value=model?.model_id||examples[0]?.id||'';document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:model}));}
+}
+void (async()=>{try{const r=await fetch(DEMO?'./demo/projects.json':'/api/projects');const d=await r.json();if(project==='browser-local')return;el<HTMLSelectElement>('projects').innerHTML=d.projects.map((p:{id:string;name:string})=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');project=project||d.default_project;if(project){el<HTMLSelectElement>('projects').value=project;await loadProject(project);await demoExamples();}else error('Сначала зарегистрируйте проект или запустите uvyazka demo.');}catch(e){error(e);}})();
 
 function setPanel(panel:'tree'|'inspector',open:boolean) {
   if(open&&matchMedia('(max-width: 650px)').matches){

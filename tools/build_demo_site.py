@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tomllib
 from build_public_demo import export
+from build_demo_catalog import export as export_catalog
 from build_cad_viewer import build as build_cad_viewer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +34,7 @@ if __name__ == '__main__':
         cwd=ROOT / 'web', env={**os.environ, 'VITE_UVYAZKA_DEMO': '1'}, check=True)
     build_cad_viewer(output / 'cad')
     export(output / 'demo', ROOT / '.uvyazka-build/synthetic-cache')
+    export_catalog(output / 'demo')
     shutil.copytree(runtime, output/'runtime')
     downloads = output / 'downloads'
     downloads.mkdir()
@@ -70,5 +72,5 @@ if __name__ == '__main__':
     files = {p.relative_to(output).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
              for p in sorted(output.rglob('*')) if p.is_file()}
     (output / 'release.json').write_text(json.dumps({'version': version, 'revision': revision,
-        'mode': 'browser-compute-and-synthetic-demo', 'server_file_upload': False, 'browser_file_open': True, 'files_sha256': files}, indent=2) + '\n', encoding='utf-8')
+        'mode': 'browser-compute-and-public-examples', 'server_file_upload': False, 'browser_file_open': True, 'files_sha256': files}, indent=2) + '\n', encoding='utf-8')
     print('Public static demo:', output)

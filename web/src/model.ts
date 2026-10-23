@@ -13,6 +13,8 @@ export interface MeshData {
   source: { kind: 'derived'; method: string; version: string; representation_id: number };
 }
 export interface BimElement {
+  long_name?:string|null;
+  source_quantities?:Record<string,Record<string,unknown>>;
   id: string;
   step_id: number;
   global_id: string;
@@ -43,6 +45,7 @@ export interface Storey {
   element_count: number;
 }
 export interface ModelPackage {
+  attribution?: Record<string,unknown>;
   contract: 'ModelPackage';
   contract_version: '0.1.0';
   importer_version: string;

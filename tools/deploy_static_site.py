@@ -66,7 +66,7 @@ def main():
             target.chmod(0o644)
     manifest = json.loads((staging / 'release.json').read_text())
     assert manifest['revision'] == args.revision
-    assert manifest['mode'] == 'browser-compute-and-synthetic-demo'
+    assert manifest['mode'] == 'browser-compute-and-public-examples'
     assert manifest['server_file_upload'] is False and manifest['browser_file_open'] is True
     expected = manifest['files_sha256']
     assert set(expected) | {'release.json'} == names, 'Unexpected or missing release files'

@@ -57,7 +57,19 @@ def source_quantity_values(product, model):
             attribute,unit_type,symbol=spec;raw=getattr(item,attribute)
             if not math.isfinite(raw):continue
             unit=item.Unit or (units.get_project_unit(model,unit_type) if unit_type else None)
-            factor=units.get_unit_scale(unit) if unit else (1 if unit_type is None else None)
+            # IfcOpenShell returns factor 1 for an unknown context-dependent unit.
+            # Validate a finite conversion chain before labelling a source value SI.
+            current=unit;seen=set();known=False
+            while current and current.id() not in seen and len(seen)<16:
+                seen.add(current.id())
+                if current.is_a('IfcSIUnit'):
+                    expected={'LENGTHUNIT':'METRE','AREAUNIT':'SQUARE_METRE','VOLUMEUNIT':'CUBIC_METRE','MASSUNIT':'GRAM'}
+                    known=current.UnitType==unit_type and current.Name==expected.get(unit_type)
+                    break
+                if not current.is_a('IfcConversionBasedUnit') or getattr(current,'ConversionOffset',0):break
+                current=current.ConversionFactor.UnitComponent
+            factor=units.get_unit_scale(unit) if unit and known else (1 if unit is None and unit_type is None else None)
+            if factor is not None and (not math.isfinite(factor) or factor<=0):factor=None
             if factor is not None and unit_type=='MASSUNIT':factor/=1000
             fields[item.Name]={'value':raw*factor if factor is not None else raw,'unit':symbol if factor is not None else None,
                 'kind':'explicit' if factor is not None else 'explicit_unit_unresolved','method':'ifc_quantity_record',

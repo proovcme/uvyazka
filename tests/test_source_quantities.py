@@ -33,3 +33,12 @@ class SourceQuantityTests(unittest.TestCase):
         item=source_quantity_values(room,f)['Custom space quantities']['Room area']
         self.assertIsNone(item['unit']);self.assertEqual(item['source_value'],0)
         self.assertEqual(item['kind'],'explicit_unit_unresolved')
+
+    def test_context_dependent_unit_does_not_silently_become_square_metres(self):
+        from uvyazka.construction.quantities import source_quantity_values
+        f,room=self.fixture(True)
+        dimensions=f.create_entity('IfcDimensionalExponents',LengthExponent=2,MassExponent=0,TimeExponent=0,ElectricCurrentExponent=0,ThermodynamicTemperatureExponent=0,AmountOfSubstanceExponent=0,LuminousIntensityExponent=0)
+        unit=f.create_entity('IfcContextDependentUnit',Dimensions=dimensions,UnitType='AREAUNIT',Name='unknown_custom_area')
+        f.by_type('IfcQuantityArea')[0].Unit=unit
+        item=source_quantity_values(room,f)['Custom space quantities']['Room area']
+        self.assertIsNone(item['unit']);self.assertEqual(item['kind'],'explicit_unit_unresolved')

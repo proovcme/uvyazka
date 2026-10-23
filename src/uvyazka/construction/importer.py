@@ -17,7 +17,7 @@ import ifcopenshell.util.unit as units
 import numpy as np
 from .quantities import explicit_quantities, mesh_quantities, source_quantity_values
 
-IMPORTER_VERSION = "0.4.2"
+IMPORTER_VERSION = "0.4.3"
 CONTRACT_VERSION = "0.1.0"
 
 

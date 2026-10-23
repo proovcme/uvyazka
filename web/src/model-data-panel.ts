@@ -1,11 +1,13 @@
 import type {ModelPackage} from './model';
 import {dataRows,dataSnapshot,parameterCsv,rowQuantities} from './model-data';
 import type {DataSection,DataRow} from './model-data';
+import {matchesDataQuery} from './element-identity';
+import {copyValue} from './copy-properties';
 
 export function modelDataPanel(getModel:()=>ModelPackage|null,select:(id:string)=>void){
   const dialog=document.createElement('dialog');dialog.className='model-data';dialog.setAttribute('aria-labelledby','model-data-title');
   dialog.innerHTML=`<div class="panel-head"><h2 id="model-data-title">Данные модели</h2><button data-close aria-label="Закрыть данные">✕</button></div>
-  <div class="model-data-summary" role="status"></div><div class="model-data-controls"><label>Таблица<select data-section><option value="elements">Элементы</option><option value="rooms">Помещения</option><option value="storeys">Этажи</option><option value="systems">Системы</option></select></label><label class="model-data-query">Поиск по именам, ID и параметрам<input data-query type="search" placeholder="Марка, материал, мощность…"></label><button data-json>JSON данных</button><button data-csv>CSV параметров</button></div>
+  <div class="model-data-summary" role="status"></div><div class="model-data-controls"><label>Таблица<select data-section><option value="elements">Элементы</option><option value="rooms">Помещения</option><option value="storeys">Этажи</option><option value="systems">Системы</option></select></label><label class="model-data-query">Поиск по именам, ID и параметрам<input data-query type="search" placeholder="Revit ID, марка, материал, мощность…"></label><button data-json>JSON данных</button><button data-csv>CSV параметров</button></div>
   <p class="model-data-note">Данные из файла. Единицы сырых свойств могут быть не прочитаны; явные количества и измерения геометрии разделены. Экспликация и спецификация проекта требуют проверки состава и версий.</p>
   <div class="model-data-layout"><div class="model-data-table"></div><div class="model-data-detail"><p>Выберите строку, чтобы прочитать все её параметры и источник.</p></div></div><div class="model-data-footer"><span></span><button data-prev>Назад</button><button data-next>Далее</button></div>`;
   document.body.append(dialog);
@@ -16,19 +18,22 @@ export function modelDataPanel(getModel:()=>ModelPackage|null,select:(id:string)
   const cell=(text:unknown)=>{const td=document.createElement('td');td.textContent=String(text??'—');return td;};
   const render=()=>{
     const q=node<HTMLInputElement>('[data-query]').value.trim().toLocaleLowerCase();
-    filtered=q?rows.filter(r=>JSON.stringify(r.record).toLocaleLowerCase().includes(q)):rows;
+    filtered=q?rows.filter(r=>matchesDataQuery(r.record,q)):rows;
     offset=Math.min(offset,Math.max(0,Math.floor((filtered.length-1)/50)*50));
-    const table=document.createElement('table');table.innerHTML='<thead><tr><th>Наименование / ID</th><th>Класс</th><th>Этаж / состав</th><th>Величины из источника</th></tr></thead>';
+    const table=document.createElement('table');table.innerHTML='<thead><tr><th>Наименование / ID</th><th>Revit ElementId</th><th>Класс</th><th>Этаж / состав</th><th>Величины из источника</th></tr></thead>';
     const tbody=document.createElement('tbody');
     for(const row of filtered.slice(offset,offset+50)){
       const tr=document.createElement('tr'),td=document.createElement('td'),choose=document.createElement('button');choose.textContent=row.name+' · #'+row.id;
       choose.onclick=()=>{
         const detail=node('.model-data-detail');detail.replaceChildren();
         const title=document.createElement('h3');title.textContent=row.name;detail.append(title);
+        const copy=document.createElement('button');copy.textContent='Копировать все свойства';copy.dataset.copy=JSON.stringify(row.record,null,2);detail.append(copy);
         if(section()==='elements'||section()==='rooms'){const show=document.createElement('button');show.textContent='Свойства в модели';show.onclick=()=>{dialog.close();select(row.id);};detail.append(show);}
         const pre=document.createElement('pre');pre.textContent=JSON.stringify(row.record,null,2);detail.append(pre);
       };
-      td.append(choose);tr.append(td,cell(row.type),cell(row.level),cell(rowQuantities(row)));tbody.append(tr);
+      const revit=(row.record.revit_identity as {element_id?:string}|undefined)?.element_id;
+      const identity=cell('Не прочитан');if(revit)identity.innerHTML=copyValue(revit);
+      td.append(choose);tr.append(td,identity,cell(row.type),cell(row.level),cell(rowQuantities(row)));tbody.append(tr);
     }
     table.append(tbody);const host=node('.model-data-table');host.replaceChildren(table);
     if(!filtered.length){const empty=document.createElement('p');empty.textContent=section()==='systems'?'Системы в этой выгрузке не прочитаны. Это не доказывает их отсутствие в исходном проекте.':'В этой выборке записей нет. Отсутствие записи не равно нулевому значению.';host.append(empty);}

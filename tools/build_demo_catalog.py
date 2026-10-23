@@ -5,7 +5,7 @@ import json
 import shutil
 from urllib.request import urlopen
 
-from uvyazka.construction.importer import import_model, IMPORTER_VERSION
+from uvyazka.construction.importer import import_model, IMPORTER_VERSION, IDENTITY_VERSION, identity_metadata
 from uvyazka.construction.federation import create_federation
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +34,14 @@ def prepare():
             if not manifest.is_file() or json.loads(manifest.read_text(encoding='utf-8'))['importer_version']!=IMPORTER_VERSION:
                 print('Importing public example:',item['name'],flush=True)
                 import_model(str(path),str(output),item['name'])
+            pkg=json.loads(manifest.read_text(encoding='utf-8'))
+            if pkg.get('identity_projection_version')!=IDENTITY_VERSION:
+                # Enrich older geometry caches from exact IFC records, without retessellating.
+                import ifcopenshell
+                original=ifcopenshell.open(str(path));header=original.header.file_name
+                exporter=' '.join(filter(None,[header.preprocessor_version,header.originating_system]))
+                for row in pkg['elements']:row.update(identity_metadata(original.by_id(row['step_id']),exporter))
+                pkg['identity_projection_version']=IDENTITY_VERSION;write(manifest,pkg)
     return config,cache
 
 

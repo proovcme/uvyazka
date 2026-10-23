@@ -1,11 +1,11 @@
 import type {ModelPackage} from './model.ts';
 import {validatePackage} from './model.ts';
 // Bump whenever importIfc/schema interpretation changes. RVT uses its own catalogue cache.
-export const GEOMETRY_REVISION='web-ifc-0.0.78/uvyazka-1/cache-2-systems';
+export const GEOMETRY_REVISION='web-ifc-0.0.78/uvyazka-2/cache-3-identity';
 export const geometryKey=(hash:string)=>`${GEOMETRY_REVISION}:${hash}`;
 export interface CachedGeometry {model:ModelPackage;binary:ArrayBuffer;accessed:number}
 export function validCachedGeometry(value:CachedGeometry,hash:string){
-  if(value.model.source.sha256!==hash||value.model.model_id!==hash||value.model.importer_version!=='web-ifc-0.0.78/uvyazka-1')throw Error('Кеш относится к другой модели или версии обработчика');
+  if(value.model.source.sha256!==hash||value.model.model_id!==hash||value.model.importer_version!=='web-ifc-0.0.78/uvyazka-2')throw Error('Кеш относится к другой модели или версии обработчика');
   validatePackage(value.model,value.binary);return value;
 }
 export async function geometryCache(){

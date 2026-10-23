@@ -14,6 +14,7 @@ export interface MeshData {
 }
 export interface BimElement {
   long_name?:string|null;
+  tag?:string|null;
   source_quantities?:Record<string,Record<string,unknown>>;
   id: string;
   step_id: number;
@@ -35,7 +36,7 @@ export interface BimElement {
   source_instance_id?: string;
   source_element_id?: string;
   source_step_id?: number;
-  revit?: { element_id: string; unique_id?: string; phase_status: string; phase_created_id?: string | null; phase_demolished_id?: string | null };
+  revit?: { element_id: string; unique_id?: string; id_basis?:string; phase_status: string; phase_created_id?: string | null; phase_demolished_id?: string | null };
 }
 export interface Storey {
   id: string;

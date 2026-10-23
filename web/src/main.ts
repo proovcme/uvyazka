@@ -14,6 +14,8 @@ import { workScenes } from './scenes';
 import {rvtDocumentPanel} from './rvt-document-panel';
 import {viewOrientation} from './rvt-document';
 import {modelDataPanel} from './model-data-panel';
+import {elementIdentity,elementMatches} from './element-identity';
+import {installPropertyCopy,copyValue} from './copy-properties';
 const DEMO = import.meta.env.VITE_UVYAZKA_DEMO === '1';
 import { Viewer } from './viewer';
 import type { ModelPackage } from './model';
@@ -35,6 +37,7 @@ let requestedRun = new URL(location.href).searchParams.get('run') || '';
 let viewer: Viewer | null = null, model: ModelPackage | null = null, run: RunPackage | null = null, clock: PlaybackClock | null = null, frame = 0, last = 0, generation = 0, modelGeneration = 0;
 document.getElementById('app')!.innerHTML = workspaceShell;
 initTheme();
+installPropertyCopy();
 modelDataPanel(()=>model,id=>{selectElement(id);viewer?.focusTargets([id]);});
 const documentPanel=DEMO?rvtDocumentPanel(record=>{
   const orientation=viewOrientation(record);if(!orientation||!viewer||!model)return;
@@ -59,9 +62,11 @@ function selectElement(id: string | null) {
   viewer?.select(id);document.querySelectorAll<HTMLElement>('.element-item').forEach(row=>row.setAttribute('aria-pressed',String(row.dataset.id===id)));if(id)setPanel('inspector',true); const e = model?.elements.find(e => e.id === id);
   if (!e) { renderState(); return; }
   el('inspector-title').textContent = e.name;
-  const renderSets=(sets:Record<string,Record<string,unknown>>)=>Object.entries(sets).map(([name,values])=>`<details class="property-set" open><summary>${esc(name)}</summary><dl>${Object.entries(values).map(([key,value])=>`<dt>${esc(key)}</dt><dd>${esc(value===null?'Не задано':typeof value==='object'?JSON.stringify(value):value)}</dd>`).join('')}</dl></details>`).join('');
-  el('inspector').innerHTML = `<span class="eyebrow">${esc(e.class)}</span><dl><dt>ID</dt><dd>${esc(e.id)}</dd><dt>Этаж</dt><dd>${esc(model?.storeys.find(s=>s.id===e.storey_id)?.name||'Не задан')}</dd><dt>Материалы</dt><dd>${esc(e.materials.join(', ') || 'Не заданы')}</dd></dl>${renderSets(e.quantity_sets)}${renderSets(e.property_sets)}<details><summary>Идентификаторы и источник</summary><dl><dt>GlobalId</dt><dd>${esc(e.global_id||'Не задан')}</dd></dl><pre>${esc(JSON.stringify(e.source,null,2))}</pre></details>`;
-  const systems=elementSystems(model,e.id);el('inspector').innerHTML+=`<details open><summary>Системы: ${systems.length}</summary>${systems.map(s=>`<p>${esc(s.name||s.class)} · #${esc(s.id)}</p>`).join('')||'<p>Принадлежность к системе не прочитана.</p>'}<p>Членство не подтверждает физическое подключение.</p></details>`;
+  const identity=elementIdentity(e),systems=elementSystems(model,e.id);
+  const renderSets=(sets:Record<string,Record<string,unknown>>)=>Object.entries(sets).map(([name,values])=>`<details class="property-set" open><summary>${esc(name)}</summary><dl>${Object.entries(values).map(([key,value])=>`<dt>${esc(key)}</dt><dd>${copyValue(value)}</dd>`).join('')}</dl></details>`).join('');
+  const card={...e,revit_identity:identity,systems,model_source:model?.source};
+  el('inspector').innerHTML = `<span class="eyebrow">${esc(e.class)}</span><button class="copy-card" data-copy="${esc(JSON.stringify(card,null,2))}">Копировать все свойства</button><dl><dt>Revit ElementId</dt><dd>${identity.element_id?copyValue(identity.element_id):'Не прочитан'}</dd><dt>Revit UniqueId</dt><dd>${identity.unique_id?copyValue(identity.unique_id):'Не прочитан'}</dd><dt>IFC / ID сцены</dt><dd>${copyValue(e.id)}</dd><dt>Этаж</dt><dd>${copyValue(model?.storeys.find(s=>s.id===e.storey_id)?.name||'Не прочитан')}</dd><dt>Материалы</dt><dd>${copyValue(e.materials.join(', ')||'Не прочитаны')}</dd></dl><p class="identity-basis">${esc(identity.basis)}</p>${renderSets(e.quantity_sets)}${renderSets(e.property_sets)}<details><summary>Идентификаторы и источник</summary><dl><dt>IFC GlobalId</dt><dd>${e.global_id?copyValue(e.global_id):'Не прочитан'}</dd><dt>Исходный Tag</dt><dd>${e.tag?copyValue(e.tag):'Не прочитан'}</dd></dl><pre>${esc(JSON.stringify(e.source,null,2))}</pre></details>`;
+  el('inspector').innerHTML+=`<details open><summary>Системы: ${systems.length}</summary>${systems.map(s=>`<p>${esc(s.name||s.class)} · #${esc(s.id)}</p>`).join('')||'<p>Принадлежность к системе не прочитана.</p>'}<p>Членство не подтверждает физическое подключение.</p></details>`;
 }
 try { viewer = new Viewer(el('canvas'), selectElement); } catch(e) { error('3D недоступно; график и расчёты остаются доступны. ' + String(e)); }
 const spatial=spatialPanel(viewer,()=>model,()=>measurementProject,error);
@@ -238,12 +243,12 @@ function renderSystemSummary(){
   const id=el<HTMLSelectElement>('system-filter').value,system=model?.systems?.find(s=>s.id===id),host=el('system-summary');
   if(!model||!system){host.textContent=model?`${model.systems?.length??0} систем в прочитанной выгрузке. Отсутствие системы здесь не доказывает её отсутствие в RVT.`:'';return;}
   const coverage=systemCoverage(model,id);
-  host.innerHTML=`<strong>${esc(system.name||system.class)}</strong><p>${coverage.declared} участников в выгрузке · ${coverage.geometry} с геометрией · ${coverage.withoutGeometry} без геометрии · ${coverage.missing} не найдены в модели.</p><p>Бирюзовый цвет — участники системы. Подключение и полнота исходного RVT не подтверждены.</p><details><summary>Свойства системы</summary><dl><dt>Класс</dt><dd>${esc(system.class)}</dd><dt>ID</dt><dd>${esc(system.id)}</dd><dt>GlobalId</dt><dd>${esc(system.global_id||'Не прочитан')}</dd><dt>Описание</dt><dd>${esc(system.description??'Не прочитано')}</dd></dl><pre>${esc(JSON.stringify(system.property_sets??{},null,2))}</pre></details>`;
+  host.innerHTML=`<strong>${esc(system.name||system.class)}</strong><p>${coverage.declared} участников в выгрузке · ${coverage.geometry} с геометрией · ${coverage.withoutGeometry} без геометрии · ${coverage.missing} не найдены в модели.</p><p>Бирюзовый цвет — участники системы. Подключение и полнота исходного RVT не подтверждены.</p><details><summary>Свойства системы</summary><button data-copy="${esc(JSON.stringify(system,null,2))}">Копировать свойства системы</button><dl><dt>Класс</dt><dd>${copyValue(system.class)}</dd><dt>ID</dt><dd>${copyValue(system.id)}</dd><dt>GlobalId</dt><dd>${copyValue(system.global_id||'Не прочитан')}</dd><dt>Описание</dt><dd>${copyValue(system.description??'Не прочитано')}</dd></dl><pre>${esc(JSON.stringify(system.property_sets??{},null,2))}</pre></details>`;
 }
 function renderElements() {
   const query=el<HTMLInputElement>('element-search').value.toLowerCase(),floor=el<HTMLSelectElement>('storey-filter').value;
   const system=el<HTMLSelectElement>('system-filter').value,members=systemMembers(model,system);
-  const items=(model?.elements??[]).filter(e=>e.role==='element'&&(!system||members.has(e.id))&&(!floor||e.storey_id===floor)&&sceneVisible(e.source_instance_id)&&(`${e.name} ${e.class} ${e.id} ${e.global_id}`).toLowerCase().includes(query));
+  const items=(model?.elements??[]).filter(e=>e.role==='element'&&(!system||members.has(e.id))&&(!floor||e.storey_id===floor)&&sceneVisible(e.source_instance_id)&&elementMatches(e,model!,query));
   const groups=new Map<string,Map<string,typeof items>>();
   for(const item of items.slice(0,1000)){
     const floor=item.storey_id||'';if(!groups.has(floor))groups.set(floor,new Map());

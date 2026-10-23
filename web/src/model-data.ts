@@ -1,4 +1,5 @@
 import type {ModelPackage} from './model';
+import {elementIdentity} from './element-identity.ts';
 
 export type DataSection='elements'|'rooms'|'storeys'|'systems';
 export interface DataRow {id:string;name:string;type:string;level:string;record:Record<string,unknown>}
@@ -21,7 +22,7 @@ export function dataRows(model:ModelPackage,section:DataSection):DataRow[]{
   const levels=new Map(model.storeys.map(s=>[s.id,s.name]));
   return model.elements.filter(e=>section==='rooms'?e.role==='space':e.role==='element').map(e=>{
     const {mesh,...record}=e;
-    return {id:e.id,name:e.long_name?e.name+' · '+e.long_name:e.name,type:e.class,level:levels.get(e.storey_id||'')||'Не прочитан',record:{...record,geometry_available:!!mesh}};
+    return {id:e.id,name:e.long_name?e.name+' · '+e.long_name:e.name,type:e.class,level:levels.get(e.storey_id||'')||'Не прочитан',record:{...record,revit_identity:elementIdentity(e),geometry_available:!!mesh}};
   });
 }
 export function dataSnapshot(model:ModelPackage,section:DataSection,rows:DataRow[]){

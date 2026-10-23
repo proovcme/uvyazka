@@ -9,7 +9,7 @@ import {measurePoints,measurementRecord,measurementKey} from '../src/spatial-mea
 function fixture(id:string,origin=[1000000,2000000,30]):SceneMember{
  const binary=new ArrayBuffer(48);new Float32Array(binary,0,9).set([0,0,0,2,0,0,0,3,0]);new Uint32Array(binary,36,3).set([0,1,2]);
  return {instanceId:id,binary,offset:[0,0,0],rotation:0,visible:true,model:{
-  contract:'ModelPackage',contract_version:'0.1.0',importer_version:'web-ifc-0.0.78/uvyazka-1',model_id:id,
+  contract:'ModelPackage',contract_version:'0.1.0',importer_version:'web-ifc-0.0.78/uvyazka-2',model_id:id,
   source:{filename:id+'.ifc',sha256:id,size_bytes:100,schema:'IFC4',exported_at:'',exporter:'test'},
   coordinate_system:{length_to_m:1,render_origin_m:origin,bounds_min_m:origin,bounds_max_m:origin.map((n,i)=>n+[2,3,0][i]),up_axis:'Z'},
   elements:[{id:'1',step_id:1,global_id:'same-global-id',class:'IfcWall',hierarchy:[],name:'Wall',role:'element',storey_id:'2',predefined_type:null,materials:[],property_sets:{},quantity_sets:{},source:{kind:'explicit',file_sha256:id,step_id:1},geometry_error:null,

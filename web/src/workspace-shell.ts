@@ -39,7 +39,7 @@ export const workspaceShell=`
   <div class="workspace">
    <aside class="model-tree" id="model-panel">
     <div class="panel-head"><h2>Состав модели</h2><button id="close-tree" class="icon-button" aria-label="Скрыть структуру">${icon('close')}</button></div>
-    <div id="scene-members"></div><div class="tree-tools"><label class="search-field">${icon('search')}<input id="element-search" aria-label="Поиск элемента" type="search" placeholder="Имя, класс или ID"></label><label class="storey-picker">Этаж<select id="storey-filter"><option value="">Все этажи</option></select></label><label class="storey-picker">Система<select id="system-filter"><option value="">Все системы</option></select></label><label class="system-only-toggle"><input id="system-only" type="checkbox"><span>Только выбранная система</span></label><div id="system-summary" aria-live="polite"></div></div>
+    <div id="scene-members"></div><div class="tree-tools"><label class="search-field">${icon('search')}<input id="element-search" aria-label="Поиск по Revit ID, имени, системе и свойствам" type="search" placeholder="Revit ID, имя, параметр…"></label><label class="storey-picker">Этаж<select id="storey-filter"><option value="">Все этажи</option></select></label><label class="storey-picker">Система<select id="system-filter"><option value="">Все системы</option></select></label><label class="system-only-toggle"><input id="system-only" type="checkbox"><span>Только выбранная система</span></label><div id="system-summary" aria-live="polite"></div></div>
     <div id="element-tree"></div><button id="reset-visibility" class="reset-tree">${icon('fit')}Показать всю модель</button>
    </aside>
    <section class="scene" aria-label="Рабочая область модели">

@@ -19,6 +19,16 @@ from .quantities import explicit_quantities, mesh_quantities, source_quantity_va
 
 IMPORTER_VERSION = "0.4.3"
 CONTRACT_VERSION = "0.1.0"
+IDENTITY_VERSION = "ifc-revit-tag-1"
+
+
+def identity_metadata(product, exporter):
+    tag=getattr(product,'Tag',None)
+    result={'tag':str(tag) if tag is not None else None,'long_name':getattr(product,'LongName',None)}
+    if tag is not None and str(tag).isdigit() and ('revit' in exporter.lower() or 'rvt-rs' in exporter.lower()):
+        result['revit']={'element_id':str(tag),'phase_status':'unavailable',
+            'id_basis':'rvt_converter_tag' if 'rvt-rs' in exporter.lower() else 'ifc_tag_revit_export'}
+    return result
 
 
 def write_json(path: Path, value: Any):
@@ -168,9 +178,7 @@ def import_model(source_path: str, output_path: str, source_name: str | None = N
         evidence = geometry_evidence(row["property_sets"], model.header.file_name.preprocessor_version or "")
         if evidence:
             row["geometry_evidence"] = evidence
-        tag = getattr(product, 'Tag', None)
-        if tag and str(tag).isdigit() and 'rvt-rs' in (model.header.file_name.preprocessor_version or '').lower():
-            row['revit'] = {'element_id': str(tag), 'phase_status': 'unavailable'}
+        row.update(identity_metadata(product,' '.join(filter(None,[model.header.file_name.preprocessor_version,model.header.file_name.originating_system]))))
         if product.Representation:
             representations = product.Representation.Representations
             selected = next((r for r in representations if r.RepresentationIdentifier == "Body"), None)
@@ -245,7 +253,7 @@ def import_model(source_path: str, output_path: str, source_name: str | None = N
             "placement_origin_m": location.tolist() if location is not None else None,
             "element_count": sum(row["storey_id"] == str(storey.id()) and row["role"] == "element" for row in rows)})
     storeys.sort(key=lambda row: (row["elevation_m"] or 0, row["id"]))
-    result = {"contract": "ModelPackage", "contract_version": CONTRACT_VERSION, "importer_version": IMPORTER_VERSION,
+    result = {"contract": "ModelPackage", "contract_version": CONTRACT_VERSION, "importer_version": IMPORTER_VERSION, "identity_projection_version":IDENTITY_VERSION,
         "model_id": digest, "source": {"filename": source_name or source.name, "sha256": digest,
         "size_bytes": source.stat().st_size, "schema": model.schema_identifier,
         "exported_at": model.header.file_name.time_stamp, "exporter": model.header.file_name.preprocessor_version},

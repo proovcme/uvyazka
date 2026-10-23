@@ -71,6 +71,15 @@ button.add-model-primary:disabled{opacity:.5;cursor:wait;transform:none}
 .demo-toolbar>a{white-space:nowrap}
 #open-model-data{min-height:44px;color:var(--amber)}
 .playback #calculate-current{width:auto;padding:8px 12px;white-space:normal}
+.inspector,.model-data-detail,.rvt-document pre{user-select:text}
+.inspector dd{display:flex;align-items:start;justify-content:end;gap:4px;min-width:0}
+.property-value{min-width:0;overflow-wrap:anywhere;user-select:text}
+button.copy-property{flex-shrink:0;width:28px;min-height:28px;padding:4px;color:var(--muted);border-color:var(--edge)}
+button.copy-property svg{width:16px;height:16px}button[data-copied=true]{color:var(--step-done);background:var(--amber-wash)}
+.copy-card{width:100%;min-height:40px;border-color:var(--strong-edge);white-space:normal;font-size:12px}
+.identity-basis{font-size:10px!important;color:var(--muted)!important;overflow-wrap:anywhere}
+.copy-status:empty{display:none}.copy-status{position:fixed;right:16px;bottom:40px;z-index:50;padding:10px 16px;background:var(--panel);color:var(--ink);border:1px solid var(--strong-edge);font-size:12px}
+.clipboard-fallback{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0}
 .model-data{width:min(1180px,96vw);max-width:96vw;height:88dvh;max-height:92dvh;padding:0;background:var(--panel);color:var(--ink);overflow:hidden}
 .model-data[open]{display:flex;flex-direction:column}
 .model-data .panel-head{padding:12px 20px}.model-data h2{font:500 22px var(--technical)}

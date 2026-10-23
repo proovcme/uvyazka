@@ -4,6 +4,15 @@ import unittest
 
 @unittest.skipUnless(importlib.util.find_spec('ifcopenshell'),'IFC extra not installed')
 class SourceQuantityTests(unittest.TestCase):
+    def test_ifc_revit_tag_provenance_is_explicit_and_not_guessed_from_entity_id(self):
+        from types import SimpleNamespace
+        from uvyazka.construction.importer import identity_metadata
+        product=SimpleNamespace(Tag='12345',LongName='Room')
+        self.assertEqual(identity_metadata(product,'Autodesk Revit 2025')['revit']['element_id'],'12345')
+        self.assertNotIn('revit',identity_metadata(product,'Generic IFC exporter'))
+        product.Tag=None
+        self.assertNotIn('revit',identity_metadata(product,'Autodesk Revit 2025'))
+
     def fixture(self,with_area_unit):
         import ifcopenshell.api
         import ifcopenshell.guid

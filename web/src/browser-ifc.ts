@@ -72,6 +72,8 @@ export async function importIfc(api: any, data: Uint8Array, filename: string, sh
   if(handle<0)throw Error('IFC не открыт: неподдерживаемый формат или повреждённый файл');
   try {
     const schema=api.GetModelSchema(handle),hierarchy=schemas[schema];
+    // web-ifc FILE_NAME header token (outside the entity table).
+    let exporter='';try{const header=api.GetHeaderLine(handle,1390159747);exporter=[value(header.arguments[4]),value(header.arguments[5])].filter(x=>typeof x==='string').join(' · ');}catch{/* Header unavailable: keep identity unconfirmed. */}
     if(!hierarchy)throw Error('Неподдерживаемая схема IFC: '+schema);
     const type=(code:number)=>api.GetNameFromTypeCode(code).toUpperCase();
     const read=(id:number)=>Number.isInteger(id)?api.GetLine(handle,id,false):null;
@@ -150,8 +152,8 @@ export async function importIfc(api: any, data: Uint8Array, filename: string, sh
     for(const e of elements){let p=parent.get(e.id);const seen=new Set<string>();while(p&&!seen.has(p)){seen.add(p);const storey=storeys.find(s=>s.id===p);if(storey){e.storey_id=p;storey.element_count++;break;}p=parent.get(p);}}
     for(const e of elements){
       const evidence=geometryEvidence(e.property_sets,converted);if(evidence)e.geometry_evidence=evidence;
-      const tag=value(read(e.step_id).Tag);
-      if(converted&&tag!=null)e.revit={element_id:String(tag),phase_status:'unavailable'};
+      const tag=value(read(e.step_id).Tag);e.tag=tag==null?null:String(tag);
+      if(tag!=null&&/^\d+$/.test(String(tag))&&(converted||/revit|rvt-rs/i.test(exporter)))e.revit={element_id:String(tag),phase_status:'unavailable',id_basis:converted?'rvt_converter_tag':'ifc_tag_revit_export'};
     }
     // Undo web-ifc's fixed IFC Z-up -> Y-up transform; keep our contract Z-up.
     api.SetGeometryTransformation(handle,[1,0,0,0,0,0,1,0,0,-1,0,0,0,0,0,1]);
@@ -189,6 +191,6 @@ export async function importIfc(api: any, data: Uint8Array, filename: string, sh
     for(const e of elements){if(e.mesh){const raw=meshes.get(e.id)!;new Float32Array(binary,e.mesh.position_byte_offset,raw.vertices.length).set(raw.vertices.map((n,i)=>n-origin[i%3]));new Uint32Array(binary,e.mesh.index_byte_offset,raw.indices.length).set(raw.indices);}else if(e.role==='element'){e.geometry_error='No tessellated body';warn(e.id,'geometry_missing','Объект прочитан без геометрии и исключён из геометрического планирования');}}
     warn('','validation_scope','Схема и геометрия прочитаны web-ifc; EXPRESS-проверка не выполнялась. Координаты связей и общие координаты не подтверждены.');
     if(converted)warn('','phases_unavailable','Стадии RVT в браузере пока не прочитаны: существующие и демонтируемые элементы автоматически не исключаются.');
-    return {binary,model:{contract:'ModelPackage',contract_version:'0.1.0',importer_version:'web-ifc-0.0.78/uvyazka-1',model_id:sha256,source:{filename,sha256,size_bytes:data.byteLength,schema,exported_at:'',exporter:'web-ifc-0.0.78'},coordinate_system:{length_to_m:length,render_origin_m:origin,up_axis:'Z',bounds_min_m:low,bounds_max_m:high},storeys,elements,relationships,systems,diagnostics,statistics:{products:elements.length,physical_elements:elements.filter(e=>e.role==='element').length,meshes:meshes.size,triangles:[...meshes.values()].reduce((n,m)=>n+m.indices.length/3,0),geometry_errors:elements.filter(e=>e.geometry_error).length,binary_bytes:byteLength},capabilities:{read:true,geometry_ready:true,technology_resolved:false,schedule_ready:false}}};
+    return {binary,model:{contract:'ModelPackage',contract_version:'0.1.0',importer_version:'web-ifc-0.0.78/uvyazka-2',model_id:sha256,source:{filename,sha256,size_bytes:data.byteLength,schema,exported_at:'',exporter:exporter||'web-ifc-0.0.78'},coordinate_system:{length_to_m:length,render_origin_m:origin,up_axis:'Z',bounds_min_m:low,bounds_max_m:high},storeys,elements,relationships,systems,diagnostics,statistics:{products:elements.length,physical_elements:elements.filter(e=>e.role==='element').length,meshes:meshes.size,triangles:[...meshes.values()].reduce((n,m)=>n+m.indices.length/3,0),geometry_errors:elements.filter(e=>e.geometry_error).length,binary_bytes:byteLength},capabilities:{read:true,geometry_ready:true,technology_resolved:false,schedule_ready:false}}};
   }finally{api.CloseModel(handle);}
 }

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 import hashlib
 import json
 import os
@@ -12,7 +13,7 @@ import re
 import sqlite3
 from typing import Any
 from uuid import uuid4, uuid5, NAMESPACE_URL
-from .units import UNITS, BASE_UNITS, resolve_unit
+from .units import UNITS, BASE_UNITS, UNIT_REVISION, resolve_unit, canonical_unit, base_value, number_text
 from .findings import comparison_category
 
 SCHEMA = "uvyazka.project.v1"
@@ -384,10 +385,11 @@ def compare_quantity(a: dict, b: dict, tolerance: str = "0") -> dict:
             raise ValueError("Finite values and nonnegative tolerance required")
         if any(len(v.as_tuple().digits) > 128 or abs(v.as_tuple().exponent) > 1000 for v in (av, bv, tol)):
             raise ValueError("Decimal exceeds supported precision/exponent bounds")
-        with localcontext() as ctx:
-            ctx.prec = max(50, max(v.adjusted() for v in (av, bv, tol)) - min(v.as_tuple().exponent for v in (av, bv, tol)) + 16)
-            delta = bv * Decimal(ub[1]) - av * Decimal(ua[1])
+        delta = base_value(bv, b["unit"]) - base_value(av, a["unit"])
     except (InvalidOperation, TypeError) as exc:
         raise ValueError("Values and tolerance must be decimal strings") from exc
-    return {"status": "matches" if abs(delta) <= tol else "question", "difference": str(delta), "base_dimension": ua[0], "base_unit": BASE_UNITS[ua[0]], "tolerance": str(tol),
+    return {"status": "matches" if abs(delta) <= Fraction(tol) else "question", "difference": number_text(delta),
+            "difference_exact": str(delta), "unit_revision": UNIT_REVISION,
+            "compared_units": [canonical_unit(a["unit"]), canonical_unit(b["unit"])],
+            "base_dimension": ua[0], "base_unit": BASE_UNITS[ua[0]], "tolerance": str(tol),
             "explanation": "Compared with explicit units and semantic scope. This is not engineering acceptance."}

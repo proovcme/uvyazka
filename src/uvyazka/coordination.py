@@ -4,10 +4,10 @@ The agent maps source entities explicitly. This module never equates matching
 room numbers across buildings, infers a hidden cable, or edits native CAD/BIM.
 """
 from collections import defaultdict, deque
-from decimal import Decimal, DecimalException, InvalidOperation, localcontext
+from decimal import Decimal, DecimalException, InvalidOperation
 import json
 
-from .units import resolve_unit
+from .units import UNIT_REVISION, convert_value
 from .findings import classify_report, CATEGORIES
 from .core import compare_quantity, connection, encode, normalized, now
 from .construction.planning import Planning, bounded
@@ -89,15 +89,11 @@ def inspect_graph(graph):
                     failed = claim.get("value") not in requirement.get("values", [])
                 elif rule == "numeric_range":
                     try:
-                        actual, expected = resolve_unit(claim.get("unit")), resolve_unit(requirement.get("unit"))
-                        if not actual or not expected or actual[0] != expected[0]: raise ValueError()
-                        with localcontext() as ctx:
-                            ctx.prec = 220
-                            value = rule_number(claim["value"]) * Decimal(actual[1]) / Decimal(expected[1])
-                            minimum = rule_number(requirement["min"]) if requirement.get("min") is not None else None
-                            maximum = rule_number(requirement["max"]) if requirement.get("max") is not None else None
-                            if minimum is None and maximum is None or minimum is not None and maximum is not None and minimum > maximum: raise ValueError()
-                            failed = (minimum is not None and value < minimum) or (maximum is not None and value > maximum)
+                        value = convert_value(rule_number(claim["value"]), claim.get("unit"), requirement.get("unit"))
+                        minimum = rule_number(requirement["min"]) if requirement.get("min") is not None else None
+                        maximum = rule_number(requirement["max"]) if requirement.get("max") is not None else None
+                        if minimum is None and maximum is None or minimum is not None and maximum is not None and minimum > maximum: raise ValueError()
+                        failed = (minimum is not None and value < minimum) or (maximum is not None and value > maximum)
                     except (DecimalException, ValueError, TypeError):
                         issue("requirement_value_unconfirmed", "Недостаточно данных или несовместимы единицы: " + requirement["id"], key); continue
                 else:
@@ -318,7 +314,7 @@ class Coordination:
         for start in range(0,len(unique),200): Planning(self.workspace).validate_sources(project_id,list(unique.values())[start:start+200],seen)
         if self.scope_freshness(project_id,graph):
             raise ValueError("Reviewed document version changed; update review scope and graph before auditing")
-        result={"project_id":project_id,"revision":graph["revision"],"audit_id":canonical_hash(["coordination-0.3.0",graph]),**inspect_graph(graph)}
+        result={"project_id":project_id,"revision":graph["revision"],"unit_revision":UNIT_REVISION,"audit_id":canonical_hash(["coordination-0.4.0",UNIT_REVISION,graph]),**inspect_graph(graph)}
         with connection(self._db(project_id)) as db:
             db.execute("insert or ignore into coordination_audits values (?,?)",(result["audit_id"],encode(result)))
         return {k:v for k,v in result.items() if k!="issues"}

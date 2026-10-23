@@ -69,10 +69,19 @@ def build_server(workspace: Workspace | None = None):
         """
         return memory.record_observations(project_id, observations, request_id)
 
+    @mcp.tool(annotations=read)
+    def get_unit_catalog(dimension: str | None = None) -> dict:
+        """Discover supported AEC unit kinds; pass dimension to read its symbols, aliases and exact conversions.
+        Without dimension returns a compact index, not the entire dictionary. No file or project changes.
+        """
+        from .units import unit_catalog
+        return unit_catalog(dimension)
+
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False})
     def compare_facts(project_id: str, first_id: str, second_id: str, tolerance: str = "0") -> dict:
-        """Store a decimal comparison with explicit units, matching entity/property/basis/revision/specification.
-        Tolerance is in base units (m, m2, m3, kg, kW, s, Ah, A, V, Wh); hours and А·ч aliases are supported. This compares recorded quantities, not an entire project.
+        """Store an exact comparison with explicit units, matching entity/property/basis/revision/specification.
+        Use get_unit_catalog for symbols and base tolerance units. Supports rational scales and Celsius offsets.
+        This compares recorded quantities, not an entire project.
         """
         return memory.compare_facts(project_id, first_id, second_id, tolerance)
 

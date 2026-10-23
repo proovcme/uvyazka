@@ -5,14 +5,16 @@ revisions. Scheduling itself requires no IFC, CAD program or model API.
 """
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation, ROUND_CEILING, localcontext
+from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 import json
 from pathlib import Path
 import re
 import shutil
 from uuid import uuid4
 
-from ..core import Workspace, UNITS, connection, digest, encode, now
+from ..core import Workspace, connection, digest, encode, now
+from ..units import UNIT_REVISION, WORK_DIMENSIONS, resolve_unit, convert_value
 from .geometry import box_model
 from .simulation import SimulationEngine, canonical_hash, validate_scenario
 
@@ -36,12 +38,11 @@ def duration_from_quantity(calculation: dict) -> int:
         rate = Decimal(str(calculation["production_per_hour"]))
         if any(not n.is_finite() or n <= 0 or len(n.as_tuple().digits) > 64 or abs(n.as_tuple().exponent) > 100 for n in (quantity, rate)):
             raise ValueError("Positive finite bounded quantities and productivity required")
-        q, r = UNITS.get(calculation["quantity_unit"]), UNITS.get(calculation["production_unit"])
-        if not q or not r or q[0] != r[0]:
+        q, r = resolve_unit(calculation["quantity_unit"]), resolve_unit(calculation["production_unit"])
+        if not q or not r or q[0] != r[0] or q[0] not in WORK_DIMENSIONS:
             raise ValueError("Quantity and hourly productivity need compatible explicit units")
-        with localcontext() as ctx:
-            ctx.prec = 220
-            result = int((quantity * Decimal(q[1]) / (rate * Decimal(r[1])) * 60).to_integral_value(rounding=ROUND_CEILING))
+        minutes = convert_value(quantity, calculation["quantity_unit"], calculation["production_unit"]) / Fraction(rate) * 60
+        result = -(-minutes.numerator // minutes.denominator)
         if not 1 <= result <= 52560000:
             raise ValueError("Duration exceeds the supported minute range")
         return result
@@ -294,6 +295,7 @@ class Planning:
                 raise ValueError("Explicit work needs source pointers")
             if "calculation" in op:
                 op["duration"] = duration_from_quantity(op["calculation"])
+                op["calculation"]["unit_revision"] = UNIT_REVISION
             if type(op.get("duration")) is not int or not 1 <= op["duration"] <= 52560000:
                 raise ValueError("duration is an integer number of continuous virtual minutes")
             if any(type(n) is not int for n in op["demands"].values()):

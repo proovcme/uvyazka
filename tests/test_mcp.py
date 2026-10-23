@@ -32,7 +32,7 @@ from uvyazka.core import Workspace
 from uvyazka.server import build_server
 with tempfile.TemporaryDirectory() as directory:
     server = build_server(Workspace(Path(directory)/'state'))
-    assert len(asyncio.run(server.list_tools())) == 70
+    assert len(asyncio.run(server.list_tools())) == 74
     asyncio.run(server.call_tool('construction_schema', {}))
     asyncio.run(server.call_tool('get_unit_catalog', {'dimension': 'flow'}))
     asyncio.run(server.call_tool('rvt_converter_status', {}))
@@ -69,6 +69,32 @@ with tempfile.TemporaryDirectory() as directory:
                         self.assertEqual(page['items'][0]['element_id'],'42')
                         values=await call(session,'get_rvt_record',{'project_id':'shared','extraction_id':key,'record_id':0,'section':'schedule_cells'})
                         self.assertEqual(values['items'][0]['properties']['m_text'],'')
+
+    async def test_structure_readings_survive_stdio_restart(self):
+        from uvyazka.intake import ProjectIntake
+        from uvyazka.project_structure import ProjectStructure
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'sources';source.mkdir()
+            (source/'table.csv').write_text('Pump,10\n',encoding='utf-8')
+            workspace=Workspace(root/'state');intake=ProjectIntake(workspace)
+            job=intake.import_folder(source,background=False);result=intake.run(job['intake_id']);project=result['project_id']
+            params=StdioServerParameters(command=sys.executable,args=['-m','uvyazka.server'],env={**os.environ,'UVYAZKA_HOME':str(workspace.home),'PYTHONUTF8':'1'})
+            async def call(session,name,args):
+                result=await session.call_tool(name,args);self.assertFalse(result.isError,result)
+                return json.loads(next(c.text for c in result.content if c.type=='text'))
+            tid=None
+            for iteration in range(2):
+                async with stdio_client(params) as (read,write):
+                    async with ClientSession(read,write) as session:
+                        await session.initialize()
+                        tables=await call(session,'get_project_structure',dict(project_id=project,kind='tables'))
+                        if tid:self.assertEqual(tid,tables['items'][0]['table_id'])
+                        tid=tables['items'][0]['table_id']
+                        table=await call(session,'read_structure_table',dict(project_id=project,table_id=tid))
+                        if not iteration:
+                            await call(session,'record_structure_review',dict(project_id=project,cell_id=table['rows'][0][1]['cell_id'],reader='model',observed_text='10',state='value',method='native_source',request_id='model-read'))
+                        else:self.assertEqual(table['rows'][0][1]['readings']['model']['comparison'],'matches_literal')
+            self.assertIn('model',ProjectStructure(workspace,project).read(tid)['rows'][0][1]['readings'])
 
     async def test_folder_intake_survives_stdio_restart_and_joins_ui_project(self):
         from uvyazka.intake import ProjectIntake
@@ -211,7 +237,7 @@ with tempfile.TemporaryDirectory() as directory:
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    self.assertEqual(len(listed.tools), 70)
+                    self.assertEqual(len(listed.tools), 74)
                     parameters = next(tool for tool in listed.tools if tool.name == 'find_rvt_parameters')
                     self.assertIn('cursor', parameters.inputSchema['properties'])
                     self.assertIn('extraction_id', parameters.inputSchema['required'])

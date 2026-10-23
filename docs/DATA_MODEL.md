@@ -209,8 +209,18 @@ rvt_data_requests той же базы объекта. rvt_catalog_metadata хр
 через `record_observations` после чтения и интерпретации.
 [Адреса, покрытие, происхождение кода и ограничения](DOCUMENT_TABLES.md).
 
-Всего 70 инструментов; они не изменяют исходный PDF/DWG/RVT.
+Всего 74 инструментов; они не изменяют исходный PDF/DWG/RVT.
 
 
 Адресный `ocr_pdf_pages` сохраняет OCR как версионное неподтверждённое доказательство.
 [OCR, единицы и три группы результатов](OCR_AND_REVIEW.md).
+
+
+## Структурное чтение источников
+
+`build_project_structure`, `get_project_structure`, `read_structure_table`,
+`record_structure_review` используют общие structure_versions/units/tables/rows
+и append-only structure_reviews в SQLite проекта. Физические PDF-страницы,
+worksheet и Word XML-части различаются. Парсер, человек и модель сохраняют
+свои результаты отдельно; совпадение не принимает инженерный факт.
+[Контракт, адреса, версии и ограничения](SOURCE_STRUCTURE.md).

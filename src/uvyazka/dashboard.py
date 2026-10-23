@@ -35,6 +35,8 @@ def make_handler(workspace: Workspace):
                 if intake_get(self, intake, uploads.token, request.path, q):return
                 from .measurement_http import serve_get as measurement_get
                 if measurement_get(self, workspace, uploads.token, request.path, q):return
+                from .structure_http import serve_get as structure_get
+                if structure_get(self, workspace, uploads.token, request.path, q):return
                 from .construction.rvt_catalog_http import serve_get as catalog_get
                 if catalog_get(self, workspace, uploads.token, request.path, q):return
                 if serve_get(self,uploads,request.path,q):return
@@ -46,6 +48,7 @@ def make_handler(workspace: Workspace):
                                "/measurements.js": ("measurements.js", "text/javascript"),
                                "/measurement-coordinates.js": ("measurement-coordinates.js", "text/javascript"),
                                "/measurements.css": ("measurements.css", "text/css")})
+                static.update({"/structure.js": ("structure.js", "text/javascript"), "/structure.css": ("structure.css", "text/css")})
                 if request.path in static:
                     name, mime = static[request.path]
                     return self.send((STATIC / name).read_bytes(), mime + "; charset=utf-8")
@@ -103,12 +106,17 @@ def make_handler(workspace: Workspace):
             measurement = request.path.startswith('/api/measurements/')
             intake_request = request.path.startswith('/api/intake/')
             catalogue = request.path == '/api/rvt/catalog'
-            if request.path!='/api/rvt/upload' and not measurement and not intake_request and not catalogue:
+            structure = request.path.startswith('/api/structure/')
+            if request.path!='/api/rvt/upload' and not measurement and not intake_request and not catalogue and not structure:
                 return self.send({"error": "Use explicit MCP tools for observations"}, status=405)
             origin=self.headers.get('Origin')
             if (origin and origin!='http://'+self.headers['Host']) or not hmac.compare_digest(self.headers.get('X-Uvyazka-Token',''),uploads.token):
                 return self.send({'error':'Open the local dashboard before writing'},status=403)
             try:
+                if structure:
+                    from .structure_http import serve_post as structure_post
+                    query={k:v[0] for k,v in parse_qs(request.query).items()}
+                    return structure_post(self,workspace,request.path,query)
                 if catalogue:
                     from .construction.rvt_catalog_http import serve_post as catalog_post
                     query={k:v[0] for k,v in parse_qs(request.query).items()}

@@ -1,7 +1,7 @@
 /* Shared local intake. Transfer progress measures bytes; parsing reports actual stages. */
 window.UvyazkaIntake = (() => {
   const esc = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const labels = {receiving:'Передача файлов',queued:'Ожидает обработки',extracting:'Распаковка ZIP',indexing:'Чтение документов',summarizing:'Сбор сводки и числовых данных',ready:'Извлечение завершено',partial:'Извлечено частично',failed:'Обработка остановлена'};
+  const labels = {receiving:'Передача файлов',queued:'Ожидает обработки',extracting:'Распаковка ZIP',indexing:'Чтение документов',structuring:'Сбор листов и таблиц',summarizing:'Сбор сводки и числовых данных',ready:'Извлечение завершено',partial:'Извлечено частично',failed:'Обработка остановлена'};
   const methods = {linked_folder:'Подключённая папка',folder_upload:'Копия папки',zip_upload:'ZIP-архив'};
   const coverageNames = {text_indexed:'Текст прочитан',unsupported:'Нужен отдельный обработчик',parse_failed:'Не удалось прочитать',empty_text:'Текст не найден',pending:'Ожидают чтения',source_missing:'Источник недоступен'};
   const size = n => new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format((n||0)/1024/1024)+' МБ';
@@ -47,7 +47,7 @@ window.UvyazkaIntake = (() => {
       const focusKey=focused?['open','resume','retry','transfer'].find(k=>focused.dataset[k]):null;
       const focusValue=focusKey?focused.dataset[focusKey]:null;
       jobsTarget.innerHTML=items.length?items.map(item=>{
-        const awaiting=['queued','extracting','indexing','summarizing'].includes(item.status)&&!item.running;
+        const awaiting=['queued','extracting','indexing','structuring','summarizing'].includes(item.status)&&!item.running;
         const coverage=Object.entries(item.coverage||{}).map(([k,n])=>`${coverageNames[k]||k}: ${n}`).join(' · ');
         return `<article class="intake-job"><div class="intake-job-heading"><div><h3>${esc(item.name)}</h3><span class="fact-id">${esc(methods[item.mode])} · ${esc(item.project_id||'Проект появится после передачи файлов')}</span></div><span class="badge">${esc(awaiting?'Можно продолжить':item.status==='indexing'&&item.phase==='inventory'?'Сверка состава и версий':labels[item.status])}</span></div>
           ${item.current_document?`<p class="file-name">${esc(item.current_document)}</p>`:''}
@@ -55,6 +55,7 @@ window.UvyazkaIntake = (() => {
           <p>${item.status==='receiving'?`Передано файлов: ${item.received_files} / ${item.total_files||'архив'}. ${size(item.received_bytes)}`:item.status==='extracting'?`Распаковано: ${item.expanded_files||0} / ${item.total_files||'…'}`:esc(coverage||'Готовим состав документов…')}</p>
           ${item.reading_work?.counts?.low_text_blocks?`<p>Мало текста или сканы: ${item.reading_work.counts.low_text_blocks} страниц / блоков. Нужен просмотр и, по задаче, OCR.</p>`:''}
           ${item.automatic_summary?`<p>Найдено числовых фрагментов: ${item.automatic_summary.candidate_count}. Подготовлено блоков: ${item.automatic_summary.indexed_blocks} / ${item.automatic_summary.total_blocks}.</p>`:''}
+          ${item.source_structure?`<p>Структура: ${item.source_structure.indexed_units} листов / частей, ${item.source_structure.tables} таблиц, ${item.source_structure.stored_rows} строк. Ожидают: ${item.source_structure.pending_documents} файлов; частично: ${item.source_structure.partial_documents}; не удалось: ${item.source_structure.failed_documents}.</p><a class="source-button" href="?project=${encodeURIComponent(item.project_id)}#structure">Листы и таблицы →</a>`:''}
           ${item.error?`<p class="error">${esc(item.error)}</p>`:''}
           ${item.errors?.length?`<details><summary>Документы, которые не удалось прочитать (${item.coverage?.parse_failed||item.errors.length})</summary><ul>${item.errors.map(e=>`<li><strong>${esc(e.relative_path||e.doc_id)}</strong><p>${esc(e.error)}</p></li>`).join('')}</ul><p>Показаны первые 20; полный состав доступен в документах проекта.</p></details>`:''}
           <div class="intake-actions">${item.project_id?`<button type="button" class="rvt-primary" data-open="${esc(item.project_id)}">Смотреть сводку →</button>`:''}

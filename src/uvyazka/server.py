@@ -143,6 +143,8 @@ def build_server(workspace: Workspace | None = None):
     register_document_tables(mcp, memory)
     from .pdf_ocr import register_tools as register_pdf_ocr
     register_pdf_ocr(mcp, memory)
+    from .structure_tools import register_tools as register_structure
+    register_structure(mcp, memory)
     return mcp
 
 

@@ -18,7 +18,7 @@ from .core import Workspace, connection, digest, encode, now
 
 MAX_ENTRIES = 100000
 LEASE_SECONDS = 90
-ACTIVE = {"queued", "extracting", "indexing", "summarizing"}
+ACTIVE = {"queued", "extracting", "indexing", "structuring", "summarizing"}
 SQL = """
 create table if not exists intake_jobs(
  intake_id text primary key,project_id text,status text not null,
@@ -104,7 +104,7 @@ class ProjectIntake:
         project = registered["project"]
         with connection(self.workspace.registry) as db:
             db.execute("begin immediate")
-            active = db.execute("select intake_id from intake_jobs where project_id=? and status in ('queued','indexing','summarizing') order by rowid desc limit 1", (project["project_id"],)).fetchone()
+            active = db.execute("select intake_id from intake_jobs where project_id=? and status in ('queued','indexing','structuring','summarizing') order by rowid desc limit 1", (project["project_id"],)).fetchone()
             item = {"intake_id": active[0]} if active else self._insert(db, "linked_folder", project["name"], project["project_id"], project["source_root"])
         if background:
             self.start(item["intake_id"])
@@ -356,6 +356,15 @@ class ProjectIntake:
             if not result["remaining_in_batch"]:
                 break
         coverage = result["status"]["coverage"]
+        self._update(intake_id, owner, "structuring", current_document=None)
+        from .project_structure import ProjectStructure
+        structure = ProjectStructure(self.workspace, project)
+        while True:
+            batch = structure.build()
+            self._update(intake_id, owner, source_structure=batch["coverage"],
+                         current_document=batch["processed"][-1]["relative_path"] if batch["processed"] else None)
+            if not batch["coverage"]["pending_documents"]: break
+            if not batch["processed"]: raise ValueError("Source structure made no progress; resume intake")
         self._update(intake_id, owner, "summarizing", current_document=None)
         from .project_summary import ProjectSummary
         summary = ProjectSummary(self.workspace,project)
@@ -368,8 +377,8 @@ class ProjectIntake:
                 raise ValueError("Source snapshot changed while summarizing; resume intake")
         with connection(self.workspace.db_path(project), readonly=True) as db:
             errors = [dict(r) for r in db.execute("select doc_id,relative_path,sha256,error from documents where index_status='parse_failed' order by relative_path limit 20")]
-        partial = any(coverage.get(s,0) for s in ("parse_failed", "empty_text", "pending", "source_missing", "unsupported")) or result["status"]["reading_work"]["counts"].get("low_text_blocks",0) > 0
+        partial = any(coverage.get(s,0) for s in ("parse_failed", "empty_text", "pending", "source_missing", "unsupported")) or result["status"]["reading_work"]["counts"].get("low_text_blocks",0) > 0 or any(batch['coverage'][s] for s in ('failed_documents','partial_documents','unhashed_documents'))
         self._update(intake_id, owner, "partial" if partial else "ready", completed_at=now(), current_document=None,
                      errors=errors, coverage=coverage,
-                     next_tools=["get_project_summary", "project_status", "find_documents", "read_evidence", "record_observations"])
+                     next_tools=["get_project_structure", "read_structure_table", "get_project_summary", "project_status", "find_documents", "read_evidence", "record_observations"])
 

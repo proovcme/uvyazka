@@ -1,4 +1,30 @@
-# Адресное чтение таблиц и структуры PDF
+# Общий каталог листов и таблиц
+
+Начни с `get_project_structure(project_id, kind="documents")`: UI и MCP
+используют одну SQLite. Новый приём уже строит каталог; старый проект —
+`build_project_structure` до pending_documents=0. Передавай doc_id для
+выбранного документа, соблюдая очередь чтения пользователя. Failed/partial/
+unsupported — покрытие извлечения, не ошибки проекта. После исправления
+причины retry_failed=true повторяет порцию; дальнейшее продолжение с false.
+
+PDF, XLSX/XLSM/XLS, DOCX и CSV/TSV читай через kind=sheets|tables и
+`read_structure_table`. Продолжай отдельно строки и столбцы. Проверяй
+current_registered_version и source_freshness. Worksheet и Word XML-часть —
+не печатные страницы; PDF-страница не равна напечатанному номеру листа.
+DOC пока не поддержан. Сверяй merge/merge_owner, формулу и cached_value,
+пустоту и отсутствие; не повторяй количество по продолжениям объединений.
+XLS не раскрывает выражения формул. profile_candidate и цепочки заголовков —
+гипотезы: единицы, область и итоги проверяются по оригиналу.
+
+При независимом чтении оригинала используй `record_structure_review` с
+reader=model, method=visual_original или native_source. Если читаешь кеш
+парсера, указывай cached_extraction: это не независимое извлечение.
+Вопросы, нечитаемость и исправления требуют причины; исправление — предыдущей
+expected_revision. request_id повторяй только для идентичного запроса.
+Человек продолжит чтение из той же базы. Совпадение чтений не принимает
+инженерное значение; после интерпретации отдельно запиши record_observations.
+
+## Специализированный каталог PDF
 
 После выбора project_id и документа из `find_documents` проверь
 `get_document_structure` с doc_id и sha256. Для неиндексированных страниц

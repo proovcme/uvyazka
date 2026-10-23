@@ -8,14 +8,14 @@ import zipfile
 from importlib.metadata import version, PackageNotFoundError
 
 READER_REVISION = "literal-readers-v1"
-SUPPORTED = {".txt", ".md", ".csv", ".tsv", ".pdf", ".docx", ".xlsx", ".xlsm"}
+SUPPORTED = {".txt", ".md", ".csv", ".tsv", ".pdf", ".docx", ".xlsx", ".xlsm", ".xls"}
 MAX_ROWS = 20000
 MAX_CELLS = 300000
 MAX_EXPANDED_BYTES = 64 * 1024 * 1024
 
 
 def revision_for(suffix: str) -> str:
-    package = {".pdf": "PyMuPDF", ".docx": "python-docx", ".xlsx": "openpyxl", ".xlsm": "openpyxl"}.get(suffix)
+    package = {".pdf": "PyMuPDF", ".docx": "python-docx", ".xlsx": "openpyxl", ".xlsm": "openpyxl", ".xls":"xlrd"}.get(suffix)
     if not package:
         return READER_REVISION
     try:
@@ -63,6 +63,20 @@ def read_blocks(path: Path) -> list[dict]:
         for table_no, table in enumerate(doc.tables, 1):
             for row_no, row in enumerate(table.rows, 1):
                 add(" | ".join(cell.text for cell in row.cells), {"kind": "docx_table_row", "table": table_no, "row": row_no})
+    elif suffix == '.xls':
+        from .structured_readers import xls_units
+        total, sheets=xls_units(path.read_bytes(),0,10000)
+        count=0
+        for sheet in sheets:
+            if not sheet['tables']:raise ValueError('XLS sheet exceeds row/column/cell bounds')
+            for row in sheet['tables'][0]['rows']:
+                cells=[dict(cell=c['locator']['cell'],value=c['text'],type='xls_literal_or_cached',
+                            formula_status='unknown') for c in row if c['text'] not in (None,'')]
+                count+=len(cells)
+                if count>MAX_CELLS or len(blocks)>=MAX_ROWS:raise ValueError('XLS exceeds total row/cell bounds')
+                if cells:add('Лист: '+sheet['name']+'\n'+'\n'.join(c['cell']+': '+c['value'] for c in cells),
+                             dict(kind='excel_row',sheet=sheet['name'],row=row[0]['row'],cells=cells,
+                                  note='XLS formulas are not exposed; values may be saved calculation results'))
     elif suffix in {".xlsx", ".xlsm"}:
         try:
             import openpyxl

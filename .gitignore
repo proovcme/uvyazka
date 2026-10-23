@@ -41,6 +41,8 @@ logs/
 *.doc
 *.docx
 *.xls
+# One generated regression fixture; real spreadsheets remain excluded.
+!tests/fixtures/structure-synthetic.xls
 *.xlsx
 *.xlsm
 *.zip

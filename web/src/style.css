@@ -46,6 +46,11 @@ dialog{border:1px solid var(--strong-edge);border-radius:6px;box-shadow:0 20px 8
 .facet-options input[type=checkbox]{width:14px;height:14px;min-height:0;padding:0;margin:0;flex-shrink:0}
 .facet-filter>button{min-height:30px;font-size:10px;color:var(--secondary);padding:4px 0}
 .cad-tree-search{width:100%;min-width:0;margin-bottom:8px;font-size:12px}
+.branch-document{margin-left:10px;padding-left:3px;border-left:1px solid var(--edge)}
+.document-tree-note{font-size:10px;color:var(--muted);line-height:1.5;margin:8px 2px}
+.tree-document-list{margin-left:12px}.document-item{display:block;text-align:left;white-space:normal;width:100%;padding:6px 4px;min-height:38px;font-size:11px;overflow-wrap:anywhere}
+.document-item strong{font-weight:500}.document-item small{display:block;font-size:9px;color:var(--muted);margin-top:3px}.document-item:hover{color:var(--amber)}
+.catalogue-import{font-size:11px;max-width:240px}.catalogue-import input{font-size:11px;max-width:100%}
 .tree-match-actions{display:flex;flex-wrap:wrap;gap:2px;padding:6px 10px;border-top:1px solid var(--edge);border-bottom:1px solid var(--edge);flex-shrink:0}
 .tree-match-actions button{font-size:10px;min-height:28px;padding:4px 6px}
 .model-branch{border:0;padding:0;margin:0;min-width:0}

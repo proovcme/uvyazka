@@ -5,6 +5,18 @@ from .rvt_data import RvtData
 def register_tools(mcp,workspace):
     read={'readOnlyHint':True,'idempotentHint':True}
 
+    @mcp.tool(annotations=read)
+    def list_rvt_catalogs(project_id:str,source_sha256:str='',offset:int=0,limit:int=40) -> dict:
+        """List immutable RVT snapshots in the shared project DB, including catalogues imported from the viewer and native MCP extractions. Match by exact original RVT SHA, never filename. Read records with get_rvt_data/get_rvt_record using extraction_id. Imported JSON source hashes are declared, not proof that the RVT was reopened. Missing records do not establish absence."""
+        from .rvt_catalog import RvtCatalog
+        return RvtCatalog(workspace).list(project_id,source_sha256,offset,limit)
+
+    @mcp.tool(annotations={'readOnlyHint':False,'destructiveHint':False,'idempotentHint':True})
+    def import_rvt_catalog(project_id:str,doc_id:str,request_id:str) -> dict:
+        """Import a registered viewer catalogue JSON into the same RVT record store used by MCP and the local viewer. Preserves source SHA, original IDs/graphs/parameters and partial status, without uploading or modifying RVT. Requires the JSON file to be registered in this project. Declared RVT SHA is not independently verified. Same request_id is immutable; different contents are a conflict."""
+        from .rvt_catalog import RvtCatalog
+        return RvtCatalog(workspace).import_document(project_id,doc_id,request_id)
+
     @mcp.tool(annotations={'readOnlyHint':False,'destructiveHint':False,'idempotentHint':True})
     def prepare_rvt_model(project_id:str,doc_id:str,request_id:str,convert_geometry:bool=True) -> dict:
         """Agent entrypoint: automatically extract/cache all supported native RVT data, convert to IFC and validate/publish geometry without Revit. Registered source required; build the Rust runtime and install authoring extra for geometry first. Independent stage errors preserve successful data/geometry. Returns extraction_id/model_id, exact ElementId crosswalk, coverage and next tools. Same request_id returns its report; after fixing a failed stage use a new ID. Synchronous, bounded to <=512 MiB and per-stage timeouts. Does not generate evaluated schedules, drawings or an approved construction plan."""

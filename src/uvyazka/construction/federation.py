@@ -51,6 +51,7 @@ def create_federation(cache, members):
             'label': str(member.get('label') or model['source']['filename'])[:180],
             'offset_m': member.get('offset_m', [0, 0, 0]), 'rotation_deg': member.get('rotation_deg', 0),
             'manifest_sha256': hashlib.sha256(content).hexdigest(),
+            'source_sha256': model['source']['sha256'], 'source_format': model['source'].get('format','ifc'),
             'coordinate_basis': 'source_world_coordinates_plus_explicit_rigid_placement',
             'coordinate_alignment_verified': False})
         packages.append((model, directory))

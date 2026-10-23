@@ -12,9 +12,10 @@ test('workspace wires simple/parameter search, hidden rows, selection, reset and
  document.body.innerHTML='<div id="app"></div>';
  globalThis.Option=function(text,value){const option=document.createElement('option');option.textContent=text;option.value=value;return option;};
  const make=(id,name,power,storey)=>({id,step_id:Number(id),name,role:'element',storey_id:storey,class:'IfcPump',materials:[],global_id:'gid-'+id,property_sets:{Technical:{Power:power}},quantity_sets:{},mesh:{},source:{}});
- const model={model_id:'sample',contract:'ModelPackage',source:{filename:'sample.ifc',schema:'IFC2X3',sha256:'sample-source'},statistics:{physical_elements:3,meshes:3},storeys:[{id:'L1',name:'Первый'},{id:'L2',name:'Второй'}],systems:[],elements:[make('1','Насос A',15,'L1'),make('2','Насос B',5,'L1'),make('3','Установка',812345,'L2')]};
+ const model={model_id:'sample',contract:'ModelPackage',source:{filename:'sample.rvt',format:'rvt',schema:'IFC2X3',sha256:'a'.repeat(64)},statistics:{physical_elements:3,meshes:3},storeys:[{id:'L1',name:'Первый'},{id:'L2',name:'Второй'}],systems:[],elements:[make('1','Насос A',15,'L1'),make('2','Насос B',5,'L1'),make('3','Установка',812345,'L2')]};
  globalThis.fetch=async input=>{
   const url=new URL(String(input),'http://localhost');
+  if(url.pathname==='/api/rvt/catalog')return new Response(JSON.stringify({document:{schema_version:1,schema_sha256:'b'.repeat(64),status:'partial',clipped_records:0,source:{filename:'sample.rvt',sha256:'a'.repeat(64),size_bytes:42},summary:{},evaluated_schedule_body_available:false,shared_store:{project_id:'test',extraction_id:'f'.repeat(64),origin:'native_extraction'},records:[{identity:{element_id:'9007199254740993'},class_name:'DBViewDrafting',kind:'view',status:'partial',source:{stream:'Partitions/1'},graph:{objects:[{class_name:'DBViewDrafting',fields:{m_viewName:'Первый лист',m_sheetNumber:'АР-1'}}],edges:[]}}]}}));
   if(url.pathname.endsWith('/geometry.bin'))return new Response(new ArrayBuffer(4));
   let body;if(url.pathname==='/api/projects')body={projects:[{id:'test',name:'Test'}],default_project:'test'};
   else if(url.pathname.endsWith('/models'))body={items:[{model_id:'sample',name:'sample'}]};
@@ -32,6 +33,8 @@ test('workspace wires simple/parameter search, hidden rows, selection, reset and
  const node=id=>document.getElementById(id),wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
  const until=async predicate=>{for(let i=0;i<100&&!predicate();i++)await wait(10);assert.ok(predicate());};
  await until(()=>globalThis.__workspaceViewer.visible.length===3||!node('error').hidden);assert.equal(node('error').hidden,true,node('error').textContent);assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);
+ await until(()=>document.querySelector('.branch-document'));
+ const sheets=document.querySelector('.branch-document');sheets.open=true;sheets.dispatchEvent(new win.Event('toggle'));document.querySelector('.document-item').click();assert.equal(node('rvt-document').open,true);assert.match(node('rvt-record-detail').textContent,/9007199254740993/);assert.match(node('rvt-catalog-storage').textContent,/Общая база/);node('rvt-document-close').click();
  node('element-search').value='Насос A';node('element-search').dispatchEvent(new win.Event('input'));assert.equal(node('hide-matches').disabled,true);await wait(220);
  assert.equal(document.querySelectorAll('.element-item').length,1);assert.deepEqual(globalThis.__workspaceViewer.visible,['1']);
  node('visibility-filter').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);

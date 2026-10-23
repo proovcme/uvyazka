@@ -89,6 +89,8 @@ def project_record(record,section):
         rows.extend({**e,'json_path':['graph','objects',e['object_index'],'fields',e['field'],e['entry_index']]} for e in system['member_evidence'])
         return rows
     if section=='fields':
+        if not graph and isinstance(record.get('root_fields'),dict):
+            return [{'json_path':['root_fields',k],'field':k,'raw_value':v} for k,v in record['root_fields'].items()]
         return [pointer_row(record,0,k,v) for k,v in (graph[0]['fields'] if graph else {}).items()]
     if section=='graph':
         return [{'json_path':['graph','objects',i],**row} for i,row in enumerate(graph)]
@@ -299,13 +301,22 @@ class RvtData:
             scope['absence_verified']=False
         if section=='summary':return snapshot
         if section in {'coverage','units','parameter_definitions','value'}:
-            report=json.loads(Path(snapshot['summary_file']).read_text(encoding='utf-8'))
+            if snapshot.get('summary_file'):
+                report=json.loads(Path(snapshot['summary_file']).read_text(encoding='utf-8'))
+            else:
+                with connection(self.workspace.db_path(project_id),readonly=True) as db:
+                    meta=db.execute('select payload from rvt_catalog_metadata where extraction_id=?',(extraction_id,)).fetchone()
+                report={'summary':json.loads(meta[0]).get('summary',{}) if meta else {},'absence_verified':False}
             if section=='value':return {**scope,**json_fragment(report,json_path,offset,max_chars)}
             key={'coverage':'classes','units':'unit_formats','parameter_definitions':'parameter_definitions'}[section]
             entries=(report.get('summary') or {}).get(key) or {}
             rows=[{'key':k,'properties':v,'json_path':['summary',key,k]} for k,v in entries.items() if query.casefold() in (k+' '+encode(v)).casefold()]
             return {**scope,'section':section,**preview_page(rows,offset,limit)}
         if section=='classes':
+            if not snapshot.get('classes_file'):
+                with connection(self.workspace.db_path(project_id),readonly=True) as db:
+                    rows=[{'name':r[0],'parent':None,'field_count':None} for r in db.execute('select distinct class_name from rvt_native_records where extraction_id=?',(extraction_id,))]
+                return {**scope,'absence_verified':False,**preview_page([r for r in rows if query.casefold() in r['name'].casefold()],offset,limit)}
             rows=json.loads(Path(snapshot['classes_file']).read_text(encoding='utf-8'))['classes']
             return {**scope,**preview_page([{'name':r['name'],'parent':r['parent'],'field_count':len(r['fields'])} for r in rows if query.casefold() in r['name'].casefold()],offset,limit)}
         if section not in {'elements','views','schedules','placements','systems','diagnostics'}:raise ValueError('Unknown RVT data section')

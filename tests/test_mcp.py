@@ -32,7 +32,7 @@ from uvyazka.core import Workspace
 from uvyazka.server import build_server
 with tempfile.TemporaryDirectory() as directory:
     server = build_server(Workspace(Path(directory)/'state'))
-    assert len(asyncio.run(server.list_tools())) == 68
+    assert len(asyncio.run(server.list_tools())) == 70
     asyncio.run(server.call_tool('construction_schema', {}))
     asyncio.run(server.call_tool('get_unit_catalog', {'dimension': 'flow'}))
     asyncio.run(server.call_tool('rvt_converter_status', {}))
@@ -42,6 +42,33 @@ with tempfile.TemporaryDirectory() as directory:
 
     async def test_official_stdio_client_and_observation(self):
         await asyncio.wait_for(self.check_protocol(), timeout=60)
+
+    async def test_viewer_catalogue_import_survives_mcp_restart(self):
+        from test_rvt_catalog import catalogue
+        from uvyazka.ingest import scan
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'input';source.mkdir()
+            (source/'catalogue.json').write_text(json.dumps(catalogue()),encoding='utf-8')
+            workspace=Workspace(root/'state');workspace.create_project('shared','Shared',source);scan(workspace,'shared')
+            doc_id=workspace.find_documents('shared')['documents'][0]['doc_id']
+            params=StdioServerParameters(command=sys.executable,args=['-m','uvyazka.server'],env={**os.environ,'UVYAZKA_HOME':str(workspace.home),'PYTHONUTF8':'1'})
+            async def call(session,name,args):
+                result=await session.call_tool(name,args);self.assertFalse(result.isError,result)
+                return json.loads(next(c.text for c in result.content if c.type=='text'))
+            key=None
+            for iteration in range(2):
+                async with stdio_client(params) as (read,write):
+                    async with ClientSession(read,write) as session:
+                        await session.initialize()
+                        saved=await call(session,'import_rvt_catalog',{'project_id':'shared','doc_id':doc_id,'request_id':'viewer-import'})
+                        if key:self.assertEqual(saved['extraction_id'],key)
+                        key=saved['extraction_id']
+                        listed=await call(session,'list_rvt_catalogs',{'project_id':'shared','source_sha256':'a'*64})
+                        self.assertEqual(listed['items'][0]['extraction_id'],key)
+                        page=await call(session,'get_rvt_data',{'project_id':'shared','extraction_id':key,'section':'schedules'})
+                        self.assertEqual(page['items'][0]['element_id'],'42')
+                        values=await call(session,'get_rvt_record',{'project_id':'shared','extraction_id':key,'record_id':0,'section':'schedule_cells'})
+                        self.assertEqual(values['items'][0]['properties']['m_text'],'')
 
     async def test_folder_intake_survives_stdio_restart_and_joins_ui_project(self):
         from uvyazka.intake import ProjectIntake
@@ -184,7 +211,7 @@ with tempfile.TemporaryDirectory() as directory:
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    self.assertEqual(len(listed.tools), 68)
+                    self.assertEqual(len(listed.tools), 70)
                     parameters = next(tool for tool in listed.tools if tool.name == 'find_rvt_parameters')
                     self.assertIn('cursor', parameters.inputSchema['properties'])
                     self.assertIn('extraction_id', parameters.inputSchema['required'])

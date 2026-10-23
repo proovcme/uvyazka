@@ -2,6 +2,8 @@ import type {BimElement,ModelPackage} from './model';
 import {elementIdentity} from './element-identity.ts';
 import type {ModelVisibility} from './model-visibility';
 import {elementCategory} from './element-category.ts';
+import {documentBranches} from './rvt-navigation.ts';
+import type {RvtDocument,NativeRecord} from './rvt-document.ts';
 interface Node {key:string;name:string;kind:'model'|'storey'|'class';items:BimElement[];children:Node[]}
 export function modelTreeNodes(model:ModelPackage,items:BimElement[],grouping:'categories'|'levels'='categories'):Node[]{
   const roots:Node[]=[],sources=new Map<string,Node>(),floors=new Map<string,Node>(),classes=new Map<string,Node>();
@@ -16,31 +18,42 @@ export function modelTreeNodes(model:ModelPackage,items:BimElement[],grouping:'c
   return roots;
 }
 /** Native details/checkboxes, lazy category rows, and stable expansion during visibility changes. */
-export function modelTreePanel(host:HTMLElement,visibility:ModelVisibility,actions:{select:(id:string)=>void;show:(ids:string[],visible:boolean)=>void;isolate:(ids:string[])=>void}){
+export function modelTreePanel(host:HTMLElement,visibility:ModelVisibility,actions:{select:(id:string)=>void;show:(ids:string[],visible:boolean)=>void;isolate:(ids:string[])=>void;document?:(document:RvtDocument,record:NativeRecord)=>void}){
   let current:ModelPackage|null=null;const expanded=new Map<string,boolean>(),limits=new Map<string,number>(),offsets=new Map<string,number>();
   let lastItems:BimElement[]=[],lastSearching=false,lastSearchKey='',lastGrouping:'categories'|'levels'='categories';
-  function render(model:ModelPackage|null,items:BimElement[],selected:string|null,searching:boolean,searchKey=String(searching),grouping:'categories'|'levels'='categories'){
+  let catalogues:RvtDocument[]=[],documentQuery='';const documentExpanded=new Set<string>();
+  function render(model:ModelPackage|null,items:BimElement[],selected:string|null,searching:boolean,searchKey=String(searching),grouping:'categories'|'levels'='categories',documents:RvtDocument[]=catalogues,query=documentQuery){
+    catalogues=documents;documentQuery=query;
     if(current!==model){current=model;expanded.clear();limits.clear();offsets.clear();}
     if(lastSearchKey!==searchKey){expanded.clear();limits.clear();offsets.clear();lastSearchKey=searchKey;}
     if(lastGrouping!==grouping){expanded.clear();limits.clear();offsets.clear();lastGrouping=grouping;}
     lastItems=items;lastSearching=searching;
-    host.replaceChildren();if(!model)return;
-    const stats=document.createElement('p');stats.className='tree-results';const visible=visibility.count(items.map(e=>e.id));stats.textContent=`Найдено ${items.length} · включено ${visible.shown}`;host.append(stats);
-    if(!items.length){const empty=document.createElement('p');empty.textContent='Совпадений нет. Измените поиск или фильтры.';host.append(empty);return;}
+    host.replaceChildren();if(!model&&!documents.length)return;
+    const stats=document.createElement('p');stats.className='tree-results';const visible=visibility.count(items.map(e=>e.id));stats.textContent=`Элементов найдено ${items.length} · включено ${visible.shown}`;host.append(stats);
+    if(!items.length&&!documents.length){const empty=document.createElement('p');empty.textContent='Совпадений нет. Измените поиск или фильтры.';host.append(empty);return;}
+    const matched=new Set<RvtDocument>();
+    const roots=model?modelTreeNodes(model,items,grouping):[];
+    const sources=model?.federation?.members.map(m=>({key:JSON.stringify(['model',m.instance_id]),name:m.label,hash:m.source_sha256}))??(model?[{key:JSON.stringify(['model','']),name:model.source.filename,hash:model.source.sha256}]:[]);
+    const rootDocuments=new Map<string,RvtDocument>();
+    for(const source of sources){const data=documents.find(d=>d.source?.sha256===source.hash);if(!data)continue;matched.add(data);rootDocuments.set(source.key,data);if(!roots.some(r=>r.key===source.key))roots.push({key:source.key,name:source.name,kind:'model',items:[],children:[]});}
     const branch=(node:Node):HTMLDetailsElement=>{
       const details=document.createElement('details');details.className='model-branch branch-'+node.kind;
       details.open=expanded.get(node.key)??(node.kind!=='class'||searching||node.items.some(e=>e.id===selected));
       const summary=document.createElement('summary'),check=document.createElement('input');check.type='checkbox';
       const ids=node.items.map(e=>e.id),state=visibility.count(ids);check.checked=state.checked;check.indeterminate=state.mixed;
+      check.disabled=!ids.length;
       check.setAttribute('aria-label','Показывать '+node.name);check.onclick=e=>e.stopPropagation();check.onchange=()=>actions.show(ids,check.checked);
       const name=document.createElement('span');name.textContent=node.name;name.className='tree-node-name';
       const count=document.createElement('small');count.textContent=String(node.items.length);count.title=`Включено ${state.shown} из ${state.total}`;
       const only=document.createElement('button');only.className='tree-isolate';only.textContent='Только';only.title='Оставить только '+node.name;only.setAttribute('aria-label',only.title);only.onclick=e=>{e.stopPropagation();actions.isolate(ids);};
+      only.disabled=!ids.length;
       summary.append(check,name,count,only);details.append(summary);
       let loaded=false;
       const populate=()=>{
         if(loaded)return;loaded=true;
-        if(node.children.length){for(const child of node.children)details.append(branch(child));return;}
+        if(node.children.length)for(const child of node.children)details.append(branch(child));
+        if(node.kind==='model'&&rootDocuments.has(node.key))documentBranches(details,rootDocuments.get(node.key)!,documentQuery,(data,record)=>actions.document?.(data,record),documentExpanded);
+        if(node.children.length||node.kind==='model'&&rootDocuments.has(node.key))return;
         const list=document.createElement('div');list.className='tree-element-list';details.append(list);
         const rows=()=>{
           list.replaceChildren();const limit=limits.get(node.key)??50,offset=offsets.get(node.key)??0;
@@ -58,7 +71,8 @@ export function modelTreePanel(host:HTMLElement,visibility:ModelVisibility,actio
       details.addEventListener('toggle',event=>{if(event.target!==details||!details.isConnected)return;expanded.set(node.key,details.open);if(details.open)populate();});
       if(details.open)populate();return details;
     };
-    for(const node of modelTreeNodes(model,items,grouping))host.append(branch(node));
+    for(const node of roots)host.append(branch(node));
+    for(const data of documents)if(!matched.has(data)){const root=document.createElement('details');root.className='model-branch branch-model document-only';root.open=true;const summary=document.createElement('summary');summary.textContent=(data.source?.filename??'RVT')+' · каталог без привязки к геометрии этой сцены';root.append(summary);documentBranches(root,data,documentQuery,(d,r)=>actions.document?.(d,r),documentExpanded);host.append(root);}
   }
   function reveal(id:string){
     if(!current||!lastItems.some(e=>e.id===id)||[...host.querySelectorAll<HTMLElement>('.element-item')].some(e=>e.dataset.id===id))return;

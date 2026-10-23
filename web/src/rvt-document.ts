@@ -1,7 +1,7 @@
 import type {ScheduleData} from './rvt-schedule.ts';
 export interface NativeObject {class_name:string;fields:Record<string,any>}
 export interface NativeRecord {identity:{element_id:number|string;unique_id?:string};class_name:string;kind:'view'|'schedule'|'placement';status:string;diagnostic?:string;source:unknown;graph?:{objects:NativeObject[];edges:{source_object_index:number;pointer_offset:number;target_object_index:number}[]}|null}
-export interface RvtDocument {schedule_data?:ScheduleData;schema_version:number;schema_sha256:string;status:string;error?:string;clipped_records:number;records:NativeRecord[];summary:any;source?:{filename:string;sha256:string;size_bytes:number};evaluated_schedule_body_available:false}
+export interface RvtDocument {shared_store?:{project_id:string;extraction_id:string;origin:string;source_verification?:string};schedule_data?:ScheduleData;schema_version:number;schema_sha256:string;status:string;error?:string;clipped_records:number;records:NativeRecord[];summary:any;source?:{filename:string;sha256:string;size_bytes:number};evaluated_schedule_body_available:false}
 export const fields=(r:NativeRecord)=>r.graph?.objects[0]?.fields??{};
 export function identifier(v:any):string|null {if(typeof v==='number'&&Number.isSafeInteger(v)||typeof v==='string')return String(v);if(v&&typeof v==='object')return identifier(v.m_id64??v.m_id);return null;}
 export function recordName(r:NativeRecord):string {const f=fields(r);return String(f.m_viewName||f.m_viewDescription||`${r.class_name} #${r.identity.element_id}`);}

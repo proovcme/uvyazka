@@ -13,6 +13,8 @@ import type { BrowserRun } from './browser-panel';
 import { workScenes } from './scenes';
 import {rvtDocumentPanel} from './rvt-document-panel';
 import {viewOrientation} from './rvt-document';
+import type {RvtDocument,NativeRecord} from './rvt-document';
+import {loadProjectCatalog,saveProjectCatalog,projectCatalogs,loadCatalogSnapshot,loadModelCatalog} from './rvt-catalog-client';
 import {modelDataPanel} from './model-data-panel';
 import {elementIdentity,elementLabelMatches} from './element-identity';
 import {installPropertyCopy,copyValue} from './copy-properties';
@@ -45,18 +47,33 @@ let requestedRun = new URL(location.href).searchParams.get('run') || '';
 let viewer: Viewer | null = null, model: ModelPackage | null = null, run: RunPackage | null = null, clock: PlaybackClock | null = null, frame = 0, last = 0, generation = 0, modelGeneration = 0;
 const visibility=new ModelVisibility();let visibilityModelId='',treeItems:BimElement[]=[];
 let parameterFilters:ParameterFilter[]=[];
+const catalogues=new Map<string,RvtDocument>();let catalogueProject=project;
 document.getElementById('app')!.innerHTML = workspaceShell;
-const tree=modelTreePanel(el('element-tree'),visibility,{select:id=>{selectElement(id);viewer?.focusTargets([id]);},show:setElementVisibility,isolate:isolateElements});
+const tree=modelTreePanel(el('element-tree'),visibility,{select:id=>{selectElement(id);viewer?.focusTargets([id]);},show:setElementVisibility,isolate:isolateElements,document:openDocumentRecord});
 const levelFacet=facetFilter(el<HTMLDetailsElement>('level-filter'),'Уровни',applySceneVisibility);
 const categoryFacet=facetFilter(el<HTMLDetailsElement>('category-filter'),'Категории',applySceneVisibility);
 initTheme();
 installPropertyCopy();
 modelDataPanel(()=>model,id=>{selectElement(id);viewer?.focusTargets([id]);});
-const documentPanel=DEMO?rvtDocumentPanel(record=>{
+const documentPanel=rvtDocumentPanel(record=>{
   const orientation=viewOrientation(record);if(!orientation||!viewer||!model)return;
   setMode('view');el('reset-visibility').click();viewer.orient(orientation.direction,orientation.up);
   el('workspace-status').textContent='Ориентация вида · реконструкция без оформления, обрезки и фильтров Revit';
-},()=>{setMode('view');el('reset-visibility').click();}):null;
+},()=>{setMode('view');el('reset-visibility').click();},DEMO?{}:{context:()=>project,listCatalogs:offset=>projectCatalogs(project,offset),loadCatalog:async id=>{const target=project;const data=await loadCatalogSnapshot(target,id);if(target===project){acceptDocument(data);documentPanel.geometryReady(!!model&&!model.federation&&model.source.sha256===data.source?.sha256);}},importCatalog:async data=>{const target=project;const restored=await saveProjectCatalog(target,data);if(target!==project)return;acceptDocument(restored);}});
+
+function acceptDocument(data:RvtDocument|null){if(data?.source?.sha256)catalogues.set(data.source.sha256,data);documentPanel.set(data);documentPanel.geometryReady(!!viewer&&!!model&&!model.federation&&model.source.sha256===data?.source?.sha256&&model.statistics.meshes>0);renderElements();}
+function openDocumentRecord(data:RvtDocument,record:NativeRecord){const ready=!!viewer&&!!model&&!model.federation&&model.source.sha256===data.source?.sha256;documentPanel.openRecord(data,record,ready);}
+async function restoreCatalogues(pkg:ModelPackage,token:number){
+ if(DEMO)return;const target=project;
+ const sources=pkg.federation?.members??[{model_id:pkg.model_id,source_sha256:pkg.source.sha256,source_format:pkg.source.format,instance_id:''}];
+ const results=await Promise.allSettled(sources.map(async member=>{if(member.source_sha256)return {member,data:await loadProjectCatalog(target,member.source_sha256)};const resolved=await loadModelCatalog(target,member.model_id);return {member:{...member,source_sha256:resolved.source.sha256,source_format:resolved.source.format},data:resolved.document};}));
+ if(token!==modelGeneration||target!==project)return;
+ const resolved=new Map<string,{source_sha256?:string;source_format?:string}>();
+ for(const result of results)if(result.status==='fulfilled'){const {data,member}=result.value;resolved.set(member.instance_id,member);if(data?.source?.sha256){catalogues.set(data.source.sha256,data);documentPanel.set(data);}}else error('Каталог базы проекта недоступен: '+String(result.reason));
+ if(pkg.federation)model={...pkg,federation:{...pkg.federation,members:pkg.federation.members.map(m=>({...m,...resolved.get(m.instance_id)}))}};
+ renderElements();documentPanel.geometryReady(!!viewer&&!pkg.federation&&catalogues.has(pkg.source.sha256));
+}
+
 
 function path(route: string) {
   if(DEMO) { const [key,query='']=route.split('?');const q=new URLSearchParams(query);
@@ -88,11 +105,12 @@ try { viewer = new Viewer(el('canvas'), selectElement); } catch(e) { error('3D �
 const spatial=spatialPanel(viewer,()=>model,()=>measurementProject,error);
 el('canvas').addEventListener('viewer-error', ((e: CustomEvent<string>) => error(e.detail)) as EventListener);
 async function loadModel(id: string) {
+  if(catalogueProject!==project){catalogues.clear();documentPanel.set(null);catalogueProject=project;}
   const token = ++modelGeneration; spatial.reset();selectedId=null;el('selected-visibility-actions').hidden=true;viewer?.select(null); viewer?.setSite(null);clipped=false;el('cut-controls').hidden=true;el('cut').setAttribute('aria-pressed','false');el('xray').setAttribute('aria-pressed','false');
-  if (!id) { model = null;loadedBinary=null;visibility.reset();visibilityModelId='';el('file-title').textContent='Модель не выбрана'; el('no-model').hidden = false; el('geometry-kind').textContent = 'Без геометрии'; viewer?.show(new Set<string>());renderModelTree();renderState();return; }
+  if (!id) { model = null;loadedBinary=null;visibility.reset();visibilityModelId='';el('file-title').textContent='Модель не выбрана'; el('no-model').hidden = false; el('geometry-kind').textContent = 'Без геометрии'; viewer?.show(new Set<string>());renderModelTree();renderState();if(!DEMO){const target=project;void projectCatalogs(target).then(async page=>{const row=page.items.find(r=>['all','views','schedules','catalog'].includes(r.profile));if(!row)return;const data=await loadCatalogSnapshot(target,row.extraction_id);if(target===project&&token===modelGeneration&&!model)acceptDocument(data);}).catch(e=>error('Каталог базы недоступен: '+String(e)));}return; }
   const [pkg, binary] = browserModel?.model_id===id&&browserBinary ? [browserModel,browserBinary] : await Promise.all([api<ModelPackage>('model?model_id=' + encodeURIComponent(id)), fetch(path('geometry.bin?model_id=' + encodeURIComponent(id))).then(async r => {if(!r.ok) throw Error('Не удалось загрузить геометрию');return r.arrayBuffer();})]);
   if (token !== modelGeneration) return;
-  model = pkg;loadedBinary=binary;if(visibilityModelId!==pkg.model_id){visibility.reset();visibilityModelId=pkg.model_id;visibility.set(pkg.elements.filter(e=>!sceneVisible(e.source_instance_id)).map(e=>e.id),false);} el("workspace-status").textContent=`${pkg.statistics.physical_elements} элементов · ${pkg.storeys.length} уровней${pkg.source.schema==='SyntheticDemo'?' · Учебная модель':''}`; el("file-title").textContent=pkg.source.filename; renderModelTree(); viewer?.load(pkg,binary); viewer?.setSourceColors(pkg.source.schema!=='SyntheticDemo'); document.dispatchEvent(new Event('model-data-changed')); applySceneVisibility(); el('no-model').hidden = true;
+  model = pkg;loadedBinary=binary;if(visibilityModelId!==pkg.model_id){visibility.reset();visibilityModelId=pkg.model_id;visibility.set(pkg.elements.filter(e=>!sceneVisible(e.source_instance_id)).map(e=>e.id),false);} el("workspace-status").textContent=`${pkg.statistics.physical_elements} элементов · ${pkg.storeys.length} уровней${pkg.source.schema==='SyntheticDemo'?' · Учебная модель':''}`; el("file-title").textContent=pkg.source.filename; renderModelTree(); viewer?.load(pkg,binary); viewer?.setSourceColors(pkg.source.schema!=='SyntheticDemo'); document.dispatchEvent(new Event('model-data-changed')); applySceneVisibility(); el('no-model').hidden = true;void restoreCatalogues(pkg,token);
   el('geometry-kind').textContent = pkg.source.schema === 'SyntheticDemo' ? 'Синтетическая сводная модель · АР + ОВ' : pkg.source.schema === 'DocumentSpatialModel' ? 'Условная геометрия по документам' : pkg.federation ? 'Сводная геометрия · совмещение требует проверки' : pkg.source.format==='rvt' ? 'RVT → IFC · экспериментальная геометрия' : 'Геометрия IFC'; renderState();
 }
 async function loadRun(id: string) {
@@ -280,7 +298,7 @@ function renderElements() {
   const combine=el<HTMLSelectElement>('parameter-combine').value as 'all'|'any';
   treeItems=(model?.elements??[]).filter(e=>e.role==='element'&&(!system||members.has(e.id))&&(!levels.size||levels.has(JSON.stringify(e.storey_id??null)))&&(!categories.size||categories.has(elementCategory(e,model!).key))&&elementLabelMatches(e,query)&&parametersMatch(e,filters,combine));
   const searching=!!query||filters.some(f=>f.name.trim())||!!levels.size||!!categories.size||!!system;
-  tree.render(model,treeItems,selectedId,searching,JSON.stringify([query,filters,combine,[...levels],[...categories],system]),el<HTMLSelectElement>('tree-grouping').value as 'categories'|'levels');
+  tree.render(model,treeItems,selectedId,searching,JSON.stringify([query,filters,combine,[...levels],[...categories],system]),el<HTMLSelectElement>('tree-grouping').value as 'categories'|'levels',[...catalogues.values()],query);
   for(const key of ['hide-matches','show-matches','isolate-matches'])el<HTMLButtonElement>(key).disabled=!treeItems.length;
 }
 function memberElementIds(instanceId:string){return (model?.elements??[]).filter(e=>e.role==='element'&&(!e.source_instance_id?sceneMembers.length===1:e.source_instance_id===instanceId)).map(e=>e.id);}
@@ -352,17 +370,17 @@ function browserDownload(kind:string,data:RunPackage) {
 const browser=DEMO?browserPanel({
   openDocument:()=>documentPanel?.open(),
   noGeometry:(filename,message)=>{el('file-title').textContent=filename;el('geometry-kind').textContent='RVT · 3D недоступна';el<HTMLButtonElement>('mode-simulate').disabled=true;el<HTMLSelectElement>('models').innerHTML='<option>Геометрия не прочитана</option>';el('inspector-title').textContent='Результат чтения RVT';el('inspector').innerHTML=`<p><strong>${esc(filename)}</strong></p><p>${esc(message)}</p>`;},
-  document:(data,message)=>documentPanel?.set(data,message),
+  document:(data,message)=>{if(data)acceptDocument(data);else documentPanel.set(null,message);},
   drawing:openCad, cancelDrawing:closeCad,
-  reset:(append)=>{++sceneVersion;documentPanel?.set(null);
+  reset:(append)=>{++sceneVersion;if(!append)catalogues.clear();documentPanel.set(null);renderElements();
     if(append&&model&&loadedBinary&&!model.federation&&!sceneMembers.length)sceneMembers=[{instanceId:model.model_id,model,binary:loadedBinary,offset:[0,0,0],rotation:0,visible:true}];
     if(!append){sceneMembers=[];renderMembers();}
-    closeCad();setMode('view');el('error').hidden=true;el('element-tree').innerHTML='';++generation;++modelGeneration;project='browser-local';el<HTMLSelectElement>('projects').innerHTML='<option>Локальный файл в браузере</option>';el<HTMLSelectElement>('runs').innerHTML='<option>Сценарий не рассчитан</option>';el<HTMLSelectElement>('models').innerHTML='<option>Чтение модели</option>';el<HTMLSelectElement>('scenes').innerHTML='<option value="">Выберите сцену</option>';document.querySelector('.notice')!.textContent='Свой файл обрабатывается в браузере и не отправляется на сервер. Сценарий предварительный: технология, выработка и связи требуют проверки.';if(!append){browserModel=null;browserBinary=null;}browserRun=null;for(const url of browserUrls)URL.revokeObjectURL(url);browserUrls.length=0;for(const key of ['projects','models','runs'])el<HTMLSelectElement>(key).disabled=true;void loadRun('');if(!append)void loadModel('');else renderModelTree();},
+    closeCad();setMode('view');el('error').hidden=true;el('element-tree').innerHTML='';++generation;++modelGeneration;project='browser-local';catalogueProject=project;el<HTMLSelectElement>('projects').innerHTML='<option>Локальный файл в браузере</option>';el<HTMLSelectElement>('runs').innerHTML='<option>Сценарий не рассчитан</option>';el<HTMLSelectElement>('models').innerHTML='<option>Чтение модели</option>';el<HTMLSelectElement>('scenes').innerHTML='<option value="">Выберите сцену</option>';document.querySelector('.notice')!.textContent='Свой файл обрабатывается в браузере и не отправляется на сервер. Сценарий предварительный: технология, выработка и связи требуют проверки.';if(!append){browserModel=null;browserBinary=null;}browserRun=null;for(const url of browserUrls)URL.revokeObjectURL(url);browserUrls.length=0;for(const key of ['projects','models','runs'])el<HTMLSelectElement>(key).disabled=true;void loadRun('');if(!append)void loadModel('');else renderModelTree();},
   model:async(pkg,binary,append)=>{
     const candidate:SceneMember={instanceId:pkg.model_id,model:pkg,binary,offset:[0,0,0],rotation:0,visible:true};
     const existing=append?sceneMembers:[];
     if(existing.some(m=>m.model.source.sha256===pkg.source.sha256))throw Error('Этот файл уже есть в сцене. Для повторного размещения нужен отдельный экземпляр.');
-    await presentMembers([...existing,candidate]);documentPanel?.geometryReady(!!viewer&&pkg.statistics.meshes>0);el<HTMLDialogElement>('file-dialog').close();return browserModel!;
+    await presentMembers([...existing,candidate]);documentPanel.geometryReady(!!viewer&&!!model&&!model.federation&&pkg.statistics.meshes>0);el<HTMLDialogElement>('file-dialog').close();return browserModel!;
   },
   run:async(data)=>{setMode('simulate');browserRun=data;for(const url of browserUrls)URL.revokeObjectURL(url);browserUrls.length=0;el<HTMLSelectElement>('runs').innerHTML=`<option value="${esc(data.run_id)}">${esc(data.scenario.name||'Браузерный расчёт')}</option>`;await loadRun(data.run_id);el<HTMLDialogElement>('file-dialog').close();}
 }):null;
@@ -387,7 +405,7 @@ async function demoExamples(){
         if(digest!==item.sha256||buffer.byteLength!==item.size)throw Error('Контрольная сумма примера RVT не совпала');
         await browser!.openFile(new File([buffer],'RE1-Mechanical.rvt'),false);
       }else{
-        browserModel=null;browserBinary=null;browserRun=null;documentPanel?.set(null);closeCad();
+        browserModel=null;browserBinary=null;browserRun=null;catalogues.clear();documentPanel.set(null);closeCad();
         el<HTMLSelectElement>('projects').innerHTML='<option value="demo-a">Публичные примеры</option>';
         for(const key of ['projects','models','runs'])el<HTMLSelectElement>(key).disabled=false;
         requestedModel=item.id;requestedRun='';await loadProject('demo-a');setMode('view');

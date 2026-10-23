@@ -72,7 +72,7 @@ def build_server(workspace: Workspace | None = None):
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False})
     def compare_facts(project_id: str, first_id: str, second_id: str, tolerance: str = "0") -> dict:
         """Store a decimal comparison with explicit units, matching entity/property/basis/revision/specification.
-        Tolerance is in base units (m, m2, m3, kg, kW). This compares recorded quantities, not an entire project.
+        Tolerance is in base units (m, m2, m3, kg, kW, s, Ah, A, V, Wh); hours and А·ч aliases are supported. This compares recorded quantities, not an entire project.
         """
         return memory.compare_facts(project_id, first_id, second_id, tolerance)
 
@@ -88,6 +88,8 @@ def build_server(workspace: Workspace | None = None):
     register_measurements(mcp, memory)
     from .document_table_tools import register_tools as register_document_tables
     register_document_tables(mcp, memory)
+    from .pdf_ocr import register_tools as register_pdf_ocr
+    register_pdf_ocr(mcp, memory)
     return mcp
 
 

@@ -52,7 +52,7 @@ def make_handler(workspace: Workspace):
                     if request.path.endswith("/audits"):
                         return self.send(coordination.audits(project_id))
                     if request.path.endswith("/issues"):
-                        return self.send(coordination.findings(project_id, q["audit_id"], int(q.get("offset", "0")), int(q.get("limit", "40"))))
+                        return self.send(coordination.findings(project_id, q["audit_id"], int(q.get("offset", "0")), int(q.get("limit", "40")), q.get("category") or None))
                     return self.send({"error": "Not found"}, status=404)
                 if request.path == "/api/status":
                     return self.send(workspace.project_status(project_id))

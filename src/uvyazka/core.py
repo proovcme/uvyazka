@@ -12,6 +12,8 @@ import re
 import sqlite3
 from typing import Any
 from uuid import uuid4, uuid5, NAMESPACE_URL
+from .units import UNITS, BASE_UNITS, resolve_unit
+from .findings import comparison_category
 
 SCHEMA = "uvyazka.project.v1"
 
@@ -147,15 +149,19 @@ class Workspace:
             counts["pages"] = db.execute("select count(*) from pages p join documents d on d.doc_id=p.doc_id and d.sha256=p.sha256 and d.parser_revision=p.parser_revision where d.index_status='text_indexed'").fetchone()[0]
             counts["facts"] = db.execute("select count(*) from facts where active=1").fetchone()[0]
             coverage = {r[0]: r[1] for r in db.execute("select index_status,count(*) from documents group by index_status")}
+            reading_counts = dict(db.execute("select 'low_text_blocks',count(*) from pages p join documents d on d.doc_id=p.doc_id and d.sha256=p.sha256 and d.parser_revision=p.parser_revision where p.low_text=1"))
+            reading_counts.update(dict(db.execute("select 'ocr_pages',count(*) from pages p join documents d on d.doc_id=p.doc_id and d.sha256=p.sha256 and d.parser_revision=p.parser_revision where json_extract(p.locator,'$.extraction_method')='ocr'")))
             drawing_counts = {}
             if db.execute("select 1 from sqlite_master where name='drawing_records'").fetchone():
                 drawing_counts = {r[0]: r[1] for r in db.execute(
                     "select kind,count(distinct id) from drawing_records group by kind")}
-        questions = sum(c["status"] != "matches" for c in self.get_reconciliation(project_id)["checks"])
-        return {"project": project, "snapshot": meta, "counts": counts, "coverage": coverage, "questions": questions,
+        reconciliation = self.get_reconciliation(project_id)
+        questions = sum(c["status"] != "matches" for c in reconciliation["checks"])
+        return {"project": project, "snapshot": meta, "counts": counts, "coverage": coverage, "questions": questions, "finding_counts": reconciliation["finding_counts"], "questions_semantics": "Legacy unresolved total; use finding_counts to distinguish discrepancies, questions and unchecked work.",
+                "reading_work": {"counts": reading_counts, "resume_tool": "ocr_pdf_pages", "note": "Low text is a review signal, not proof of a scan; OCR pages still require visual review."},
                 "drawing_work": {"counts": drawing_counts, "resume_tool": "get_drawing_measurements",
                                  "note": "Recorded work only; read records for source freshness, unresolved questions and revisions."},
-                "limitations": ["Text indexing is not a complete numerical or engineering audit.", "Observations are unconfirmed; source metadata matches do not approve a revision.", "RVT/IFC extraction and scheduling have separate coverage; OCR and automatic approved POS/PPR generation are not implemented."]}
+                "limitations": ["Text indexing is not a complete numerical or engineering audit.", "Observations are unconfirmed; source metadata matches do not approve a revision.", "RVT/IFC extraction and scheduling have separate coverage; Selected PDF pages support local OCR via ocr_pdf_pages; OCR and automatic engineering acceptance remain separate."]}
 
     def source_record(self, project_id: str, doc_id: str) -> tuple[dict, Path]:
         with connection(self.db_path(project_id), readonly=True) as db:
@@ -254,9 +260,12 @@ class Workspace:
         for check in checks:
             if any(facts.get(k, {}).get("revision") != rev or any(v not in ("snapshot_metadata_matches", "content_hash_matches") for v in facts.get(k, {}).get("source_freshness", {}).values()) for k, rev in check.get("fact_revisions", {}).items()):
                 check.update(status="needs_review", stale_reason="An input observation or source changed")
+        for check in checks:
+            check["category"] = comparison_category(check)
+        finding_counts = {key: sum(c["category"] == key for c in checks) for key in ("match", "discrepancy", "question", "unchecked")}
         if status:
             checks = [r for r in checks if r["status"] == status]
-        return {"project_id": project_id, "checks": checks, "scope": "Checks of recorded comparable observations; not a complete engineering audit."}
+        return {"project_id": project_id, "checks": checks, "finding_counts": finding_counts, "scope": "Checks of recorded comparable observations; not a complete engineering audit."}
 
     def get_evidence_chain(self, project_id: str, fact_id: str) -> dict:
         facts = self.get_project_facts(project_id)["facts"]
@@ -352,10 +361,7 @@ class Workspace:
         return check
 
 
-UNITS = {"m": ("length", "1"), "mm": ("length", ".001"), "cm": ("length", ".01"), "km": ("length", "1000"),
-         "m2": ("area", "1"), "ha": ("area", "10000"), "10 m2": ("area", "10"), "1000 m2": ("area", "1000"),
-         "m3": ("volume", "1"), "100 m3": ("volume", "100"), "kg": ("mass", "1"), "t": ("mass", "1000"),
-         "piece": ("count", "1"), "kW": ("power", "1"), "W": ("power", ".001"), "m3/day": ("daily_water", "1"), "l/s": ("flow", "1")}
+
 
 
 def compare_quantity(a: dict, b: dict, tolerance: str = "0") -> dict:
@@ -368,7 +374,7 @@ def compare_quantity(a: dict, b: dict, tolerance: str = "0") -> dict:
         return {"status": "question", "explanation": "Different material/size/specification"}
     if a.get("value") is None or b.get("value") is None:
         return {"status": "not_comparable", "explanation": "Missing value is not zero"}
-    ua, ub = UNITS.get(a.get("unit")), UNITS.get(b.get("unit"))
+    ua, ub = resolve_unit(a.get("unit")), resolve_unit(b.get("unit"))
     if not ua or not ub or ua[0] != ub[0]:
         return {"status": "not_comparable", "explanation": "Units need an explicit compatible conversion"}
     try:
@@ -383,5 +389,5 @@ def compare_quantity(a: dict, b: dict, tolerance: str = "0") -> dict:
             delta = bv * Decimal(ub[1]) - av * Decimal(ua[1])
     except (InvalidOperation, TypeError) as exc:
         raise ValueError("Values and tolerance must be decimal strings") from exc
-    return {"status": "matches" if abs(delta) <= tol else "question", "difference": str(delta), "base_dimension": ua[0], "tolerance": str(tol),
+    return {"status": "matches" if abs(delta) <= tol else "question", "difference": str(delta), "base_dimension": ua[0], "base_unit": BASE_UNITS[ua[0]], "tolerance": str(tol),
             "explanation": "Compared with explicit units and semantic scope. This is not engineering acceptance."}

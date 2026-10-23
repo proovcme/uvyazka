@@ -7,7 +7,9 @@ from collections import defaultdict, deque
 from decimal import Decimal, DecimalException, InvalidOperation, localcontext
 import json
 
-from .core import UNITS, compare_quantity, connection, encode, normalized, now
+from .units import resolve_unit
+from .findings import classify_report, CATEGORIES
+from .core import compare_quantity, connection, encode, normalized, now
 from .construction.planning import Planning, bounded
 from .construction.simulation import canonical_hash
 
@@ -57,9 +59,13 @@ def inspect_graph(graph):
                     fields = ("basis", "revision_set")
                     if any(not first.get(k) or not second.get(k) or first[k] != second[k] for k in fields):
                         issue("claim_scope_difference", f"{prop}: различаются или не указаны основание и набор ревизий", key, sources=first.get("sources", [])+second.get("sources", [])); continue
+                    if any(v is None or isinstance(v, str) and not v.strip() for v in (first.get('value'), second.get('value'))):
+                        issue('claim_value_missing', prop + ': значение не прочитано; пропуск не является расхождением', key, sources=first.get('sources', [])+second.get('sources', [])); continue
                     if first.get("unit") or second.get("unit"):
                         try:
                             result = compare_quantity({**first, "entity": key, "property": prop}, {**second, "entity": key, "property": prop})
+                            if result["status"] != "matches" and "difference" not in result:
+                                issue("claim_comparison_unconfirmed", prop + ": " + result["explanation"], key, sources=first.get("sources", [])+second.get("sources", [])); continue
                             different = result["status"] != "matches"
                         except ValueError:
                             issue("claim_value_unconfirmed", prop + ": значение не удалось привести к конечному числу", key, sources=first.get("sources", [])+second.get("sources", [])); continue
@@ -83,7 +89,7 @@ def inspect_graph(graph):
                     failed = claim.get("value") not in requirement.get("values", [])
                 elif rule == "numeric_range":
                     try:
-                        actual, expected = UNITS.get(claim.get("unit")), UNITS.get(requirement.get("unit"))
+                        actual, expected = resolve_unit(claim.get("unit")), resolve_unit(requirement.get("unit"))
                         if not actual or not expected or actual[0] != expected[0]: raise ValueError()
                         with localcontext() as ctx:
                             ctx.prec = 220
@@ -98,6 +104,8 @@ def inspect_graph(graph):
                     issue("unsupported_requirement", "Не реализовано правило: " + str(rule), key); continue
                 if failed:
                     issue("project_requirement_not_met", requirement["id"] + ": " + requirement["reason"], key, sources=claim.get("sources", [])+requirement.get("sources", []))
+                    if requirement.get('assumption') and not requirement.get('sources'):
+                        issues[-1].update(category='question', classification_basis='assumed_requirement_requires_confirmation')
         if kind not in ("room", "level", "building") and "ports" not in entity:
             issue("connection_requirements_unconfirmed", "Для оборудования не задан перечень требуемых подключений", key)
         for port in entity.get("ports", []):
@@ -159,15 +167,15 @@ def inspect_graph(graph):
                 continue
             if port.get("required") is True and key not in reached:
                 issue("required_connection_missing" if not degrees[key] else "no_path_to_source",
-                      "Нет подключения" if not degrees[key] else "Нет прослеживаемой цепочки до источника", key[0], key[1], mode, entities[key[0]].get("sources"))
+                      "В графе не задано подключение" if not degrees[key] else "В графе нет прослеживаемой цепочки до источника", key[0], key[1], mode, entities[key[0]].get("sources"))
             if port.get("max_connections") is not None and degrees[key] > port["max_connections"]:
                 issue("too_many_connections", "Число связей порта превышает заданное ограничение", key[0], key[1], mode)
-    return {"issues": issues, "entity_count": len(entities), "port_count": len(ports), "issue_count": len(issues),
+    return classify_report({"issues": issues, "entity_count": len(entities), "port_count": len(ports), "issue_count": len(issues),
         "coverage": {"expected_documents": len(expected_docs), "reviewed_expected_documents": len(expected_docs & reviewed_docs), "missing_documents": sorted(expected_docs-reviewed_docs), "missing_disciplines": sorted(expected_sections-reviewed_sections),
             "claim_count": sum(len(e.get("claims", [])) for e in entities.values()), "explicit_requirement_count": sum(len(e.get("requirements", [])) for e in entities.values()),
             "checked_families": ["scope", "shared_claims", "declared_requirements", "declared_connection_paths"],
             "completeness_confirmed": False},
-        "interpretation": "Проверен только переданный граф и явно заданные требования. Электрические/гидравлические расчёты и изменения CAD/BIM не выполнялись."}
+        "interpretation": "Проверен только переданный граф и явно заданные требования. Электрические/гидравлические расчёты и изменения CAD/BIM не выполнялись."}, fresh=True)
 
 
 class Coordination:
@@ -310,26 +318,28 @@ class Coordination:
         for start in range(0,len(unique),200): Planning(self.workspace).validate_sources(project_id,list(unique.values())[start:start+200],seen)
         if self.scope_freshness(project_id,graph):
             raise ValueError("Reviewed document version changed; update review scope and graph before auditing")
-        result={"project_id":project_id,"revision":graph["revision"],"audit_id":canonical_hash(["coordination-0.2.0",graph]),**inspect_graph(graph)}
+        result={"project_id":project_id,"revision":graph["revision"],"audit_id":canonical_hash(["coordination-0.3.0",graph]),**inspect_graph(graph)}
         with connection(self._db(project_id)) as db:
             db.execute("insert or ignore into coordination_audits values (?,?)",(result["audit_id"],encode(result)))
         return {k:v for k,v in result.items() if k!="issues"}
 
-    def findings(self,project_id,audit_id,offset=0,limit=40):
+    def findings(self,project_id,audit_id,offset=0,limit=40,category=None):
         with connection(self.workspace.db_path(project_id),readonly=True) as db:
             if not db.execute("select 1 from sqlite_master where name='coordination_audits'").fetchone():
                 raise ValueError("Unknown audit in selected project")
             row=db.execute("select payload from coordination_audits where audit_id=?",(audit_id,)).fetchone()
         if not row: raise ValueError("Unknown audit in selected project")
-        result=json.loads(row[0]); latest=self.graph(project_id)["revision"]
+        result=classify_report(json.loads(row[0])); latest=self.graph(project_id)["revision"]
         changed=self.scope_freshness(project_id,self.graph(project_id,result["revision"]))
-        return {k:v for k,v in result.items() if k!="issues"}|{"graph_changed":latest!=result["revision"],"changed_documents":changed,**bounded(result["issues"],offset,limit)}
+        if category is not None and category not in CATEGORIES: raise ValueError("Unknown finding category")
+        issues = [i for i in result["issues"] if category is None or i["category"] == category]
+        return {k:v for k,v in result.items() if k!="issues"}|{"category_filter":category,"graph_changed":latest!=result["revision"],"changed_documents":changed,"reaudit_recommended":result["reaudit_recommended"] or latest!=result["revision"] or bool(changed),**bounded(issues,offset,limit)}
 
     def audits(self,project_id):
         with connection(self.workspace.db_path(project_id),readonly=True) as db:
             if not db.execute("select 1 from sqlite_master where name='coordination_audits'").fetchone():
                 return {"items": []}
-            rows=[json.loads(r[0]) for r in db.execute("select payload from coordination_audits")]
+            rows=[classify_report(json.loads(r[0])) for r in db.execute("select payload from coordination_audits")]
         return {"items":[{k:v for k,v in row.items() if k!="issues"} for row in rows][-100:]}
 
 
@@ -369,6 +379,8 @@ def register_tools(mcp,workspace):
         """Check cross-discipline room/entity claims and mandatory electrical/water/automation/etc port paths, modes and provided compatibility parameters. Saves an immutable audit; no automatic cables, protective-device sizing or native edits."""
         return Coordination(workspace).audit(project_id,revision)
     @mcp.tool(annotations=read)
-    def get_project_issues(project_id:str,audit_id:str,offset:int=0,limit:int=40)->dict:
-        """Read bounded issues, evidence pointers and coverage from a whole-project graph audit."""
-        return Coordination(workspace).findings(project_id,audit_id,offset,limit)
+    def get_project_issues(project_id:str,audit_id:str,offset:int=0,limit:int=40,category:str|None=None)->dict:
+        """Read findings and coverage. Filter category by discrepancy, question or unchecked.
+        finding_counts separates groups; issue_count is all findings, never a count of confirmed project errors.
+        Older untyped comparisons recommend a new audit instead of claiming a discrepancy."""
+        return Coordination(workspace).findings(project_id,audit_id,offset,limit,category)

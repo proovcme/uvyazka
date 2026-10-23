@@ -53,7 +53,13 @@ class DashboardTests(unittest.TestCase):
                     self.assertTrue(response.read().startswith(b"\xef\xbb\xbf"))
                 audit=Coordination(workspace).audits("demo-a")["items"][0]
                 with urlopen(base + "/api/coordination/issues?project_id=demo-a&audit_id="+audit["audit_id"]+"&limit=2") as response:
-                    self.assertEqual(len(json.load(response)["items"]),2)
+                    findings=json.load(response)
+                    self.assertEqual(len(findings["items"]),2)
+                    self.assertEqual(sum(findings["finding_counts"].values()),findings['issue_count'])
+                with urlopen(base + "/api/coordination/issues?project_id=demo-a&audit_id="+audit["audit_id"]+"&category=unchecked") as response:
+                    filtered=json.load(response)
+                    self.assertEqual(filtered['category_filter'],'unchecked')
+                    self.assertTrue(all(item['category']=='unchecked' for item in filtered['items']))
                 with urlopen(base + "/simulation/") as response:
                     self.assertIn("Увязка",response.read().decode())
                 # A read-only request must not migrate the untouched second project's DB.

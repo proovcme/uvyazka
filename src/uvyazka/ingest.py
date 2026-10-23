@@ -44,7 +44,7 @@ def scan(workspace: Workspace, project_id: str, limit: int = 100) -> dict:
             supported = path.suffix.lower() in SUPPORTED
             revision = revision_for(path.suffix.lower())
             sha = digest(path) if supported and stat.st_size <= 64 * 1024 * 1024 else None
-            unchanged = row and row["sha256"] == sha and row["parser_revision"] == revision and row["index_status"] == "text_indexed"
+            unchanged = row and row["sha256"] == sha and (row["parser_revision"] == revision or (row["parser_revision"] or "").startswith(revision + ".ocr.")) and row["index_status"] == "text_indexed"
             if unchanged:
                 db.execute("update documents set size_bytes=?,mtime_ns=? where doc_id=?", (stat.st_size, stat.st_mtime_ns, doc_id))
                 continue

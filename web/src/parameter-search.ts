@@ -34,3 +34,6 @@ export function parameterMatches(element:BimElement,filter:ParameterFilter){
   }
   return present.some(p=>{const value=(typeof p.value==='string'?p.value:JSON.stringify(p.value)).toLocaleLowerCase();return filter.operator==='equals'?value===wanted:value.includes(wanted);});
 }
+export function parametersMatch(element:BimElement,filters:ParameterFilter[],mode:'all'|'any'='all'){
+  const active=filters.filter(f=>f.name.trim());return !active.length||(mode==='any'?active.some(f=>parameterMatches(element,f)):active.every(f=>parameterMatches(element,f)));
+}

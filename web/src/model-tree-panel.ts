@@ -1,25 +1,28 @@
 import type {BimElement,ModelPackage} from './model';
 import {elementIdentity} from './element-identity.ts';
 import type {ModelVisibility} from './model-visibility';
+import {elementCategory} from './element-category.ts';
 interface Node {key:string;name:string;kind:'model'|'storey'|'class';items:BimElement[];children:Node[]}
-export function modelTreeNodes(model:ModelPackage,items:BimElement[]):Node[]{
+export function modelTreeNodes(model:ModelPackage,items:BimElement[],grouping:'categories'|'levels'='categories'):Node[]{
   const roots:Node[]=[],sources=new Map<string,Node>(),floors=new Map<string,Node>(),classes=new Map<string,Node>();
   const levels=new Map(model.storeys.map(s=>[s.id,s.name]));
   for(const e of items){
     const source=e.source_instance_id??'',floor=e.storey_id??'';
     let root=sources.get(source);if(!root){root={key:JSON.stringify(['model',source]),name:model.federation?.members.find(m=>m.instance_id===source)?.label??(model.federation?(source?'Источник '+source:'Источник не прочитан'):model.source.filename),kind:'model',items:[],children:[]};sources.set(source,root);roots.push(root);}root.items.push(e);
-    const fk=JSON.stringify(['storey',source,floor]);let level=floors.get(fk);if(!level){level={key:fk,name:levels.get(floor)||'Без этажа',kind:'storey',items:[],children:[]};floors.set(fk,level);root.children.push(level);}level.items.push(e);
-    const ck=JSON.stringify(['class',source,floor,e.class]);let category=classes.get(ck);if(!category){category={key:ck,name:e.class,kind:'class',items:[],children:[]};classes.set(ck,category);level.children.push(category);}category.items.push(e);
+    let parent=root;
+    if(grouping==='levels'){const fk=JSON.stringify(['storey',source,floor]);let level=floors.get(fk);if(!level){level={key:fk,name:levels.get(floor)||'Без уровня',kind:'storey',items:[],children:[]};floors.set(fk,level);root.children.push(level);}level.items.push(e);parent=level;}
+    const native=elementCategory(e,model),ck=JSON.stringify(['category',source,grouping==='levels'?floor:'',native.key]);let category=classes.get(ck);if(!category){category={key:ck,name:native.name,kind:'class',items:[],children:[]};classes.set(ck,category);parent.children.push(category);}category.items.push(e);
   }
   return roots;
 }
 /** Native details/checkboxes, lazy category rows, and stable expansion during visibility changes. */
 export function modelTreePanel(host:HTMLElement,visibility:ModelVisibility,actions:{select:(id:string)=>void;show:(ids:string[],visible:boolean)=>void;isolate:(ids:string[])=>void}){
   let current:ModelPackage|null=null;const expanded=new Map<string,boolean>(),limits=new Map<string,number>(),offsets=new Map<string,number>();
-  let lastItems:BimElement[]=[],lastSearching=false,lastSearchKey='';
-  function render(model:ModelPackage|null,items:BimElement[],selected:string|null,searching:boolean,searchKey=String(searching)){
+  let lastItems:BimElement[]=[],lastSearching=false,lastSearchKey='',lastGrouping:'categories'|'levels'='categories';
+  function render(model:ModelPackage|null,items:BimElement[],selected:string|null,searching:boolean,searchKey=String(searching),grouping:'categories'|'levels'='categories'){
     if(current!==model){current=model;expanded.clear();limits.clear();offsets.clear();}
     if(lastSearchKey!==searchKey){expanded.clear();limits.clear();offsets.clear();lastSearchKey=searchKey;}
+    if(lastGrouping!==grouping){expanded.clear();limits.clear();offsets.clear();lastGrouping=grouping;}
     lastItems=items;lastSearching=searching;
     host.replaceChildren();if(!model)return;
     const stats=document.createElement('p');stats.className='tree-results';const visible=visibility.count(items.map(e=>e.id));stats.textContent=`Найдено ${items.length} · включено ${visible.shown}`;host.append(stats);
@@ -55,13 +58,13 @@ export function modelTreePanel(host:HTMLElement,visibility:ModelVisibility,actio
       details.addEventListener('toggle',event=>{if(event.target!==details||!details.isConnected)return;expanded.set(node.key,details.open);if(details.open)populate();});
       if(details.open)populate();return details;
     };
-    for(const node of modelTreeNodes(model,items))host.append(branch(node));
+    for(const node of modelTreeNodes(model,items,grouping))host.append(branch(node));
   }
   function reveal(id:string){
     if(!current||!lastItems.some(e=>e.id===id)||[...host.querySelectorAll<HTMLElement>('.element-item')].some(e=>e.dataset.id===id))return;
-    let nodes=modelTreeNodes(current,lastItems);
+    let nodes=modelTreeNodes(current,lastItems,lastGrouping);
     while(nodes.length){const node=nodes.find(n=>n.items.some(e=>e.id===id));if(!node)break;expanded.set(node.key,true);if(node.kind==='class'){offsets.set(node.key,Math.floor(node.items.findIndex(e=>e.id===id)/50)*50);limits.set(node.key,50);}nodes=node.children;}
-    render(current,lastItems,id,lastSearching,lastSearchKey);
+    render(current,lastItems,id,lastSearching,lastSearchKey,lastGrouping);
   }
   return {render,reveal};
 }

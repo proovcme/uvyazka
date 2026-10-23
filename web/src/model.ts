@@ -66,7 +66,7 @@ export interface ModelPackage {
   systems?: {id:string;name:string;class:string;member_ids:string[];connectivity_verified:false;global_id?:string;description?:string|null;property_sets?:Record<string,Record<string,unknown>>}[];
 }
 export interface RevitPhases { status: string; phases: { id: string; name: string; order: number | null }[]; phase_order_known?: boolean }
-export interface ModelMember { model_id: string; instance_id: string; label: string; offset_m: number[]; rotation_deg: number }
+export interface ModelMember { model_id: string; instance_id: string; label: string; offset_m: number[]; rotation_deg: number;source_format?:string }
 
 export function validatePackage(pkg: ModelPackage, binary: ArrayBuffer) {
   if (pkg.contract !== 'ModelPackage' || pkg.contract_version !== '0.1.0') throw new Error('Неподдерживаемая версия пакета модели');

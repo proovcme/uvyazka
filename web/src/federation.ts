@@ -15,7 +15,7 @@ export async function federate(members:SceneMember[]):Promise<{model:ModelPackag
     ids.add(m.instanceId);validatePackage(m.model,m.binary);
     if(m.offset.length!==3||![...m.offset,m.rotation].every(Number.isFinite))throw Error('Смещение и поворот должны быть конечными числами');
   }
-  const records=members.map(m=>({model_id:m.model.model_id,source_sha256:m.model.source.sha256,importer_version:m.model.importer_version,instance_id:m.instanceId,label:m.model.source.filename,offset_m:m.offset,rotation_deg:m.rotation,coordinate_alignment_verified:false}));
+  const records=members.map(m=>({model_id:m.model.model_id,source_sha256:m.model.source.sha256,source_format:m.model.source.format??'ifc',importer_version:m.model.importer_version,instance_id:m.instanceId,label:m.model.source.filename,offset_m:m.offset,rotation_deg:m.rotation,coordinate_alignment_verified:false}));
   const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify({version:1,records})))),n=>n.toString(16).padStart(2,'0')).join('');
   const elements:BimElement[]=[],storeys:ModelPackage['storeys']=[],relationships:ModelPackage['relationships']=[],diagnostics:ModelPackage['diagnostics']=[],systems:NonNullable<ModelPackage['systems']>=[];
   const low:Vec3=[Infinity,Infinity,Infinity],high:Vec3=[-Infinity,-Infinity,-Infinity];

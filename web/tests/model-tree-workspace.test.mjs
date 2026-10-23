@@ -33,7 +33,8 @@ test('workspace wires simple/parameter search, hidden rows, selection, reset and
  const until=async predicate=>{for(let i=0;i<100&&!predicate();i++)await wait(10);assert.ok(predicate());};
  await until(()=>globalThis.__workspaceViewer.visible.length===3||!node('error').hidden);assert.equal(node('error').hidden,true,node('error').textContent);assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);
  node('element-search').value='Насос A';node('element-search').dispatchEvent(new win.Event('input'));assert.equal(node('hide-matches').disabled,true);await wait(220);
- assert.equal(document.querySelectorAll('.element-item').length,1);
+ assert.equal(document.querySelectorAll('.element-item').length,1);assert.deepEqual(globalThis.__workspaceViewer.visible,['1']);
+ node('visibility-filter').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);
  node('hide-matches').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['2','3']);assert.equal(document.querySelectorAll('.element-item').length,1);
  node('show-matches').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);
  document.querySelector('.element-item').click();node('hide-selected').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['2','3']);
@@ -41,6 +42,12 @@ test('workspace wires simple/parameter search, hidden rows, selection, reset and
  node('reset-visibility').click();node('parameter-name').value='Power';node('parameter-operator').value='gte';node('parameter-value').value='10';node('parameter-operator').dispatchEvent(new win.Event('change'));
  assert.equal(document.querySelectorAll('.element-item').length,2);node('isolate-matches').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','3']);
  node('reset-visibility').click();node('element-search').value='Насос A';node('element-search').dispatchEvent(new win.Event('input'));await wait(220);document.querySelector('.element-item').click();
- node('storey-filter').value='L2';node('storey-filter').dispatchEvent(new win.Event('change'));assert.deepEqual(globalThis.__workspaceViewer.visible,['3']);node('show-selected').click();assert.equal(node('storey-filter').value,'');assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);
+ node('element-search').value='';node('element-search').dispatchEvent(new win.Event('input'));await wait(220);
+ const level2=[...document.querySelectorAll('#level-filter input')].find(input=>input.value===JSON.stringify('L2'));assert.ok(level2);level2.click();assert.deepEqual(globalThis.__workspaceViewer.visible,['3']);node('show-selected').click();assert.equal(node('visibility-filter').checked,false);assert.equal(level2.checked,true);assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);
+ node('reset-visibility').click();node('tree-grouping').value='levels';node('tree-grouping').dispatchEvent(new win.Event('change'));assert.equal(document.querySelectorAll('.branch-storey').length,2);
+ const levels=document.querySelectorAll('#level-filter input');levels[0].click();levels[1].click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);
+ node('parameter-name').value='Power';node('parameter-value').value='10';node('parameter-operator').value='gte';node('add-parameter').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','3']);
+ node('parameter-name').value='Наименование';node('parameter-value').value='Насос';node('parameter-operator').value='contains';node('parameter-operator').dispatchEvent(new win.Event('change'));assert.deepEqual(globalThis.__workspaceViewer.visible,['1']);
+ node('parameter-combine').value='any';node('parameter-combine').dispatchEvent(new win.Event('change'));assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);
  node('element-search').value='812345';node('element-search').dispatchEvent(new win.Event('input'));await wait(220);assert.equal(document.querySelectorAll('.element-item').length,0);
 });

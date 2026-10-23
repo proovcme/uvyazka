@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import type {BimElement,ModelPackage} from '../src/model.ts';
 import {ModelVisibility} from '../src/model-visibility.ts';
 import {modelTreeNodes} from '../src/model-tree-panel.ts';
-import {parameterMatches,parameterCatalog} from '../src/parameter-search.ts';
+import {parameterMatches,parameterCatalog,parametersMatch} from '../src/parameter-search.ts';
+import {elementCategory} from '../src/element-category.ts';
 function item(id:string,source='ar',fields:Record<string,unknown>={Power:0,Mark:'Н-17',FireRating:'EI 60'}){
  return {id,name:'Насос '+id,role:'element',source_instance_id:source,storey_id:'L1',class:'IfcPump',property_sets:{Technical:fields},quantity_sets:{},materials:['Сталь'],global_id:'ifc-'+id,mesh:{},revit:{element_id:id}} as unknown as BimElement;
 }
@@ -16,10 +17,28 @@ test('visibility survives filtering and isolation can be reversed per element or
  visibility.reset();assert.deepEqual(visibility.count(ids),{total:3,shown:3,checked:true,mixed:false});
 });
 test('model tree retains every item past 1000 and separates instances with the same floor/category',()=>{
- const items=Array.from({length:1201},(_,i)=>item(String(i),i%2?'ar':'ov')),model=fixture(items),nodes=modelTreeNodes(model,items);
+ const items=Array.from({length:1201},(_,i)=>item(String(i),i%2?'ar':'ov')),model=fixture(items),nodes=modelTreeNodes(model,items,'levels');
  assert.equal(nodes.length,2);assert.equal(nodes.reduce((n,s)=>n+s.items.length,0),1201);
  assert.equal(new Set(nodes.flatMap(s=>s.children.map(f=>f.key))).size,2);
  assert.equal(nodes.flatMap(s=>s.children.flatMap(f=>f.children.flatMap(c=>c.items))).length,1201);
+});
+
+test('default tree is model/category/elements; source format decides native categories',()=>{
+ const a=item('1'),b=item('2');b.property_sets={Other:{Category:'Насосы'}};
+ const model=fixture([a,b]);model.source.format='rvt';
+ assert.equal(elementCategory(a,model).name,'Категория Revit не прочитана');
+ assert.equal(elementCategory(b,model).name,'Насосы');
+ const tree=modelTreeNodes(model,[a,b]);assert.equal(tree[0].children[0].kind,'class');assert.equal(tree[0].children[1].items[0].id,'2');
+ model.source.format='ifc';b.revit={element_id:'2',id_basis:'ifc_tag_revit_export'};
+ assert.equal(elementCategory(b,model).name,'IfcPump');
+ model.federation!.members[0].source_format='rvt';assert.equal(elementCategory(b,model).name,'Насосы');
+});
+
+test('multiple parameter conditions support AND and OR without treating absent fields as zero',()=>{
+ const e=item('1','ar',{Power:0,Mark:'Н-17'}),filters=[{name:'Power',operator:'equals' as const,value:'0'},{name:'Mark',operator:'equals' as const,value:'Н-18'}];
+ assert.equal(parametersMatch(e,filters,'all'),false);assert.equal(parametersMatch(e,filters,'any'),true);
+ assert.equal(parametersMatch(e,[],'any'),true);
+ assert.equal(parametersMatch(e,[{name:'Absent',operator:'equals',value:'0'}]),false);
 });
 test('parameter name and value are matched in the same field, with explicit zero and missing distinguished',()=>{
  const e=item('9007199254740993');

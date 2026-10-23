@@ -18,8 +18,12 @@ import {elementIdentity,elementLabelMatches} from './element-identity';
 import {installPropertyCopy,copyValue} from './copy-properties';
 import {ModelVisibility} from './model-visibility';
 import {modelTreePanel} from './model-tree-panel';
-import {parameterCatalog,parameterMatches} from './parameter-search';
-import type {ParameterOperator} from './parameter-search';
+import {parameterCatalog,parametersMatch} from './parameter-search';
+import type {ParameterOperator,ParameterFilter} from './parameter-search';
+import {facetFilter} from './facet-filter';
+import {elementCategory} from './element-category';
+import {cadTreePanel} from './cad-tree-panel';
+import type {CadTreeState} from './cad-tree-panel';
 const DEMO = import.meta.env.VITE_UVYAZKA_DEMO === '1';
 import { Viewer } from './viewer';
 import type { BimElement,ModelPackage } from './model';
@@ -40,8 +44,11 @@ let requestedModel = new URL(location.href).searchParams.get('model') || '';
 let requestedRun = new URL(location.href).searchParams.get('run') || '';
 let viewer: Viewer | null = null, model: ModelPackage | null = null, run: RunPackage | null = null, clock: PlaybackClock | null = null, frame = 0, last = 0, generation = 0, modelGeneration = 0;
 const visibility=new ModelVisibility();let visibilityModelId='',treeItems:BimElement[]=[];
+let parameterFilters:ParameterFilter[]=[];
 document.getElementById('app')!.innerHTML = workspaceShell;
 const tree=modelTreePanel(el('element-tree'),visibility,{select:id=>{selectElement(id);viewer?.focusTargets([id]);},show:setElementVisibility,isolate:isolateElements});
+const levelFacet=facetFilter(el<HTMLDetailsElement>('level-filter'),'Уровни',applySceneVisibility);
+const categoryFacet=facetFilter(el<HTMLDetailsElement>('category-filter'),'Категории',applySceneVisibility);
 initTheme();
 installPropertyCopy();
 modelDataPanel(()=>model,id=>{selectElement(id);viewer?.focusTargets([id]);});
@@ -213,7 +220,12 @@ function setMode(mode:'view'|'simulate') {
 }
 el('mode-view').onclick=()=>setMode('view');el('mode-simulate').onclick=()=>setMode('simulate');
 function sceneVisible(instance:string|undefined){return !instance?(sceneMembers.length!==1||sceneMembers[0].visible):sceneMembers.find(m=>m.instanceId===instance)?.visible!==false;}
-function applySceneVisibility(){const floor=el<HTMLSelectElement>('storey-filter').value,system=el<HTMLSelectElement>('system-filter').value,only=el<HTMLInputElement>('system-only').checked,members=systemMembers(model,system);viewer?.show(new Set((model?.elements??[]).filter(e=>e.role==='element'&&visibility.visible(e.id)&&(!floor||e.storey_id===floor)&&(!system||!only||members.has(e.id))).map(e=>e.id)));viewer?.highlightElements(members);renderElements();}
+function applySceneVisibility(){
+  if(cadFrame)return;
+  renderElements();const filtered=el<HTMLInputElement>('visibility-filter').checked?new Set(treeItems.map(e=>e.id)):null;
+  viewer?.show(new Set((model?.elements??[]).filter(e=>e.role==='element'&&visibility.visible(e.id)&&(!filtered||filtered.has(e.id))).map(e=>e.id)));
+  viewer?.highlightElements(systemMembers(model,el<HTMLSelectElement>('system-filter').value));
+}
 async function presentMembers(members:SceneMember[]){
   const version=++sceneVersion;
   if(!members.length){sceneMembers=[];browserModel=null;browserBinary=null;browserRun=null;await loadRun('');await loadModel('');renderMembers();document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:null}));return;}
@@ -246,9 +258,11 @@ function renderMembers(){
 function renderModelTree() {
   el('parameter-names').replaceChildren(...(model&&(el('parameter-search-details') as HTMLDetailsElement).open?parameterCatalog(model):[]).map(name=>new Option(name,name)));
   el<HTMLInputElement>('parameter-name').value='';el<HTMLInputElement>('parameter-value').value='';
-  const storey=el<HTMLSelectElement>('storey-filter');storey.replaceChildren(new Option('Все этажи',''),...(model?.storeys??[]).map(s=>new Option(s.name,s.id)));
+  levelFacet.setChoices([...(model?.storeys??[]).map(s=>({id:JSON.stringify(s.id),name:s.name})),...((model?.elements??[]).some(e=>e.role==='element'&&!e.storey_id)?[{id:'null',name:'Без уровня'}]:[])]);
+  const categories=new Map<string,string>();for(const e of model?.elements??[])if(e.role==='element'){const c=elementCategory(e,model!);categories.set(c.key,c.format+' · '+c.name);}
+  categoryFacet.setChoices([...categories].map(([id,name])=>({id,name})));parameterFilters=[];renderParameterFilters();
   const systems=el<HTMLSelectElement>('system-filter');systems.replaceChildren(new Option('Все системы',''),...(model?.systems??[]).map(s=>new Option(`${s.name||s.class} · ${new Set(s.member_ids).size} · #${s.id}`,s.id)));
-  el<HTMLInputElement>('system-only').checked=false;viewer?.highlightElements(new Set());renderSystemSummary();
+  viewer?.highlightElements(new Set());renderSystemSummary();
   renderMembers();renderElements();
 }
 function renderSystemSummary(){
@@ -257,61 +271,70 @@ function renderSystemSummary(){
   const coverage=systemCoverage(model,id);
   host.innerHTML=`<strong>${esc(system.name||system.class)}</strong><p>${coverage.declared} участников в выгрузке · ${coverage.geometry} с геометрией · ${coverage.withoutGeometry} без геометрии · ${coverage.missing} не найдены в модели.</p><p>Бирюзовый цвет — участники системы. Подключение и полнота исходного RVT не подтверждены.</p><details><summary>Свойства системы</summary><button data-copy="${esc(JSON.stringify(system,null,2))}">Копировать свойства системы</button><dl><dt>Класс</dt><dd>${copyValue(system.class)}</dd><dt>ID</dt><dd>${copyValue(system.id)}</dd><dt>GlobalId</dt><dd>${copyValue(system.global_id||'Не прочитан')}</dd><dt>Описание</dt><dd>${copyValue(system.description??'Не прочитано')}</dd></dl><pre>${esc(JSON.stringify(system.property_sets??{},null,2))}</pre></details>`;
 }
+function parameterDraft():ParameterFilter{return {name:el<HTMLInputElement>('parameter-name').value,value:el<HTMLInputElement>('parameter-value').value,operator:el<HTMLSelectElement>('parameter-operator').value as ParameterOperator};}
+function renderParameterFilters(){const host=el('parameter-active');host.replaceChildren();parameterFilters.forEach((filter,index)=>{const row=document.createElement('div');row.className='parameter-chip';const text=document.createElement('span');const operator=[...el<HTMLSelectElement>('parameter-operator').options].find(o=>o.value===filter.operator)?.textContent??filter.operator;text.textContent=filter.name+' · '+operator+' '+filter.value;const remove=document.createElement('button');remove.textContent='×';remove.setAttribute('aria-label','Убрать условие '+filter.name);remove.onclick=()=>{parameterFilters.splice(index,1);renderParameterFilters();applySceneVisibility();};row.append(text,remove);host.append(row);});}
 function renderElements() {
-  const query=el<HTMLInputElement>('element-search').value.trim(),floor=el<HTMLSelectElement>('storey-filter').value;
-  const system=el<HTMLSelectElement>('system-filter').value,members=systemMembers(model,system);
-  const parameter={name:el<HTMLInputElement>('parameter-name').value,value:el<HTMLInputElement>('parameter-value').value,operator:el<HTMLSelectElement>('parameter-operator').value as ParameterOperator};
-  treeItems=(model?.elements??[]).filter(e=>e.role==='element'&&(!system||members.has(e.id))&&(!floor||e.storey_id===floor)&&elementLabelMatches(e,query)&&parameterMatches(e,parameter));
-  tree.render(model,treeItems,selectedId,!!query||!!parameter.name.trim(),JSON.stringify([query,parameter]));
+  const query=el<HTMLInputElement>('element-search').value.trim(),levels=levelFacet.selected(),categories=categoryFacet.selected();
+  const system=el<HTMLSelectElement>('system-filter').value,members=systemMembers(model,system),filters=[...parameterFilters,parameterDraft()];
+  const combine=el<HTMLSelectElement>('parameter-combine').value as 'all'|'any';
+  treeItems=(model?.elements??[]).filter(e=>e.role==='element'&&(!system||members.has(e.id))&&(!levels.size||levels.has(JSON.stringify(e.storey_id??null)))&&(!categories.size||categories.has(elementCategory(e,model!).key))&&elementLabelMatches(e,query)&&parametersMatch(e,filters,combine));
+  const searching=!!query||filters.some(f=>f.name.trim())||!!levels.size||!!categories.size||!!system;
+  tree.render(model,treeItems,selectedId,searching,JSON.stringify([query,filters,combine,[...levels],[...categories],system]),el<HTMLSelectElement>('tree-grouping').value as 'categories'|'levels');
   for(const key of ['hide-matches','show-matches','isolate-matches'])el<HTMLButtonElement>(key).disabled=!treeItems.length;
 }
 function memberElementIds(instanceId:string){return (model?.elements??[]).filter(e=>e.role==='element'&&(!e.source_instance_id?sceneMembers.length===1:e.source_instance_id===instanceId)).map(e=>e.id);}
 function syncMemberVisibility(){for(const member of sceneMembers){const ids=memberElementIds(member.instanceId);member.visible=visibility.count(ids).shown>0;}}
 function setElementVisibility(ids:string[],shown:boolean){
-  if(shown&&model){
-    const targets=new Set(ids),elements=model.elements.filter(e=>targets.has(e.id)),floor=el<HTMLSelectElement>('storey-filter'),system=el<HTMLSelectElement>('system-filter');
-    if(floor.value&&elements.some(e=>e.storey_id!==floor.value))floor.value='';
-    if(system.value){const members=systemMembers(model,system.value);if(elements.some(e=>!members.has(e.id))){system.value='';el<HTMLInputElement>('system-only').checked=false;renderSystemSummary();}}
-  }
+  if(shown){renderElements();const matches=new Set(treeItems.map(e=>e.id));if(ids.some(id=>!matches.has(id)))el<HTMLInputElement>('visibility-filter').checked=false;}
   visibility.set(ids,shown);syncMemberVisibility();applySceneVisibility();renderMembers();
   if(selectedId){el<HTMLButtonElement>('show-selected').disabled=false;el<HTMLButtonElement>('hide-selected').disabled=!visibility.visible(selectedId);}
 }
 function isolateElements(ids:string[]){
   if(!ids.length||!model)return;
+  const matches=new Set(treeItems.map(e=>e.id));if(ids.some(id=>!matches.has(id)))el<HTMLInputElement>('visibility-filter').checked=false;
   visibility.isolate(ids,model.elements.filter(e=>e.role==='element').map(e=>e.id));syncMemberVisibility();applySceneVisibility();renderMembers();viewer?.focusTargets(ids);
   if(selectedId){el<HTMLButtonElement>('show-selected').disabled=false;el<HTMLButtonElement>('hide-selected').disabled=!visibility.visible(selectedId);}
 }
 let searchTimer:ReturnType<typeof setTimeout>|undefined;
-const searchChanged=()=>{clearTimeout(searchTimer);for(const key of ['hide-matches','show-matches','isolate-matches'])el<HTMLButtonElement>(key).disabled=true;searchTimer=setTimeout(renderElements,180);};
+const searchChanged=()=>{clearTimeout(searchTimer);for(const key of ['hide-matches','show-matches','isolate-matches'])el<HTMLButtonElement>(key).disabled=true;searchTimer=setTimeout(applySceneVisibility,180);};
 el('element-search').oninput=searchChanged;el('parameter-name').oninput=searchChanged;el('parameter-value').oninput=searchChanged;
 el('parameter-search-details').addEventListener('toggle',()=>{if((el('parameter-search-details') as HTMLDetailsElement).open&&model)el('parameter-names').replaceChildren(...parameterCatalog(model).map(name=>new Option(name,name)));});
-el('parameter-operator').onchange=()=>{el<HTMLInputElement>('parameter-value').disabled=['exists','missing'].includes(el<HTMLSelectElement>('parameter-operator').value);renderElements();};
-el('clear-parameter').onclick=()=>{el<HTMLInputElement>('parameter-name').value='';el<HTMLInputElement>('parameter-value').value='';renderElements();};
+el('parameter-operator').onchange=()=>{el<HTMLInputElement>('parameter-value').disabled=['exists','missing'].includes(el<HTMLSelectElement>('parameter-operator').value);applySceneVisibility();};
+el('add-parameter').onclick=()=>{const draft=parameterDraft();if(!draft.name.trim())return;parameterFilters.push(draft);el<HTMLInputElement>('parameter-name').value='';el<HTMLInputElement>('parameter-value').value='';renderParameterFilters();applySceneVisibility();};
+el('parameter-combine').onchange=applySceneVisibility;
+el('clear-parameter').onclick=()=>{parameterFilters=[];renderParameterFilters();el<HTMLInputElement>('parameter-name').value='';el<HTMLInputElement>('parameter-value').value='';applySceneVisibility();};
 el('hide-matches').onclick=()=>setElementVisibility(treeItems.map(e=>e.id),false);
 el('show-matches').onclick=()=>setElementVisibility(treeItems.map(e=>e.id),true);
 el('isolate-matches').onclick=()=>isolateElements(treeItems.map(e=>e.id));
 el('hide-selected').onclick=()=>{if(selectedId)setElementVisibility([selectedId],false);};
 el('show-selected').onclick=()=>{if(selectedId)setElementVisibility([selectedId],true);};
 el('isolate-selected').onclick=()=>{if(selectedId)isolateElements([selectedId]);};
-el('storey-filter').onchange=applySceneVisibility;
+el('tree-grouping').onchange=renderElements;
 el('system-filter').onchange=()=>{selectElement(null);renderSystemSummary();applySceneVisibility();};
-el('system-only').onchange=applySceneVisibility;
-el('reset-visibility').onclick=()=>{visibility.reset();sceneMembers.forEach(m=>m.visible=true);clipped=false;updateCut();el<HTMLSelectElement>('storey-filter').value='';el<HTMLSelectElement>('system-filter').value='';el<HTMLInputElement>('system-only').checked=false;el<HTMLInputElement>('element-search').value='';el<HTMLInputElement>('parameter-name').value='';el<HTMLInputElement>('parameter-value').value='';el<HTMLSelectElement>('parameter-operator').value='contains';el<HTMLInputElement>('parameter-value').disabled=false;renderSystemSummary();applySceneVisibility();renderMembers();if(selectedId){el<HTMLButtonElement>('show-selected').disabled=false;el<HTMLButtonElement>('hide-selected').disabled=false;}viewer?.fit();};
+el('visibility-filter').onchange=applySceneVisibility;
+el('reset-visibility').onclick=()=>{visibility.reset();sceneMembers.forEach(m=>m.visible=true);levelFacet.reset();categoryFacet.reset();parameterFilters=[];renderParameterFilters();clipped=false;updateCut();el<HTMLSelectElement>('system-filter').value='';el<HTMLInputElement>('visibility-filter').checked=true;el<HTMLInputElement>('element-search').value='';el<HTMLInputElement>('parameter-name').value='';el<HTMLInputElement>('parameter-value').value='';el<HTMLSelectElement>('parameter-operator').value='contains';el<HTMLInputElement>('parameter-value').disabled=false;renderSystemSummary();applySceneVisibility();renderMembers();if(selectedId){el<HTMLButtonElement>('show-selected').disabled=false;el<HTMLButtonElement>('hide-selected').disabled=false;}viewer?.fit();};
 let cadPending:((reason?:string)=>void)|null=null;
-function closeCad(){cadPending?.('Загрузка отменена');cadPending=null;cadFrame?.remove();cadFrame=null;el('cad-host').hidden=true;el('canvas').hidden=false;document.body.classList.remove('cad-open');el<HTMLButtonElement>('mode-simulate').disabled=false;}
+let cadCleanup:(()=>void)|null=null;
+function closeCad(){cadPending?.('Загрузка отменена');cadPending=null;cadCleanup?.();cadCleanup=null;cadFrame?.remove();cadFrame=null;el('cad-host').hidden=true;el('canvas').hidden=false;document.body.classList.remove('cad-open');el<HTMLButtonElement>('mode-simulate').disabled=false;el<HTMLButtonElement>('open-model-data').disabled=false;}
 async function openCad(file:File) {
   closeCad();selectElement(null);setMode('view');el('canvas').hidden=true;el('cad-host').hidden=false;el('no-model').hidden=true;document.body.classList.add('cad-open');
   el<HTMLButtonElement>('mode-simulate').disabled=true;el('file-title').textContent=file.name;el('geometry-kind').textContent='DWG / DXF · чертёж';
+  el<HTMLButtonElement>('open-model-data').disabled=true;
   const iframe=document.createElement('iframe');iframe.title='Просмотр DWG / DXF';iframe.src='./cad/';cadFrame=iframe;el('cad-host').append(iframe);renderState();
   await new Promise<void>((resolve,reject)=>{
-    const job=crypto.randomUUID();const finish=(reason?:string)=>{clearTimeout(timer);removeEventListener('message',receive);cadPending=null;reason?reject(Error(reason)):resolve();};
+    const job=crypto.randomUUID();let opened=false,panel:ReturnType<typeof cadTreePanel>|null=null;
+    const finish=(reason?:string)=>{clearTimeout(timer);cadPending=null;if(reason){removeEventListener('message',receive);reject(Error(reason));}else{opened=true;resolve();}};
     const receive=(event:MessageEvent)=>{if(event.origin!==location.origin||event.source!==iframe.contentWindow||event.data?.channel!=='uvyazka-cad')return;
       if(event.data.kind==='ready')iframe.contentWindow?.postMessage({channel:'uvyazka-cad',kind:'open',job,file},location.origin);
       if(event.data.job!==job)return;
-      if(event.data.kind==='error')finish(event.data.message);
-      if(event.data.kind==='opened'){el<HTMLDialogElement>('file-dialog').close();el('element-tree').textContent=`Слои: ${event.data.layers.length}. Прочитано объектов модели: ${event.data.entityCount}. ${event.data.entityCount?"Переключайте слои над чертежом.":"Геометрия модели не получена; возможен неподдерживаемый состав DWG."}`;finish();}
+      if(event.data.kind==='error'){if(opened)error(event.data.message);else finish(event.data.message);}
+      if(event.data.kind==='opened'){
+        el<HTMLDialogElement>('file-dialog').close();panel=cadTreePanel(el('element-tree'),command=>iframe.contentWindow?.postMessage({channel:'uvyazka-cad',job,...command},location.origin));panel.update(event.data.tree as CadTreeState);finish();
+      }
+      if(event.data.kind==='tree-state')panel?.update(event.data as CadTreeState);
+      if(event.data.kind==='entity-selected'){const e=event.data.entity;el('inspector-title').textContent='Объект DWG / DXF';el('inspector').innerHTML=`<button data-copy="${esc(JSON.stringify(e,null,2))}">Копировать свойства</button><dl><dt>Handle / ID</dt><dd>${copyValue(e.id)}</dd><dt>Тип</dt><dd>${copyValue(e.type)}</dd><dt>Слой</dt><dd>${copyValue(e.layer)}</dd></dl>`;setPanel('inspector',true);}
     };
-    const timer=setTimeout(()=>finish('Движок DWG не ответил за 120 секунд. Попробуйте меньший файл.'),120000);cadPending=finish;addEventListener('message',receive);
+    const timer=setTimeout(()=>finish('Движок DWG не ответил за 120 секунд. Попробуйте меньший файл.'),120000);cadPending=finish;cadCleanup=()=>removeEventListener('message',receive);addEventListener('message',receive);
   });
 }
 

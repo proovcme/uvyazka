@@ -36,6 +36,16 @@ dialog{border:1px solid var(--strong-edge);border-radius:6px;box-shadow:0 20px 8
 .parameter-condition{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px}
 .parameter-condition select{width:100%;font-size:11px;padding:5px}.parameter-search small{display:block;font-size:10px;line-height:1.5;margin-top:6px}
 .parameter-search button{font-size:11px;min-height:28px;padding:4px 0;color:var(--secondary)}
+.parameter-search #parameter-combine{width:100%;min-width:0;font-size:11px;margin:6px 0}
+.parameter-chip{display:flex;align-items:center;gap:6px;padding:5px 8px;margin:4px 0;background:var(--field);border-left:2px solid var(--amber);font-size:11px}
+.parameter-chip span{flex:1;min-width:0;overflow-wrap:anywhere}.parameter-chip button{flex-shrink:0;width:28px;font-size:16px}
+.facet-filter{margin:0;padding:0;border-bottom:1px solid var(--edge);font-size:11px;min-width:0}
+.facet-filter>summary{cursor:pointer;min-height:32px;padding:8px 0;color:var(--ink)}
+.facet-options{max-height:180px;overflow:auto;overscroll-behavior:contain;padding:2px 0}
+.facet-options label{display:flex;align-items:start;gap:8px;margin:0;min-height:30px;padding:6px 2px;font-size:11px;overflow-wrap:anywhere;cursor:pointer}
+.facet-options input[type=checkbox]{width:14px;height:14px;min-height:0;padding:0;margin:0;flex-shrink:0}
+.facet-filter>button{min-height:30px;font-size:10px;color:var(--secondary);padding:4px 0}
+.cad-tree-search{width:100%;min-width:0;margin-bottom:8px;font-size:12px}
 .tree-match-actions{display:flex;flex-wrap:wrap;gap:2px;padding:6px 10px;border-top:1px solid var(--edge);border-bottom:1px solid var(--edge);flex-shrink:0}
 .tree-match-actions button{font-size:10px;min-height:28px;padding:4px 6px}
 .model-branch{border:0;padding:0;margin:0;min-width:0}

@@ -6,7 +6,10 @@ def serve_get(handler, intake, token, path, query):
     if not path.startswith("/api/intake/"):
         return False
     if path == "/api/intake/runtime":
+        from .folder_picker import PICKER_REVISION, available
         handler.send({"write_token": token, "storage": str(intake.workspace.home),
+                      "folder_picker": available(), "folder_mode": "read_in_place",
+                      "folder_picker_revision": PICKER_REVISION,
                       "archive_formats": ["zip"], "compute_location": "this_computer"})
     elif path == "/api/intake/jobs":
         handler.send(intake.get(query.get("intake_id"), query.get("project_id"), int(query.get("limit","10"))))
@@ -37,7 +40,10 @@ def serve_post(handler, intake, path, query):
         body = json.loads(raw)
         if not isinstance(body, dict):
             raise ValueError("JSON object required")
-        if path == "/api/intake/folder":
+        if path == "/api/intake/pick-folder":
+            from .folder_picker import select_folder
+            result = select_folder(body.get("initial_path", ""))
+        elif path == "/api/intake/folder":
             result = intake.import_folder(body["source_root"], body.get("name",""), body.get("project_id") or None)
         elif path == "/api/intake/start":
             result = intake.begin_upload(body["mode"], body["name"], body.get("files"), body.get("project_id") or None)

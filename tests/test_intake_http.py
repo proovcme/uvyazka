@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from http.server import ThreadingHTTPServer
@@ -60,6 +61,28 @@ class IntakeHTTPTests(unittest.TestCase):
         self.assertEqual(self.get('/api/projects')['projects'],[])
         with self.assertRaises(HTTPError) as error:self.post('/api/intake/folder',{'source_root':''})
         self.assertEqual(error.exception.code,400)
+
+    def test_system_folder_selection_reads_existing_files_without_upload(self):
+        source=self.root/'Проект';source.mkdir();(source/'AR.txt').write_text(TEXT,encoding='utf-8')
+        with patch('uvyazka.folder_picker.select_folder',return_value={'cancelled':False,'source_root':str(source)}) as picker:
+            with self.assertRaises(HTTPError) as error:
+                self.post('/api/intake/pick-folder',{},headers={'X-Uvyazka-Token':''})
+            self.assertEqual(error.exception.code,403);picker.assert_not_called()
+            chosen=self.post('/api/intake/pick-folder',{'initial_path':str(self.root)})
+            picker.assert_called_once_with(str(self.root))
+        self.assertEqual(self.get('/api/projects')['projects'],[])
+        job=self.post('/api/intake/folder',{'source_root':chosen['source_root'],'name':'Original folder'})
+        ready=self.wait(job['intake_id'])
+        self.assertEqual(ready['status'],'ready')
+        self.assertEqual(ready['source_root'],str(source.resolve()))
+        self.assertFalse((self.ws.home/'intakes').exists())
+        self.assertEqual((source/'AR.txt').read_text(encoding='utf-8'),TEXT)
+        with urlopen(self.base+'/intake.js') as response:script=response.read().decode()
+        self.assertNotIn('webkitdirectory',script)
+        self.assertNotIn('webkitRelativePath',script)
+        self.assertIn('data-pick-folder',script)
+        self.assertEqual(self.get('/api/intake/runtime')['folder_mode'],'read_in_place')
+        self.assertEqual(self.get('/api/intake/runtime')['folder_picker_revision'],'native-folder-picker-1')
 
     def test_ui_folder_handoff_to_model_and_back_uses_same_memory(self):
         data=TEXT.encode();job=self.post('/api/intake/start',{'mode':'folder_upload','name':'UI project','files':[{'path':'ПД/AR.txt','size':len(data)}]})

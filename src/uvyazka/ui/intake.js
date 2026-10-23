@@ -1,7 +1,7 @@
 /* Shared local intake. Transfer progress measures bytes; parsing reports actual stages. */
 window.UvyazkaIntake = (() => {
   const esc = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const labels = {receiving:'Передача файлов',queued:'Ожидает обработки',extracting:'Распаковка ZIP',indexing:'Чтение документов',ready:'Извлечение завершено',partial:'Извлечено частично',failed:'Обработка остановлена'};
+  const labels = {receiving:'Передача файлов',queued:'Ожидает обработки',extracting:'Распаковка ZIP',indexing:'Чтение документов',summarizing:'Сбор сводки и числовых данных',ready:'Извлечение завершено',partial:'Извлечено частично',failed:'Обработка остановлена'};
   const methods = {linked_folder:'Подключённая папка',folder_upload:'Копия папки',zip_upload:'ZIP-архив'};
   const coverageNames = {text_indexed:'Текст прочитан',unsupported:'Нужен отдельный обработчик',parse_failed:'Не удалось прочитать',empty_text:'Текст не найден',pending:'Ожидают чтения',source_missing:'Источник недоступен'};
   const size = n => new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format((n||0)/1024/1024)+' МБ';
@@ -25,7 +25,7 @@ window.UvyazkaIntake = (() => {
     </form></section><section class="panel"><div class="panel-head"><h2>Приём и продолжение работы</h2><button class="source-button" type="button" data-refresh>Обновить</button></div><div class="intake-jobs" aria-live="polite"></div></section></div>`;
     const root=target.firstElementChild, form=root.querySelector('form'), message=root.querySelector('.intake-message'), progress=root.querySelector('progress');
     const submit=form.querySelector('[type=submit]'), jobsTarget=root.querySelector('.intake-jobs');
-    let token='', uploadId='', busy=false, items=[], seenProjects=new Set();
+    let token='', uploadId='', busy=false, items=[], seenProjects=new Set(), pendingOpen='';
     const mode=()=>form.elements.mode.value;
     function showMode(){for(const [key,selector] of [['linked_folder','.intake-path'],['zip_upload','.intake-zip']])root.querySelector(selector).hidden=key!==mode();}
     form.elements.mode.forEach(r=>r.addEventListener('change',()=>{uploadId='';showMode();}));
@@ -47,16 +47,17 @@ window.UvyazkaIntake = (() => {
       const focusKey=focused?['open','resume','retry','transfer'].find(k=>focused.dataset[k]):null;
       const focusValue=focusKey?focused.dataset[focusKey]:null;
       jobsTarget.innerHTML=items.length?items.map(item=>{
-        const awaiting=['queued','extracting','indexing'].includes(item.status)&&!item.running;
+        const awaiting=['queued','extracting','indexing','summarizing'].includes(item.status)&&!item.running;
         const coverage=Object.entries(item.coverage||{}).map(([k,n])=>`${coverageNames[k]||k}: ${n}`).join(' · ');
         return `<article class="intake-job"><div class="intake-job-heading"><div><h3>${esc(item.name)}</h3><span class="fact-id">${esc(methods[item.mode])} · ${esc(item.project_id||'Проект появится после передачи файлов')}</span></div><span class="badge">${esc(awaiting?'Можно продолжить':item.status==='indexing'&&item.phase==='inventory'?'Сверка состава и версий':labels[item.status])}</span></div>
           ${item.current_document?`<p class="file-name">${esc(item.current_document)}</p>`:''}
           ${item.running?'<progress aria-label="Обработка файлов"></progress>':''}
           <p>${item.status==='receiving'?`Передано файлов: ${item.received_files} / ${item.total_files||'архив'}. ${size(item.received_bytes)}`:item.status==='extracting'?`Распаковано: ${item.expanded_files||0} / ${item.total_files||'…'}`:esc(coverage||'Готовим состав документов…')}</p>
           ${item.reading_work?.counts?.low_text_blocks?`<p>Мало текста или сканы: ${item.reading_work.counts.low_text_blocks} страниц / блоков. Нужен просмотр и, по задаче, OCR.</p>`:''}
+          ${item.automatic_summary?`<p>Найдено числовых фрагментов: ${item.automatic_summary.candidate_count}. Подготовлено блоков: ${item.automatic_summary.indexed_blocks} / ${item.automatic_summary.total_blocks}.</p>`:''}
           ${item.error?`<p class="error">${esc(item.error)}</p>`:''}
           ${item.errors?.length?`<details><summary>Документы, которые не удалось прочитать (${item.coverage?.parse_failed||item.errors.length})</summary><ul>${item.errors.map(e=>`<li><strong>${esc(e.relative_path||e.doc_id)}</strong><p>${esc(e.error)}</p></li>`).join('')}</ul><p>Показаны первые 20; полный состав доступен в документах проекта.</p></details>`:''}
-          <div class="intake-actions">${item.project_id?`<button type="button" class="rvt-primary" data-open="${esc(item.project_id)}">Открыть проект →</button>`:''}
+          <div class="intake-actions">${item.project_id?`<button type="button" class="rvt-primary" data-open="${esc(item.project_id)}">Смотреть сводку →</button>`:''}
           ${item.can_resume?`<button type="button" class="source-button" data-resume="${esc(item.intake_id)}">${item.status==='ready'||item.status==='partial'?'Обновить чтение':'Продолжить обработку'}</button>`:''}
           ${item.coverage?.parse_failed&&!item.running?`<button type="button" class="source-button" data-retry="${esc(item.intake_id)}">Повторить неудавшееся чтение</button>`:''}
           ${item.status==='receiving'&&item.mode==='zip_upload'?`<button type="button" class="source-button" data-transfer="${esc(item.intake_id)}">Продолжить передачу ZIP</button>`:''}</div>
@@ -71,6 +72,7 @@ window.UvyazkaIntake = (() => {
       items=data.items;renderJobs();
       const newProjects=items.filter(i=>i.project_id&&!seenProjects.has(i.project_id));
       if(newProjects.length){newProjects.forEach(i=>seenProjects.add(i.project_id));await projectsChanged();}
+      const completed=items.find(i=>i.intake_id===pendingOpen&&i.project_id&&['ready','partial'].includes(i.status));if(completed){pendingOpen='';await openProject(completed.project_id);}
     }
     form.onsubmit=async event=>{
       event.preventDefault();if(busy)return;busy=true;submit.disabled=true;form.querySelectorAll('input').forEach(e=>e.disabled=true);message.setAttribute('role','status');
@@ -90,7 +92,7 @@ window.UvyazkaIntake = (() => {
           }
           uploadId='';progress.hidden=true;
         }
-        message.textContent='Приём сохранён. Ход чтения и кнопка открытия проекта — ниже.';await refresh();
+        pendingOpen=job.intake_id;message.textContent='Приём сохранён. Ход чтения и кнопка открытия проекта — ниже.';await refresh();
       }catch(e){report(e);await refresh().catch(()=>{});}finally{busy=false;submit.disabled=false;form.querySelectorAll('input').forEach(e=>e.disabled=false);}
     };
     root.addEventListener('click',async event=>{

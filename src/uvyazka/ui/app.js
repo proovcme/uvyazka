@@ -25,8 +25,8 @@ function locatorName(l) {
   if (l.kind === 'docx_table_row') return `Таблица ${l.table}, строка ${l.row}`;
   return 'Строка: ' + (l.line || l.row || '—');
 }
-let current = '', projects = [], facts = [], checks = [], status = {}, view = 'overview', offset = 0, timer, generation = 0, resultGeneration = 0;
-const routes = {overview:'Обзор проекта',facts:'Все показатели',rooms:'Помещения',capacity:'ТУ и мощности',quantities:'Объёмы и материалы',finance:'Финансы',checks:'Сопоставления',coordination:'Увязка разделов',rvt:'Загрузить RVT',simulation:'График и модель',measurements:'Лист и измерения',documents:'Документы',search:'Поиск по тексту',intake:'Приём проектов',portfolio:'Все проекты'};
+let current = '', projects = [], facts = [], checks = [], status = {}, summary = {}, view = 'overview', offset = 0, timer, generation = 0, resultGeneration = 0;
+const routes = {overview:'Обзор проекта',facts:'Записанные показатели',summary:'Найденные данные',rooms:'Помещения',capacity:'ТУ и мощности',quantities:'Объёмы и материалы',finance:'Финансы',checks:'Сопоставления',coordination:'Увязка разделов',rvt:'Загрузить RVT',simulation:'График и модель',measurements:'Лист и измерения',documents:'Документы',search:'Поиск по тексту',intake:'Приём проектов',portfolio:'Все проекты'};
 function url(path) { const u = new URL(path, location.origin); u.searchParams.set('project_id', current); return u.pathname + u.search; }
 async function api(path) { const r = await fetch(path === '/api/projects' ? path : url(path)); const d = await r.json(); if (!r.ok) throw Error(d.error); return d; }
 function badge(s) { return `<span class="badge ${esc(s)}">${esc(statusNames[s] || s)}</span>`; }
@@ -35,15 +35,23 @@ function sourceButton(f) { return `<button class="source-button" data-fact="${es
 function panel(title, content) { return `<section class="panel"><div class="panel-head"><h2>${esc(title)}</h2></div>${content}</section>`; }
 function factTable(items) { return items.length ? `<div class="table-wrap"><table><thead><tr><th>Показатель</th><th>Значение</th><th>Основание</th><th>Источник</th></tr></thead><tbody>${items.map(f => `<tr><td class="fact-name">${esc(f.name)}<span class="fact-id">${esc(f.id)} · ${esc(groupNames[f.group] || f.group)}</span></td><td class="num">${number(f.value)} ${esc(unit(f.unit))}</td><td class="basis">${esc(basis(f.basis))}</td><td>${sourceButton(f)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">В этой выборке наблюдений пока нет.</div>'; }
 function issueList(items) { return items.map(c => `<article class="issue-card">${c.category ? `<span class="badge ${esc(c.category)}">${esc(({match:'Совпадает',discrepancy:'Расхождение',question:'Вопрос',unchecked:'Не проверено'})[c.category])}</span>` : badge(c.status)}<h3>${esc(c.title)}</h3><p>${esc(explanation(c))}</p>${c.difference !== undefined ? `<p>Разница: ${esc(c.difference)} ${esc(unit(c.base_unit || ""))}</p>` : ''}${c.fact_ids.map(id => `<button class="source-button" data-fact="${esc(id)}">${esc(id)} ↗</button>`).join(' · ')}</article>`).join('') || '<div class="empty">Нет сохранённых сопоставлений.</div>'; }
+function candidateTable(items){return items.length?`<div class="table-wrap"><table><thead><tr><th>Найдено в источнике</th><th>Значение</th><th>Единица</th><th>Источник</th></tr></thead><tbody>${items.map(c=>`<tr><td class="fact-name">${esc(c.label||c.excerpt.slice(0,140))}<span class="fact-id">Автоматический кандидат · ${esc(c.relative_path)}</span></td><td class="num">${esc(c.raw_value)}</td><td>${esc(c.raw_unit)}</td><td><button class="source-button" data-source="${esc(JSON.stringify(c.source))}">${esc(locatorName(c.locator))} ↗</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">В этой выборке числовых кандидатов нет. Тексты доступны в документах и поиске.</div>';}
+async function loadAutomaticData(){
+  const target=$('#automatic-data');if(!target)return;const project=current,selectedOffset=offset,q=$('#query')?.value||'',group=$('#automatic-group')?.value||target.dataset.group||'';
+  const data=await api('/api/summary?'+new URLSearchParams({q,group,offset,limit:30}));
+  if(project!==current||!target.isConnected||selectedOffset!==offset||q!==($('#query')?.value||'')||group!==($('#automatic-group')?.value||target.dataset.group||''))return;
+  target.innerHTML=candidateTable(data.items)+`<div class="table-meta">Найдено: ${data.total}<div class="pagination"><button data-automatic-page="prev" ${offset?'':'disabled'}>Назад</button><button data-automatic-page="next" ${data.next_offset===null?'disabled':''}>Далее</button></div></div>`;
+}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-automatic-page]');if(!b)return;offset=Math.max(0,offset+(b.dataset.automaticPage==='next'?30:-30));loadAutomaticData().catch(showError);});
 function filterBar(placeholder) { return `<div class="toolbar"><label class="search"><span class="sr-only">Поиск</span><input id="query" placeholder="${esc(placeholder)}" aria-label="Поиск"></label></div>`; }
 async function loadProject(id) {
   const revision = ++generation; clearTimeout(timer); current = id; $('#detail').close();
   const u = new URL(location.href); u.searchParams.set('project', id); history.replaceState(null, '', u);
-  const data = await Promise.all([api('/api/status'),api('/api/facts'),api('/api/checks')]); if (revision !== generation) return;
-  [status,{facts},{checks}] = data; $('#project-select').value = id;
+  const data = await Promise.all([api('/api/status'),api('/api/facts'),api('/api/checks'),api('/api/summary')]); if (revision !== generation) return;
+  [status,{facts},{checks},summary] = data; $('#project-select').value = id;
   $('#project-name').textContent = status.project.name; document.title = status.project.name + ' — Увязка';
   $('#snapshot').textContent = new Date(status.snapshot.snapshot_created).toLocaleString('ru-RU');
-  $('#coverage').textContent = `Сохранено наблюдений: ${facts.length}. Не все числа извлечены; действующие ревизии и инженерные выводы требуют проверки.`;
+  $('#coverage').textContent = `Автоматически найдено числовых фрагментов: ${summary.state?.candidate_count ?? 0}. Записанных наблюдений: ${facts.length}. Смысл, повторы и действующие ревизии требуют проверки.`;
   await route();
 }
 async function route() {
@@ -61,9 +69,20 @@ async function route() {
   if (view === 'portfolio') {
     $('#view').innerHTML = panel('Реестр проектов', `<div class="table-wrap"><table><thead><tr><th>Объект</th><th>Документы</th><th>Наблюдения</th><th></th></tr></thead><tbody>${projects.map(p => `<tr><td>${esc(p.name)}<span class="fact-id">${esc(p.id)} · ${esc(p.location)}</span></td><td>${p.counts?.documents ?? '—'}</td><td>${p.counts?.facts ?? '—'}</td><td><button class="source-button" data-project="${esc(p.id)}">Открыть →</button></td></tr>`).join('')}</tbody></table></div>`); return;
   }
+  if(view==='summary'){
+    $('#view').innerHTML=panel('Числовые данные из документов',`<div class="detail-info"><p>Автоматически найденные фрагменты с единицами и значения в строках таблиц. Группы предварительные; повторы, смысл и ревизии разбирает модель.</p><p>Обработано блоков: ${summary.state?.indexed_blocks||0} / ${summary.state?.total_blocks||0}. Блоков с ограниченной выдачей: ${summary.state?.truncated_blocks||0}.</p></div>`+filterBar('Название, система или контекст…')+`<label class="detail-info">Группа <select id="automatic-group"><option value="">Все</option><option value="tep">ТЭП и геометрия</option><option value="capacity">Мощности и нагрузки</option><option value="finance">Финансы</option><option value="quantities">Материалы и работы</option><option value="other">Прочие</option></select></label><div id="automatic-data"></div>`);
+    $('#query').addEventListener('input',()=>{clearTimeout(timer);offset=0;timer=setTimeout(()=>loadAutomaticData().catch(showError),250);});
+    $('#automatic-group').onchange=()=>{offset=0;loadAutomaticData().catch(showError);};
+    await loadAutomaticData();return;
+  }
   if (view === 'overview') {
-    const count = status.counts;
-    $('#view').innerHTML = `<div class="kpis">${[[count.documents,'Документов'],[count.pages,'Страниц / блоков'],[facts.length,'Наблюдений'],[status.finding_counts?.discrepancy ?? 0,'Расхождений'],[status.finding_counts?.question ?? 0,'Вопросов'],[status.finding_counts?.unchecked ?? 0,'Требуют проверки']].map(([n,t]) => `<div class="kpi"><span class="kpi-label">${t}</span><strong class="kpi-value">${n}</strong></div>`).join('')}</div>` + panel(status.project.name, `<div class="identity"><p>${esc(status.project.location)}</p></div>`) + panel('Основные показатели', factTable(facts.filter(f => f.group === 'tep').slice(0,6))) + ['discrepancy','question','unchecked'].map(category => panel(({discrepancy:'Расхождения в сопоставленных данных',question:'Вопросы к данным',unchecked:'Ещё не проверено'})[category], issueList(checks.filter(c => c.category === category)))).join('') + panel('Покрытие извлечения', `<div class="detail-info">${Object.entries(status.coverage).map(([key,n]) => `<p>${esc(processingNames[key] || key)}: ${n}</p>`).join('')}<p>Статус обработки документа не подтверждает полноту или правильность инженерных показателей.</p></div>`); return;
+    const count=status.counts, automatic=summary.state||{};
+    $('#view').innerHTML=`<div class="kpis">${[[count.documents,'Файлов в составе'],[count.pages,'Страниц / блоков'],[automatic.candidate_count||0,'Найденных числовых фрагментов'],[facts.length,'Записанных наблюдений']].map(([n,t])=>`<div class="kpi"><span class="kpi-label">${t}</span><strong class="kpi-value">${n}</strong></div>`).join('')}</div>`+
+      panel('Данные из источников',`<div class="detail-info"><p>Автоподготовка: ${automatic.indexed_blocks||0} / ${automatic.total_blocks||0} блоков. Найденные значения ещё требуют проверки смысла, повторов и ревизий.</p><a class="rvt-primary" href="#summary">Все найденные данные →</a></div>`+candidateTable(summary.highlights||[]))+
+      panel('Записанные основные показатели',factTable(facts.filter(f=>f.group==='tep').slice(0,16)))+
+      panel('Состав проекта',`<div class="detail-info">${Object.entries(summary.inventory?.folders||{}).map(([name,n])=>`<p>${esc(name)}: ${n} файлов</p>`).join('')}<p>${Object.entries(summary.inventory?.formats||{}).map(([name,n])=>`${esc(name)}: ${n}`).join(' · ')}</p><a class="source-button" href="#documents">Открыть документы →</a></div>`)+
+      panel('Покрытие чтения',`<div class="detail-info">${Object.entries(status.coverage).map(([key,n])=>`<p>${esc(processingNames[key]||key)}: ${n}</p>`).join('')}<p>Сохранённых сопоставлений: ${count.checks}. Чтение текста и подготовка числовых кандидатов не подтверждают инженерную согласованность.</p></div>`)+
+      ['discrepancy','question','unchecked'].map(category=>panel(({discrepancy:'Расхождения в сопоставленных данных',question:'Вопросы к данным',unchecked:'Ещё не проверено'})[category],issueList(checks.filter(c=>c.category===category)))).join('');return;
   }
   if (view === 'simulation') {
     $('#view').innerHTML = panel('График и пространственная модель', `<div class="detail-info"><p>Расчёт работ с ресурсными ограничениями, воспроизведение и основания длительностей. Геометрия может быть условной.</p><a class="source-button" href="/simulation/?project=${encodeURIComponent(current)}">Открыть график и модель →</a></div>`); return;
@@ -81,8 +100,10 @@ async function route() {
     await loadResults(); return;
   }
   const selected = facts.filter(f => view === 'facts' || f.group === view);
-  $('#view').innerHTML = panel(routes[view], filterBar('Название, номер или значение…') + '<div id="facts-table">' + factTable(selected) + '</div>');
-  $('#query').addEventListener('input', e => { const q = e.target.value.toLowerCase(); $('#facts-table').innerHTML = factTable(selected.filter(f => `${f.id} ${f.name} ${f.value}`.toLowerCase().includes(q))); });
+  const withAutomatic=['capacity','quantities','finance'].includes(view);
+  $('#view').innerHTML = panel(routes[view], filterBar('Название, номер или значение…') + '<div id="facts-table">' + factTable(selected) + '</div>')+(withAutomatic?panel('Автоматически найдено в документах','<div class="detail-info">Группа предварительная. Смысл, повторы и версии требуют проверки.</div><div id="automatic-data" data-group="'+view+'"></div>'):'');
+  $('#query').addEventListener('input', e => { const q = e.target.value.toLowerCase(); $('#facts-table').innerHTML = factTable(selected.filter(f => `${f.id} ${f.name} ${f.value}`.toLowerCase().includes(q)));if(withAutomatic){clearTimeout(timer);offset=0;timer=setTimeout(()=>loadAutomaticData().catch(showError),250);} });
+  if(withAutomatic)await loadAutomaticData();
 }
 async function loadResults() {
   const key = current, routeKey = view, q = $('#query')?.value || '', request = ++resultGeneration; if (!$('#results')) return;

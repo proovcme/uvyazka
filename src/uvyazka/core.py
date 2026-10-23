@@ -191,8 +191,10 @@ class Workspace:
                 drawing_counts = {r[0]: r[1] for r in db.execute(
                     "select kind,count(distinct id) from drawing_records group by kind")}
         reconciliation = self.get_reconciliation(project_id)
+        from .project_summary import ProjectSummary
+        automatic_summary = ProjectSummary(self,project_id).state()
         questions = sum(c["status"] != "matches" for c in reconciliation["checks"])
-        return {"project": project, "snapshot": meta, "counts": counts, "coverage": coverage, "questions": questions, "finding_counts": reconciliation["finding_counts"], "questions_semantics": "Legacy unresolved total; use finding_counts to distinguish discrepancies, questions and unchecked work.",
+        return {"project": project, "snapshot": meta, "automatic_summary": automatic_summary, "counts": counts, "coverage": coverage, "questions": questions, "finding_counts": reconciliation["finding_counts"], "questions_semantics": "Legacy unresolved total; use finding_counts to distinguish discrepancies, questions and unchecked work.",
                 "reading_work": {"counts": reading_counts, "resume_tool": "ocr_pdf_pages", "note": "Low text is a review signal, not proof of a scan; OCR pages still require visual review."},
                 "drawing_work": {"counts": drawing_counts, "resume_tool": "get_drawing_measurements",
                                  "note": "Recorded work only; read records for source freshness, unresolved questions and revisions."},

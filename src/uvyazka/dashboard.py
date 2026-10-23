@@ -62,6 +62,9 @@ def make_handler(workspace: Workspace):
                     return self.send(workspace.project_status(project_id))
                 if request.path == "/api/facts":
                     return self.send(workspace.get_project_facts(project_id))
+                if request.path == "/api/summary":
+                    from .project_summary import ProjectSummary
+                    return self.send(ProjectSummary(workspace,project_id).read(q.get("q",""),q.get("group") or None,int(q.get("offset","0")),int(q.get("limit","30"))))
                 if request.path == "/api/checks":
                     return self.send(workspace.get_reconciliation(project_id))
                 if request.path == "/api/documents":

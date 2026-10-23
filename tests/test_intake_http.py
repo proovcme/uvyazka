@@ -92,12 +92,21 @@ class IntakeHTTPTests(unittest.TestCase):
         ready=self.wait(job['intake_id']);self.assertEqual(ready['status'],'ready',ready)
         model=Workspace(self.ws.home);project=ready['project_id']
         self.assertEqual(ProjectIntake(model).get(job['intake_id'])['counts']['documents'],1)
+        summary=self.get('/api/summary?project_id='+project+'&q=area&limit=1')
+        self.assertGreater(summary['state']['candidate_count'],0)
+        self.assertEqual(summary['state']['remaining_blocks'],0)
+        self.assertEqual(summary['items'][0]['raw_value'],'12')
+        candidate=summary['items'][0]
+        source=model.read_evidence(project,**candidate['source'])
+        self.assertIn('12 m2',source['text'])
+        self.assertEqual(model.get_project_facts(project)['facts'],[])
         doc=model.find_documents(project)['documents'][0]
         model.record_observations(project,[{'id':'area','name':'Area','group':'tep','value':'12','raw_value':'12','unit':'m2','basis':'floor',
             'sources':[{'doc_id':doc['doc_id'],'sha256':doc['sha256'],'page_number':1}]}],'model-continues-ui')
         facts=self.get('/api/facts?project_id='+project)['facts']
         self.assertEqual(facts[0]['id'],'area')
         self.assertEqual(self.get('/api/status?project_id='+project)['counts']['facts'],1)
+        self.assertEqual(self.get('/api/summary?project_id='+project)['state']['candidate_count'],summary['state']['candidate_count'])
         linked=self.post('/api/intake/folder',{'source_root':ready['source_root']})
         self.assertEqual(linked['project_id'],project)
         self.wait(linked['intake_id'])

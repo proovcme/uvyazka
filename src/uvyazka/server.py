@@ -56,6 +56,24 @@ def build_server(workspace: Workspace | None = None):
         return memory.project_status(project_id)
 
     @mcp.tool(annotations=read)
+    def get_project_summary(project_id: str, query: str = "", group: str | None = None, offset: int = 0, limit: int = 30) -> dict:
+        """Read automatic numerical candidates, source row/page locators, project inventory and extraction coverage.
+        These are literal unreviewed candidates, not accepted facts. Open source context before record_observations.
+        Filter groups tep/capacity/finance/quantities/other; query searches labels and excerpts. Continue via next_offset.
+        """
+        from .project_summary import ProjectSummary
+        return ProjectSummary(memory,project_id).read(query,group,offset,limit)
+
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True})
+    def build_project_summary(project_id: str, page_limit: int = 500) -> dict:
+        """Incrementally prepare numerical candidates from cached source blocks, without rereading originals or an LLM.
+        Intake runs this automatically. For an older project repeat while remaining_blocks > 0; page_limit 1–2000.
+        Source versions and raw values are retained; candidate matches do not accept meaning or engineering quantities.
+        """
+        from .project_summary import ProjectSummary
+        return ProjectSummary(memory,project_id).index(page_limit)
+
+    @mcp.tool(annotations=read)
     def find_documents(project_id: str, query: str = "", limit: int = 20, offset: int = 0) -> dict:
         """Find source IDs, content hashes and format statuses by filename, with a continuation cursor."""
         return memory.find_documents(project_id, query, limit, offset)

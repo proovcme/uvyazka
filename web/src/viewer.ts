@@ -6,6 +6,7 @@ import type {SurfacePoint} from './spatial-measurements';
 import type {Vec3} from './model';
 import { validatePackage } from './model';
 import { ConstructionSite } from './site';
+import {renderPolicy} from './render-policy';
 import type { RunPackage } from './simulation';
 
 type ElementMesh = THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial[]>;
@@ -129,15 +130,19 @@ export class Viewer {
     this.clearModel();
     this.model = pkg;
     this.currentElements = pkg.elements;
+    const quality=renderPolicy(pkg.statistics.physical_elements,window.devicePixelRatio);
+    this.renderer.shadowMap.enabled=quality.shadows;
+    this.renderer.setPixelRatio(quality.pixelRatio);
     // Bound edge extraction work on large imports; meshes beyond the budget retain solid geometry.
-    let edgeBudget = 600_000;
+    let edgeBudget = quality.edgeBudget;
     for (const element of pkg.elements) {
       const data = element.mesh;
       if (!data) continue;
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(binary, data.position_byte_offset, data.vertex_count * 3), 3));
       geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(binary, data.index_byte_offset, data.index_count), 1));
-      geometry.computeVertexNormals();
+      // All model materials use flatShading: the shader derives face normals.
+      // Computing vertex normals here was wasted main-thread work on every import.
       geometry.computeBoundingSphere();
       for (const group of data.groups) geometry.addGroup(group.start, group.count, group.material_index);
       const materials = data.styles.map((style) => {
@@ -250,12 +255,6 @@ export class Viewer {
   select(id: string | null) {
     this.selected = id ?? undefined;
     if (this.highlight) { this.scene.remove(this.highlight); this.highlight.dispose(); this.highlight = undefined; }
-    for (const [key, mesh] of this.meshes) {
-      for (const material of mesh.material) {
-        material.emissive.set(key === id ? 0x805b16 : 0x000000);
-        material.emissiveIntensity = key === id ? 0.34 : 0;
-      }
-    }
     const mesh = id ? this.meshes.get(id) : undefined;
     if (mesh) {
       this.highlight = new THREE.Box3Helper(new THREE.Box3().setFromObject(mesh), new THREE.Color(0xefb65e));
@@ -356,6 +355,9 @@ export class Viewer {
       const state = this.construction?.get(element.id);
       mesh.visible = Boolean(mesh.userData.filterVisible) && (!this.construction || state === 'active' || state === 'complete' || state === 'future' && this.showFuture);
       if (this.construction && this.site?.group.visible && this.site.hiddenTargets.has(element.id)) mesh.visible = false;
+      const appearance=[state,this.showFuture,this.sourceColors,this.xray,this.selected===element.id,this.highlightedElements.has(element.id),this.lightTheme()].join('|');
+      if(mesh.userData.appearance===appearance)continue;
+      mesh.userData.appearance=appearance;
       mesh.material.forEach((material, index) => {
         const opacity = element.role === 'space' || element.role === 'feature' ? 0.16 : element.mesh!.styles[index].opacity;
         material.color.copy((mesh.userData.baseColors as THREE.Color[])[index]);
@@ -368,10 +370,10 @@ export class Viewer {
         material.emissive.set(this.selected===element.id?0x805b16:this.highlightedElements.has(element.id)?0x087b79:0x000000);
         material.emissiveIntensity=this.selected===element.id?.34:this.highlightedElements.has(element.id)?.3:0;
         const alpha = state === 'future' && this.showFuture ? (this.edges.has(element.id)?.035:.12) : state === 'active' ? 0.85 : this.xray && element.role === 'element' ? Math.min(opacity, 0.2) : opacity;
-        material.transparent = alpha < 1;
+        const transparent=alpha<1;
+        if(material.transparent!==transparent){material.transparent=transparent;material.needsUpdate=true;}
         material.opacity = alpha;
         material.depthWrite = alpha >= 1;
-        material.needsUpdate = true;
       });
       const edges=this.edges.get(element.id);
       if(edges){edges.material.opacity=state==='future'?.5:.3;edges.material.color.set(this.selected===element.id||state==='active'?0xefb65e:state==='future'?0x8c9ba8:(this.lightTheme()?0x647586:0x40505c));}

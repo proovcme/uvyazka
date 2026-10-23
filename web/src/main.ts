@@ -129,7 +129,7 @@ function renderState() {
   }
   document.querySelectorAll<HTMLElement>('[data-operation]').forEach(row=>row.dataset.state=state.states.get(row.dataset.operation!)||'pending');
 }
-async function loadProject(id:string) {
+async function loadProject(id:string,skipModel=false) {
   measurementProject=id;
   ++sceneVersion;sceneMembers=[];renderMembers();++generation; ++modelGeneration; touring=false;el('tour').setAttribute('aria-pressed','false'); if(clock) clock.playing=false; project=id; el('error').hidden=true;
   el<HTMLAnchorElement>('back').href=DEMO?'/':'/?project='+encodeURIComponent(id); if(DEMO)el('back').textContent='locia.work ↗'; if(!DEMO)el<HTMLAnchorElement>('memory-link').href=el<HTMLAnchorElement>('back').href;
@@ -139,6 +139,7 @@ async function loadProject(id:string) {
   const key=project; const [models,runs]=await Promise.all([api<{items:{model_id:string;name:string}[]}>('models'),api<{items:{run_id:string;scenario_id:string;scenario_revision:number;duration_minutes:number;name?:string}[]}>('runs')]); if(key!==project)return;
   el<HTMLSelectElement>('models').innerHTML='<option value="">Без геометрии</option>'+models.items.map(m=>`<option value="${esc(m.model_id)}">${esc(m.name)}</option>`).join('');
   el<HTMLSelectElement>('runs').innerHTML='<option value="">Выберите расчёт</option>'+runs.items.map(r=>`<option value="${esc(r.run_id)}">${esc(r.name||r.scenario_id)} · ревизия ${r.scenario_revision} · ${r.duration_minutes} мин</option>`).join('');
+  if(skipModel){await loadRun('');return;}
   const requested=runs.items.find(r=>r.run_id===requestedRun);
   if(requested){el<HTMLSelectElement>('runs').value=requested.run_id;await loadRun(requested.run_id);}
   else if(models.items.some(m=>m.model_id===requestedModel)){el<HTMLSelectElement>('models').value=requestedModel;await loadRun('');await loadModel(requestedModel);}
@@ -256,7 +257,8 @@ function renderElements() {
   }
   el('element-tree').innerHTML=`<p>${items.length} элементов${items.length>1000?' · первые 1000; уточните поиск':''}</p>`+[...groups].map(([floor,classes])=>`<details class="tree-storey" open><summary>${esc(model?.storeys.find(s=>s.id===floor)?.name||'Без этажа')}<small>${[...classes.values()].flat().length}</small></summary>${[...classes].map(([type,elements])=>`<details class="tree-class" ${query||elements.some(e=>e.id===selectedId)||items.length<60?'open':''}><summary>${esc(type)} · ${elements.length}</summary>${elements.map(e=>`<button class="element-item" aria-pressed="${e.id===selectedId}" data-id="${esc(e.id)}">${icon('cube')}<span><strong>${esc(e.name||e.id)}</strong><small>${esc(e.class)}</small></span></button>`).join('')}</details>`).join('')}</details>`).join('');
 }
-el('element-search').oninput=renderElements;
+let searchTimer:ReturnType<typeof setTimeout>|undefined;
+el('element-search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(renderElements,180);};
 el('storey-filter').onchange=applySceneVisibility;
 el('system-filter').onchange=()=>{selectElement(null);renderSystemSummary();applySceneVisibility();};
 el('system-only').onchange=applySceneVisibility;
@@ -338,9 +340,9 @@ async function demoExamples(){
   }
   picker.onchange=()=>void openExample(picker.value);
   if(initialExample&&examples.some(e=>e.id===initialExample))await openExample(initialExample);
-  else {picker.value=model?.model_id||examples[0]?.id||'';document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:model}));}
+  else {if(!model&&examples[0]?.kind==='model')await loadModel(examples[0].id);picker.value=model?.model_id||examples[0]?.id||'';document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:model}));}
 }
-void (async()=>{try{const r=await fetch(DEMO?'./demo/projects.json':'/api/projects');const d=await r.json();if(project==='browser-local')return;el<HTMLSelectElement>('projects').innerHTML=d.projects.map((p:{id:string;name:string})=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');project=project||d.default_project;if(project){el<HTMLSelectElement>('projects').value=project;await loadProject(project);await demoExamples();}else error('Сначала зарегистрируйте проект или запустите uvyazka demo.');}catch(e){error(e);}})();
+void (async()=>{try{const r=await fetch(DEMO?'./demo/projects.json':'/api/projects');const d=await r.json();if(project==='browser-local')return;el<HTMLSelectElement>('projects').innerHTML=d.projects.map((p:{id:string;name:string})=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');project=project||d.default_project;if(project){el<HTMLSelectElement>('projects').value=project;await loadProject(project,DEMO&&!!initialExample);await demoExamples();}else error('Сначала зарегистрируйте проект или запустите uvyazka demo.');}catch(e){error(e);}})();
 
 function setPanel(panel:'tree'|'inspector',open:boolean) {
   if(open&&matchMedia('(max-width: 650px)').matches){

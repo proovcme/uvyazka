@@ -14,6 +14,7 @@ export function modelDataPanel(getModel:()=>ModelPackage|null,select:(id:string)
   const button=document.createElement('button');button.id='open-model-data';button.textContent='Данные модели';document.getElementById('theme-toggle')!.before(button);
   const node=<T extends HTMLElement=HTMLElement>(selector:string)=>dialog.querySelector<T>(selector)!;
   let rows:DataRow[]=[],filtered:DataRow[]=[],offset=0,timer:ReturnType<typeof setTimeout>|undefined;
+  const tables=new WeakMap<ModelPackage,Map<DataSection,DataRow[]>>();
   const section=()=>node<HTMLSelectElement>('[data-section]').value as DataSection;
   const cell=(text:unknown)=>{const td=document.createElement('td');td.textContent=String(text??'—');return td;};
   const render=()=>{
@@ -41,7 +42,7 @@ export function modelDataPanel(getModel:()=>ModelPackage|null,select:(id:string)
     node<HTMLButtonElement>('[data-prev]').disabled=offset===0;node<HTMLButtonElement>('[data-next]').disabled=offset+50>=filtered.length;
   };
   const refresh=()=>{
-    const model=getModel();rows=model?dataRows(model,section()):[];offset=0;
+    const model=getModel();rows=[];if(model){let cached=tables.get(model);if(!cached){cached=new Map();tables.set(model,cached);}let table=cached.get(section());if(!table){table=dataRows(model,section());cached.set(section(),table);}rows=table;}offset=0;
     node('.model-data-summary').textContent=model?`${model.source.filename} · ${model.statistics.physical_elements} элементов · ${model.elements.filter(e=>e.role==='space').length} помещений · ${model.storeys.length} уровней · ${model.systems?.length??0} систем в выгрузке`:'Модель ещё не прочитана. Для RVT без геометрии откройте «Виды и таблицы».';
     node('.model-data-detail').replaceChildren();render();
   };

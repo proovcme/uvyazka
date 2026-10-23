@@ -2,6 +2,7 @@
 import os
 import argparse
 import hashlib
+import gzip
 import html
 import json
 from pathlib import Path
@@ -69,6 +70,12 @@ if __name__ == '__main__':
 <ul>{''.join(links)}<li><a href="https://github.com/proovcme/uvyazka/blob/{revision}/README.md">Инструкция по установке</a></li>
 <li><a href="https://github.com/proovcme/uvyazka/blob/{revision}/docs/RVT_DATA.md">Возможности и ограничения RVT</a></li></ul>
 <p>Версия исходников: <code>{revision}</code>.</p></html>''', encoding='utf-8')
+    # Caddy file_server precompressed gzip avoids recompressing large immutable assets
+    # and streams a known Content-Length. Originals remain available unchanged.
+    for asset in list(output.rglob('*')):
+        if asset.is_file() and asset.suffix in {'.json','.js','.css','.wasm','.bin'} and asset.stat().st_size>=1024:
+            raw=asset.read_bytes();packed=gzip.compress(raw,compresslevel=6,mtime=0)
+            if len(packed)<len(raw)*.9:asset.with_name(asset.name+'.gz').write_bytes(packed)
     files = {p.relative_to(output).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
              for p in sorted(output.rglob('*')) if p.is_file()}
     (output / 'release.json').write_text(json.dumps({'version': version, 'revision': revision,

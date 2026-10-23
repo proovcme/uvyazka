@@ -16,3 +16,15 @@ test('playback pauses and speed only affect the presentation clock',()=>{
  clock.playing=true;clock.rate=10;clock.advance(2);assert.equal(clock.time,1/3);
  clock.seek(200);assert.equal(clock.time,100);clock.advance(1);assert.equal(clock.playing,false);
 });
+test('incremental projection agrees with a fresh replay across forward and backward seeks',()=>{
+ const run={scenario:{resources:[{id:'crew'}],operations:[{id:'a',visual_phase:'work'},{id:'b',visual_phase:'none'}],units:[{id:'u',target_ids:['wall'],operation_ids:['a','b']}]},events:[
+ {time:0,kind:'operation_ready',operation_id:'a'},
+ {time:1,kind:'operation_started',operation_id:'a',resource_id:'crew',used:1},
+ {time:2,kind:'resource_wait',operation_id:'b'},
+ {time:4,kind:'operation_completed',operation_id:'a',resource_id:'crew',used:0},
+ {time:4,kind:'operation_started',operation_id:'b'},
+ {time:5,kind:'operation_completed',operation_id:'b'}]};
+ const first=projectState(run,1);
+ for(const tick of [1,2,4,5,9,0,4,1,5])assert.deepEqual(projectState(run,tick),projectState(structuredClone(run),tick));
+ assert.equal(first.states.get('a'),'running');assert.equal(first.resources.get('crew'),1);
+});

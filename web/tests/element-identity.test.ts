@@ -15,3 +15,11 @@ test('search includes parameters and linked systems; exact Revit query excludes 
   assert.equal(elementMatches(item,model,'revit:9007199254740993'),true);assert.equal(elementMatches(item,model,'revit:44'),false);
   assert.equal(matchesDataQuery({revit_identity:elementIdentity(item)},'revit:9007199254740993'),true);
 });
+test('repeated data search serializes a revision record only once and a new revision gets a new index',()=>{
+  let reads=0;const record={get description(){reads++;return 'Насос 15 кВт';}};
+  assert.equal(matchesDataQuery(record,'насос'),true);
+  assert.equal(matchesDataQuery(record,'15 кВт'),true);
+  assert.equal(matchesDataQuery(record,'вентилятор'),false);
+  assert.equal(reads,1);
+  assert.equal(matchesDataQuery({description:'Вентилятор'},'вентилятор'),true);
+});

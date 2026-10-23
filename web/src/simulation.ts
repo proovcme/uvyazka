@@ -32,24 +32,31 @@ export interface RunPackage {
   operation_states: Record<string, { status: string; start: number; finish: number }>;
   duration: number; status: string;
 }
+const projections=new WeakMap<RunPackage,{tick:number;cursor:number;states:Map<string,string>;resources:Map<string,number>;operations:Map<string,Operation>}>();
 export function projectState(run: RunPackage, tick: number) {
-  const states = new Map<string, string>();
-  const resources = new Map(run.scenario.resources.map((resource) => [resource.id, 0]));
-  for (const event of run.events) {
-    if (event.time > tick) break;
-    if (event.kind === 'operation_ready') states.set(event.operation_id!, 'ready');
-    if (event.kind === 'resource_wait') states.set(event.operation_id!, 'waiting');
-    if (event.kind === 'operation_started') states.set(event.operation_id!, 'running');
-    if (event.kind === 'operation_completed') states.set(event.operation_id!, 'completed');
-    if (event.resource_id && event.used !== undefined) resources.set(event.resource_id, event.used);
+  let projection=projections.get(run);
+  if(!projection||tick<projection.tick){
+    projection={tick:-Infinity,cursor:0,states:new Map(),resources:new Map(run.scenario.resources.map(r=>[r.id,0])),operations:new Map(run.scenario.operations.map(o=>[o.id,o]))};
+    projections.set(run,projection);
   }
+  while(projection.cursor<run.events.length&&run.events[projection.cursor].time<=tick){
+    const event=run.events[projection.cursor++];
+    if (event.kind === 'operation_ready') projection.states.set(event.operation_id!, 'ready');
+    if (event.kind === 'resource_wait') projection.states.set(event.operation_id!, 'waiting');
+    if (event.kind === 'operation_started') projection.states.set(event.operation_id!, 'running');
+    if (event.kind === 'operation_completed') projection.states.set(event.operation_id!, 'completed');
+    if (event.resource_id && event.used !== undefined) projection.resources.set(event.resource_id, event.used);
+  }
+  projection.tick=tick;
+  // Callers receive independent snapshots; seeking cannot mutate earlier results.
+  const states=new Map(projection.states),resources=new Map(projection.resources);
   const active = run.scenario.operations.filter((operation) => states.get(operation.id) === 'running');
   const waiting = run.scenario.operations.filter((operation) => states.get(operation.id) === 'waiting');
   const completed = [...states.values()].filter((state) => state === 'completed').length;
   const construction = new Map<string, 'future' | 'active' | 'complete' | 'absent'>();
   for (const id of run.scenario.initial_element_ids ?? []) construction.set(id, 'complete');
   for (const id of run.scenario.excluded_element_ids ?? []) construction.set(id, 'absent');
-  const operations = new Map(run.scenario.operations.map((operation) => [operation.id, operation]));
+  const operations = projection.operations;
   for (const unit of run.scenario.units) {
     const complete = unit.operation_ids.length > 0 && unit.operation_ids.every(id => states.get(id) === 'completed');
     const started = unit.operation_ids.some((id) => {

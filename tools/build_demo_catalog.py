@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def write(path, value):
-    path.write_text(json.dumps(value, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+    path.write_text(json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(',',':')), encoding='utf-8')
 
 
 def prepare():

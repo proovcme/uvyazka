@@ -14,6 +14,7 @@ from build_demo_catalog import export as export_catalog
 from build_cad_viewer import build as build_cad_viewer
 
 ROOT = Path(__file__).resolve().parents[1]
+PORTABLE_CSP="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'"
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
@@ -70,6 +71,15 @@ if __name__ == '__main__':
 <ul>{''.join(links)}<li><a href="https://github.com/proovcme/uvyazka/blob/{revision}/README.md">Инструкция по установке</a></li>
 <li><a href="https://github.com/proovcme/uvyazka/blob/{revision}/docs/RVT_DATA.md">Возможности и ограничения RVT</a></li></ul>
 <p>Версия исходников: <code>{revision}</code>.</p></html>''', encoding='utf-8')
+    # Pages has no custom HTTP security headers. Keep the executable-content policy
+    # in each HTML document as well; frame-ancestors still requires the VPS header.
+    for document in output.rglob('*.html'):
+        markup=document.read_text(encoding='utf-8')
+        marker='<meta http-equiv="Content-Security-Policy" content="'+html.escape(PORTABLE_CSP,quote=True)+'">'
+        if '<head>' in markup:markup=markup.replace('<head>','<head>'+marker,1)
+        elif '<meta charset="utf-8">' in markup:markup=markup.replace('<meta charset="utf-8">','<meta charset="utf-8">'+marker,1)
+        else:raise ValueError('No policy insertion point in '+str(document))
+        document.write_text(markup,encoding='utf-8')
     # Caddy file_server precompressed gzip avoids recompressing large immutable assets
     # and streams a known Content-Length. Originals remain available unchanged.
     for asset in list(output.rglob('*')):

@@ -132,7 +132,7 @@ function renderState() {
 async function loadProject(id:string,skipModel=false) {
   measurementProject=id;
   ++sceneVersion;sceneMembers=[];renderMembers();++generation; ++modelGeneration; touring=false;el('tour').setAttribute('aria-pressed','false'); if(clock) clock.playing=false; project=id; el('error').hidden=true;
-  el<HTMLAnchorElement>('back').href=DEMO?'/':'/?project='+encodeURIComponent(id); if(DEMO)el('back').textContent='locia.work ↗'; if(!DEMO)el<HTMLAnchorElement>('memory-link').href=el<HTMLAnchorElement>('back').href;
+  el<HTMLAnchorElement>('back').href=DEMO?'https://locia.work/':'/?project='+encodeURIComponent(id); if(DEMO)el('back').textContent='locia.work ↗'; if(!DEMO)el<HTMLAnchorElement>('memory-link').href=el<HTMLAnchorElement>('back').href;
   el('measurement-link').hidden=DEMO;
   if(!DEMO)el<HTMLAnchorElement>('measurement-link').href='/measurements/?project='+encodeURIComponent(id);
   history.replaceState(null,'','?project='+encodeURIComponent(id));

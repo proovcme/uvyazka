@@ -22,7 +22,7 @@ class StaticDeployTests(unittest.TestCase):
         (self.root / 'current').symlink_to(self.previous)
         self.files = {'index.html': b'public page', 'runtime/rvt/uvyazka_rvt_browser_bg.wasm': b'test wasm', 'cad/index.html': b'cad'}
         self.revision = 'a' * 40
-        self.manifest = {'revision': self.revision, 'version': 'test', 'mode': 'browser-compute-and-synthetic-demo',
+        self.manifest = {'revision': self.revision, 'version': 'test', 'mode': 'browser-compute-and-public-examples',
                          'server_file_upload': False, 'browser_file_open': True,
                          'files_sha256': {k: hashlib.sha256(v).hexdigest() for k, v in self.files.items()}}
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {elementIdentity,elementMatches,matchesDataQuery} from '../src/element-identity.ts';
+import {elementIdentity,elementMatches,matchesDataQuery,elementLabelMatches} from '../src/element-identity.ts';
 import type {BimElement,ModelPackage} from '../src/model.ts';
 const e=(properties={})=>({id:'scene:44',name:'Насос',global_id:'ifc-global',class:'IfcPump',property_sets:properties,materials:['Сталь'],storey_id:'level',revit:{element_id:'9007199254740993',unique_id:'native-unique',phase_status:'unavailable'}} as unknown as BimElement);
 test('Revit IDs preserve exact strings and never fall back to IFC or scene IDs',()=>{
@@ -22,4 +22,15 @@ test('repeated data search serializes a revision record only once and a new revi
   assert.equal(matchesDataQuery(record,'вентилятор'),false);
   assert.equal(reads,1);
   assert.equal(matchesDataQuery({description:'Вентилятор'},'вентилятор'),true);
+});
+test('simple finder matches names, family/type and exact IDs, excluding unrelated numeric quantities',()=>{
+ const item={...e({Technical:{Power:812345,Family:'Grundfos',Type:'CR-15'}}),step_id:44};
+ assert.equal(elementLabelMatches(item,'насос'),true);
+ assert.equal(elementLabelMatches(item,'Grundfos CR-15'),true);
+ assert.equal(elementLabelMatches(item,'IfcPump'),true);
+ assert.equal(elementLabelMatches(item,'#44'),true);
+ assert.equal(elementLabelMatches(item,'#scene:44'),true);
+ assert.equal(elementLabelMatches(item,'revit:9007199254740993'),true);
+ assert.equal(elementLabelMatches(item,'812345'),false);
+ assert.equal(elementLabelMatches(item,'#4'),false);
 });

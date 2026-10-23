@@ -14,11 +14,15 @@ import { workScenes } from './scenes';
 import {rvtDocumentPanel} from './rvt-document-panel';
 import {viewOrientation} from './rvt-document';
 import {modelDataPanel} from './model-data-panel';
-import {elementIdentity,elementMatches} from './element-identity';
+import {elementIdentity,elementLabelMatches} from './element-identity';
 import {installPropertyCopy,copyValue} from './copy-properties';
+import {ModelVisibility} from './model-visibility';
+import {modelTreePanel} from './model-tree-panel';
+import {parameterCatalog,parameterMatches} from './parameter-search';
+import type {ParameterOperator} from './parameter-search';
 const DEMO = import.meta.env.VITE_UVYAZKA_DEMO === '1';
 import { Viewer } from './viewer';
-import type { ModelPackage } from './model';
+import type { BimElement,ModelPackage } from './model';
 import { PlaybackClock, projectState } from './simulation';
 import type { RunPackage } from './simulation';
 
@@ -35,7 +39,9 @@ let sceneVersion=0;
 let requestedModel = new URL(location.href).searchParams.get('model') || '';
 let requestedRun = new URL(location.href).searchParams.get('run') || '';
 let viewer: Viewer | null = null, model: ModelPackage | null = null, run: RunPackage | null = null, clock: PlaybackClock | null = null, frame = 0, last = 0, generation = 0, modelGeneration = 0;
+const visibility=new ModelVisibility();let visibilityModelId='',treeItems:BimElement[]=[];
 document.getElementById('app')!.innerHTML = workspaceShell;
+const tree=modelTreePanel(el('element-tree'),visibility,{select:id=>{selectElement(id);viewer?.focusTargets([id]);},show:setElementVisibility,isolate:isolateElements});
 initTheme();
 installPropertyCopy();
 modelDataPanel(()=>model,id=>{selectElement(id);viewer?.focusTargets([id]);});
@@ -59,7 +65,10 @@ async function api<T>(route: string): Promise<T> { const response = await fetch(
 function error(e: unknown) { el('error').hidden = false; el('error').textContent = e instanceof Error ? e.message : String(e); }
 function selectElement(id: string | null) {
   selectedId=id;el('resources').innerHTML='';
+  el('selected-visibility-actions').hidden=!id;
+  if(id){tree.reveal(id);el<HTMLButtonElement>('show-selected').disabled=false;el<HTMLButtonElement>('hide-selected').disabled=!visibility.visible(id);}
   viewer?.select(id);document.querySelectorAll<HTMLElement>('.element-item').forEach(row=>row.setAttribute('aria-pressed',String(row.dataset.id===id)));if(id)setPanel('inspector',true); const e = model?.elements.find(e => e.id === id);
+  el('selected-visibility-actions').hidden=!e||e.role!=='element';
   if (!e) { renderState(); return; }
   el('inspector-title').textContent = e.name;
   const identity=elementIdentity(e),systems=elementSystems(model,e.id);
@@ -72,11 +81,11 @@ try { viewer = new Viewer(el('canvas'), selectElement); } catch(e) { error('3D �
 const spatial=spatialPanel(viewer,()=>model,()=>measurementProject,error);
 el('canvas').addEventListener('viewer-error', ((e: CustomEvent<string>) => error(e.detail)) as EventListener);
 async function loadModel(id: string) {
-  const token = ++modelGeneration; spatial.reset();selectedId=null;viewer?.select(null); viewer?.setSite(null);clipped=false;el('cut-controls').hidden=true;el('cut').setAttribute('aria-pressed','false');el('xray').setAttribute('aria-pressed','false');
-  if (!id) { model = null;loadedBinary=null;el('file-title').textContent='Модель не выбрана'; el('no-model').hidden = false; el('geometry-kind').textContent = 'Без геометрии'; viewer?.show(new Set<string>());renderModelTree();renderState();return; }
+  const token = ++modelGeneration; spatial.reset();selectedId=null;el('selected-visibility-actions').hidden=true;viewer?.select(null); viewer?.setSite(null);clipped=false;el('cut-controls').hidden=true;el('cut').setAttribute('aria-pressed','false');el('xray').setAttribute('aria-pressed','false');
+  if (!id) { model = null;loadedBinary=null;visibility.reset();visibilityModelId='';el('file-title').textContent='Модель не выбрана'; el('no-model').hidden = false; el('geometry-kind').textContent = 'Без геометрии'; viewer?.show(new Set<string>());renderModelTree();renderState();return; }
   const [pkg, binary] = browserModel?.model_id===id&&browserBinary ? [browserModel,browserBinary] : await Promise.all([api<ModelPackage>('model?model_id=' + encodeURIComponent(id)), fetch(path('geometry.bin?model_id=' + encodeURIComponent(id))).then(async r => {if(!r.ok) throw Error('Не удалось загрузить геометрию');return r.arrayBuffer();})]);
   if (token !== modelGeneration) return;
-  model = pkg;loadedBinary=binary; el("workspace-status").textContent=`${pkg.statistics.physical_elements} элементов · ${pkg.storeys.length} уровней${pkg.source.schema==='SyntheticDemo'?' · Учебная модель':''}`; el("file-title").textContent=pkg.source.filename; renderModelTree(); viewer?.load(pkg,binary); viewer?.setSourceColors(pkg.source.schema!=='SyntheticDemo'); document.dispatchEvent(new Event('model-data-changed')); viewer?.show(new Set(pkg.elements.filter(e => e.role === 'element'&&sceneVisible(e.source_instance_id)).map(e=>e.id))); el('no-model').hidden = true;
+  model = pkg;loadedBinary=binary;if(visibilityModelId!==pkg.model_id){visibility.reset();visibilityModelId=pkg.model_id;visibility.set(pkg.elements.filter(e=>!sceneVisible(e.source_instance_id)).map(e=>e.id),false);} el("workspace-status").textContent=`${pkg.statistics.physical_elements} элементов · ${pkg.storeys.length} уровней${pkg.source.schema==='SyntheticDemo'?' · Учебная модель':''}`; el("file-title").textContent=pkg.source.filename; renderModelTree(); viewer?.load(pkg,binary); viewer?.setSourceColors(pkg.source.schema!=='SyntheticDemo'); document.dispatchEvent(new Event('model-data-changed')); applySceneVisibility(); el('no-model').hidden = true;
   el('geometry-kind').textContent = pkg.source.schema === 'SyntheticDemo' ? 'Синтетическая сводная модель · АР + ОВ' : pkg.source.schema === 'DocumentSpatialModel' ? 'Условная геометрия по документам' : pkg.federation ? 'Сводная геометрия · совмещение требует проверки' : pkg.source.format==='rvt' ? 'RVT → IFC · экспериментальная геометрия' : 'Геометрия IFC'; renderState();
 }
 async function loadRun(id: string) {
@@ -199,12 +208,12 @@ function setMode(mode:'view'|'simulate') {
   el('mode-view').setAttribute('aria-pressed',String(mode==='view'));el('mode-simulate').setAttribute('aria-pressed',String(mode==='simulate'));
   if(clock)clock.playing=false;touring=false;last=0;cancelAnimationFrame(frame);el('tour').setAttribute('aria-pressed','false');
   setPanel('tree',!matchMedia('(max-width: 650px)').matches);setPanel('inspector',!matchMedia('(max-width: 950px)').matches);
-  if(mode==='simulate')viewer?.show(new Set(model?.elements.filter(e=>e.role==='element'&&sceneVisible(e.source_instance_id)).map(e=>e.id)??[]));
-  renderState();if(mode==='view'){applySceneVisibility();viewer?.fit();}
+  applySceneVisibility();
+  renderState();if(mode==='view')viewer?.fit();
 }
 el('mode-view').onclick=()=>setMode('view');el('mode-simulate').onclick=()=>setMode('simulate');
 function sceneVisible(instance:string|undefined){return !instance?(sceneMembers.length!==1||sceneMembers[0].visible):sceneMembers.find(m=>m.instanceId===instance)?.visible!==false;}
-function applySceneVisibility(){const floor=el<HTMLSelectElement>('storey-filter').value,system=el<HTMLSelectElement>('system-filter').value,only=el<HTMLInputElement>('system-only').checked,members=systemMembers(model,system);viewer?.show(new Set((model?.elements??[]).filter(e=>e.role==='element'&&sceneVisible(e.source_instance_id)&&(!floor||e.storey_id===floor)&&(!system||!only||members.has(e.id))).map(e=>e.id)));viewer?.highlightElements(members);renderElements();}
+function applySceneVisibility(){const floor=el<HTMLSelectElement>('storey-filter').value,system=el<HTMLSelectElement>('system-filter').value,only=el<HTMLInputElement>('system-only').checked,members=systemMembers(model,system);viewer?.show(new Set((model?.elements??[]).filter(e=>e.role==='element'&&visibility.visible(e.id)&&(!floor||e.storey_id===floor)&&(!system||!only||members.has(e.id))).map(e=>e.id)));viewer?.highlightElements(members);renderElements();}
 async function presentMembers(members:SceneMember[]){
   const version=++sceneVersion;
   if(!members.length){sceneMembers=[];browserModel=null;browserBinary=null;browserRun=null;await loadRun('');await loadModel('');renderMembers();document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:null}));return;}
@@ -224,9 +233,9 @@ function renderMembers(){
   for(const member of sceneMembers){
     const row=document.createElement('details');row.className='scene-member';
     const summary=document.createElement('summary');summary.textContent=member.model.source.filename;row.append(summary);
-    const visible=document.createElement('input');visible.type='checkbox';visible.checked=member.visible;
+    const visible=document.createElement('input');visible.type='checkbox';const ids=memberElementIds(member.instanceId);const state=visibility.count(ids);visible.checked=state.checked;visible.indeterminate=state.mixed;
     const label=document.createElement('label');label.className='check';label.append(visible,document.createTextNode('Показывать модель'));row.append(label);
-    visible.onchange=()=>{member.visible=visible.checked;applySceneVisibility();};
+    visible.onchange=()=>{member.visible=visible.checked;setElementVisibility(ids,visible.checked);};
     const coords=document.createElement('div');coords.className='placement-fields';const inputs:HTMLInputElement[]=[];
     for(const [i,name] of ['X, м','Y, м','Z, м','Угол Z, °'].entries()){const field=document.createElement('label');field.textContent=name;const input=document.createElement('input');input.type='number';input.step='any';input.value=String(i<3?member.offset[i]:member.rotation);input.setAttribute('aria-label',name+' · '+member.model.source.filename);inputs.push(input);field.append(input);coords.append(field);}row.append(coords);
     const apply=document.createElement('button');apply.textContent='Применить размещение';apply.onclick=()=>{const values=inputs.map(i=>i.value.trim()===''?NaN:Number(i.value));if(!values.every(Number.isFinite)){error('Заполните X, Y, Z и угол конечными числами');return;}void presentMembers(sceneMembers.map(m=>m===member?{...m,offset:[values[0],values[1],values[2]],rotation:values[3]}:m)).then(()=>document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:browserModel}))).catch(error);};row.append(apply);
@@ -235,6 +244,8 @@ function renderMembers(){
   }
 }
 function renderModelTree() {
+  el('parameter-names').replaceChildren(...(model&&(el('parameter-search-details') as HTMLDetailsElement).open?parameterCatalog(model):[]).map(name=>new Option(name,name)));
+  el<HTMLInputElement>('parameter-name').value='';el<HTMLInputElement>('parameter-value').value='';
   const storey=el<HTMLSelectElement>('storey-filter');storey.replaceChildren(new Option('Все этажи',''),...(model?.storeys??[]).map(s=>new Option(s.name,s.id)));
   const systems=el<HTMLSelectElement>('system-filter');systems.replaceChildren(new Option('Все системы',''),...(model?.systems??[]).map(s=>new Option(`${s.name||s.class} · ${new Set(s.member_ids).size} · #${s.id}`,s.id)));
   el<HTMLInputElement>('system-only').checked=false;viewer?.highlightElements(new Set());renderSystemSummary();
@@ -247,23 +258,45 @@ function renderSystemSummary(){
   host.innerHTML=`<strong>${esc(system.name||system.class)}</strong><p>${coverage.declared} участников в выгрузке · ${coverage.geometry} с геометрией · ${coverage.withoutGeometry} без геометрии · ${coverage.missing} не найдены в модели.</p><p>Бирюзовый цвет — участники системы. Подключение и полнота исходного RVT не подтверждены.</p><details><summary>Свойства системы</summary><button data-copy="${esc(JSON.stringify(system,null,2))}">Копировать свойства системы</button><dl><dt>Класс</dt><dd>${copyValue(system.class)}</dd><dt>ID</dt><dd>${copyValue(system.id)}</dd><dt>GlobalId</dt><dd>${copyValue(system.global_id||'Не прочитан')}</dd><dt>Описание</dt><dd>${copyValue(system.description??'Не прочитано')}</dd></dl><pre>${esc(JSON.stringify(system.property_sets??{},null,2))}</pre></details>`;
 }
 function renderElements() {
-  const query=el<HTMLInputElement>('element-search').value.toLowerCase(),floor=el<HTMLSelectElement>('storey-filter').value;
+  const query=el<HTMLInputElement>('element-search').value.trim(),floor=el<HTMLSelectElement>('storey-filter').value;
   const system=el<HTMLSelectElement>('system-filter').value,members=systemMembers(model,system);
-  const items=(model?.elements??[]).filter(e=>e.role==='element'&&(!system||members.has(e.id))&&(!floor||e.storey_id===floor)&&sceneVisible(e.source_instance_id)&&elementMatches(e,model!,query));
-  const groups=new Map<string,Map<string,typeof items>>();
-  for(const item of items.slice(0,1000)){
-    const floor=item.storey_id||'';if(!groups.has(floor))groups.set(floor,new Map());
-    const classes=groups.get(floor)!;if(!classes.has(item.class))classes.set(item.class,[]);classes.get(item.class)!.push(item);
+  const parameter={name:el<HTMLInputElement>('parameter-name').value,value:el<HTMLInputElement>('parameter-value').value,operator:el<HTMLSelectElement>('parameter-operator').value as ParameterOperator};
+  treeItems=(model?.elements??[]).filter(e=>e.role==='element'&&(!system||members.has(e.id))&&(!floor||e.storey_id===floor)&&elementLabelMatches(e,query)&&parameterMatches(e,parameter));
+  tree.render(model,treeItems,selectedId,!!query||!!parameter.name.trim(),JSON.stringify([query,parameter]));
+  for(const key of ['hide-matches','show-matches','isolate-matches'])el<HTMLButtonElement>(key).disabled=!treeItems.length;
+}
+function memberElementIds(instanceId:string){return (model?.elements??[]).filter(e=>e.role==='element'&&(!e.source_instance_id?sceneMembers.length===1:e.source_instance_id===instanceId)).map(e=>e.id);}
+function syncMemberVisibility(){for(const member of sceneMembers){const ids=memberElementIds(member.instanceId);member.visible=visibility.count(ids).shown>0;}}
+function setElementVisibility(ids:string[],shown:boolean){
+  if(shown&&model){
+    const targets=new Set(ids),elements=model.elements.filter(e=>targets.has(e.id)),floor=el<HTMLSelectElement>('storey-filter'),system=el<HTMLSelectElement>('system-filter');
+    if(floor.value&&elements.some(e=>e.storey_id!==floor.value))floor.value='';
+    if(system.value){const members=systemMembers(model,system.value);if(elements.some(e=>!members.has(e.id))){system.value='';el<HTMLInputElement>('system-only').checked=false;renderSystemSummary();}}
   }
-  el('element-tree').innerHTML=`<p>${items.length} элементов${items.length>1000?' · первые 1000; уточните поиск':''}</p>`+[...groups].map(([floor,classes])=>`<details class="tree-storey" open><summary>${esc(model?.storeys.find(s=>s.id===floor)?.name||'Без этажа')}<small>${[...classes.values()].flat().length}</small></summary>${[...classes].map(([type,elements])=>`<details class="tree-class" ${query||elements.some(e=>e.id===selectedId)||items.length<60?'open':''}><summary>${esc(type)} · ${elements.length}</summary>${elements.map(e=>`<button class="element-item" aria-pressed="${e.id===selectedId}" data-id="${esc(e.id)}">${icon('cube')}<span><strong>${esc(e.name||e.id)}</strong><small>${esc(e.class)}</small></span></button>`).join('')}</details>`).join('')}</details>`).join('');
+  visibility.set(ids,shown);syncMemberVisibility();applySceneVisibility();renderMembers();
+  if(selectedId){el<HTMLButtonElement>('show-selected').disabled=false;el<HTMLButtonElement>('hide-selected').disabled=!visibility.visible(selectedId);}
+}
+function isolateElements(ids:string[]){
+  if(!ids.length||!model)return;
+  visibility.isolate(ids,model.elements.filter(e=>e.role==='element').map(e=>e.id));syncMemberVisibility();applySceneVisibility();renderMembers();viewer?.focusTargets(ids);
+  if(selectedId){el<HTMLButtonElement>('show-selected').disabled=false;el<HTMLButtonElement>('hide-selected').disabled=!visibility.visible(selectedId);}
 }
 let searchTimer:ReturnType<typeof setTimeout>|undefined;
-el('element-search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(renderElements,180);};
+const searchChanged=()=>{clearTimeout(searchTimer);for(const key of ['hide-matches','show-matches','isolate-matches'])el<HTMLButtonElement>(key).disabled=true;searchTimer=setTimeout(renderElements,180);};
+el('element-search').oninput=searchChanged;el('parameter-name').oninput=searchChanged;el('parameter-value').oninput=searchChanged;
+el('parameter-search-details').addEventListener('toggle',()=>{if((el('parameter-search-details') as HTMLDetailsElement).open&&model)el('parameter-names').replaceChildren(...parameterCatalog(model).map(name=>new Option(name,name)));});
+el('parameter-operator').onchange=()=>{el<HTMLInputElement>('parameter-value').disabled=['exists','missing'].includes(el<HTMLSelectElement>('parameter-operator').value);renderElements();};
+el('clear-parameter').onclick=()=>{el<HTMLInputElement>('parameter-name').value='';el<HTMLInputElement>('parameter-value').value='';renderElements();};
+el('hide-matches').onclick=()=>setElementVisibility(treeItems.map(e=>e.id),false);
+el('show-matches').onclick=()=>setElementVisibility(treeItems.map(e=>e.id),true);
+el('isolate-matches').onclick=()=>isolateElements(treeItems.map(e=>e.id));
+el('hide-selected').onclick=()=>{if(selectedId)setElementVisibility([selectedId],false);};
+el('show-selected').onclick=()=>{if(selectedId)setElementVisibility([selectedId],true);};
+el('isolate-selected').onclick=()=>{if(selectedId)isolateElements([selectedId]);};
 el('storey-filter').onchange=applySceneVisibility;
 el('system-filter').onchange=()=>{selectElement(null);renderSystemSummary();applySceneVisibility();};
 el('system-only').onchange=applySceneVisibility;
-el('reset-visibility').onclick=()=>{clipped=false;updateCut();el<HTMLSelectElement>('storey-filter').value='';el<HTMLSelectElement>('system-filter').value='';el<HTMLInputElement>('system-only').checked=false;el<HTMLInputElement>('element-search').value='';renderSystemSummary();applySceneVisibility();viewer?.fit();};
-el('element-tree').onclick=event=>{const id=(event.target as HTMLElement).closest<HTMLElement>('[data-id]')?.dataset.id;if(id){selectElement(id);viewer?.focusTargets([id]);}};
+el('reset-visibility').onclick=()=>{visibility.reset();sceneMembers.forEach(m=>m.visible=true);clipped=false;updateCut();el<HTMLSelectElement>('storey-filter').value='';el<HTMLSelectElement>('system-filter').value='';el<HTMLInputElement>('system-only').checked=false;el<HTMLInputElement>('element-search').value='';el<HTMLInputElement>('parameter-name').value='';el<HTMLInputElement>('parameter-value').value='';el<HTMLSelectElement>('parameter-operator').value='contains';el<HTMLInputElement>('parameter-value').disabled=false;renderSystemSummary();applySceneVisibility();renderMembers();if(selectedId){el<HTMLButtonElement>('show-selected').disabled=false;el<HTMLButtonElement>('hide-selected').disabled=false;}viewer?.fit();};
 let cadPending:((reason?:string)=>void)|null=null;
 function closeCad(){cadPending?.('Загрузка отменена');cadPending=null;cadFrame?.remove();cadFrame=null;el('cad-host').hidden=true;el('canvas').hidden=false;document.body.classList.remove('cad-open');el<HTMLButtonElement>('mode-simulate').disabled=false;}
 async function openCad(file:File) {

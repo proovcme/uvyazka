@@ -1,0 +1,46 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {build} from 'esbuild';
+import {Window} from 'happy-dom';
+import {fileURLToPath} from 'node:url';
+
+test('workspace wires simple/parameter search, hidden rows, selection, reset and reload to the renderer',async t=>{
+ const win=new Window({url:'http://localhost/simulation/?project=test'});
+ t.after(()=>win.happyDOM.close());
+ for(const name of ['document','location','history','Option','CustomEvent','Event','localStorage'])Object.defineProperty(globalThis,name,{value:win[name],writable:true,configurable:true});
+ globalThis.window=win;globalThis.matchMedia=win.matchMedia.bind(win);globalThis.requestAnimationFrame=win.requestAnimationFrame.bind(win);globalThis.cancelAnimationFrame=win.cancelAnimationFrame.bind(win);
+ document.body.innerHTML='<div id="app"></div>';
+ globalThis.Option=function(text,value){const option=document.createElement('option');option.textContent=text;option.value=value;return option;};
+ const make=(id,name,power,storey)=>({id,step_id:Number(id),name,role:'element',storey_id:storey,class:'IfcPump',materials:[],global_id:'gid-'+id,property_sets:{Technical:{Power:power}},quantity_sets:{},mesh:{},source:{}});
+ const model={model_id:'sample',contract:'ModelPackage',source:{filename:'sample.ifc',schema:'IFC2X3',sha256:'sample-source'},statistics:{physical_elements:3,meshes:3},storeys:[{id:'L1',name:'Первый'},{id:'L2',name:'Второй'}],systems:[],elements:[make('1','Насос A',15,'L1'),make('2','Насос B',5,'L1'),make('3','Установка',812345,'L2')]};
+ globalThis.fetch=async input=>{
+  const url=new URL(String(input),'http://localhost');
+  if(url.pathname.endsWith('/geometry.bin'))return new Response(new ArrayBuffer(4));
+  let body;if(url.pathname==='/api/projects')body={projects:[{id:'test',name:'Test'}],default_project:'test'};
+  else if(url.pathname.endsWith('/models'))body={items:[{model_id:'sample',name:'sample'}]};
+  else if(url.pathname.endsWith('/runs'))body={items:[]};
+  else if(url.pathname.endsWith('/model'))body=model;
+  else throw Error('Unexpected fixture URL '+url);
+  return new Response(JSON.stringify(body),{headers:{'Content-Type':'application/json'}});
+ };
+ const result=await build({entryPoints:[fileURLToPath(new URL('../src/main.ts',import.meta.url))],bundle:true,write:false,format:'esm',loader:{'.css':'empty'},define:{'import.meta.env.VITE_UVYAZKA_DEMO':'"0"'},plugins:[{name:'presentation-stubs',setup(build){
+  build.onResolve({filter:/^\.\/viewer$/},()=>({path:'viewer',namespace:'fixture'}));
+  build.onResolve({filter:/^\.\/spatial-panel$/},()=>({path:'spatial',namespace:'fixture'}));
+  build.onLoad({filter:/.*/,namespace:'fixture'},args=>({contents:args.path==='spatial'?'export const spatialPanel=()=>({reset(){}});':`export class Viewer { constructor(){globalThis.__workspaceViewer=this;return new Proxy(this,{get:(o,k)=>k in o?o[k]:()=>{}});} visible=[];loads=0;load(){this.loads++;}show(ids){this.visible=[...ids];} }`,loader:'js'}));
+ }}]});
+ await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
+ const node=id=>document.getElementById(id),wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+ const until=async predicate=>{for(let i=0;i<100&&!predicate();i++)await wait(10);assert.ok(predicate());};
+ await until(()=>globalThis.__workspaceViewer.visible.length===3||!node('error').hidden);assert.equal(node('error').hidden,true,node('error').textContent);assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);
+ node('element-search').value='Насос A';node('element-search').dispatchEvent(new win.Event('input'));assert.equal(node('hide-matches').disabled,true);await wait(220);
+ assert.equal(document.querySelectorAll('.element-item').length,1);
+ node('hide-matches').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['2','3']);assert.equal(document.querySelectorAll('.element-item').length,1);
+ node('show-matches').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);
+ document.querySelector('.element-item').click();node('hide-selected').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['2','3']);
+ const loads=globalThis.__workspaceViewer.loads;node('models').dispatchEvent(new win.Event('change'));await until(()=>globalThis.__workspaceViewer.loads>loads);assert.deepEqual(globalThis.__workspaceViewer.visible,['2','3']);
+ node('reset-visibility').click();node('parameter-name').value='Power';node('parameter-operator').value='gte';node('parameter-value').value='10';node('parameter-operator').dispatchEvent(new win.Event('change'));
+ assert.equal(document.querySelectorAll('.element-item').length,2);node('isolate-matches').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','3']);
+ node('reset-visibility').click();node('element-search').value='Насос A';node('element-search').dispatchEvent(new win.Event('input'));await wait(220);document.querySelector('.element-item').click();
+ node('storey-filter').value='L2';node('storey-filter').dispatchEvent(new win.Event('change'));assert.deepEqual(globalThis.__workspaceViewer.visible,['3']);node('show-selected').click();assert.equal(node('storey-filter').value,'');assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);
+ node('element-search').value='812345';node('element-search').dispatchEvent(new win.Event('input'));await wait(220);assert.equal(document.querySelectorAll('.element-item').length,0);
+});

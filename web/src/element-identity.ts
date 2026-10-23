@@ -22,6 +22,21 @@ export function matchesDataQuery(record:Record<string,unknown>,query:string){
   const text=searchableText(record);return q.split(/\s+/).every(part=>text.includes(part));
 }
 const indexes=new WeakMap<ModelPackage,Map<string,string>>();
+const labels=new WeakMap<BimElement,string>();
+/** Element finder: names/types and identities, without matches from unrelated quantity values. */
+export function elementLabelMatches(element:BimElement,query:string){
+  const q=query.trim().toLocaleLowerCase();if(!q)return true;
+  const revit=/^revit\s*:\s*(\d+)$/.exec(q);if(revit)return elementIdentity(element).element_id===revit[1];
+  if(q.startsWith('#'))return element.id.toLocaleLowerCase()===q.slice(1)||String(element.step_id)===q.slice(1);
+  let text=labels.get(element);
+  if(text===undefined){
+    const familyTypes:unknown[]=[];
+    for(const fields of Object.values(element.property_sets??{}))for(const [key,value] of Object.entries(fields))if(/family|семейство|^тип(?:оразмер)?$|^type(?: name)?$|typename/i.test(key))familyTypes.push(value);
+    const identity=elementIdentity(element);
+    text=[element.name,element.long_name,element.class,element.id,element.step_id,element.global_id,element.tag,identity.element_id,identity.unique_id,...familyTypes].map(v=>v==null?'':typeof v==='object'?JSON.stringify(v):String(v)).join(' ').toLocaleLowerCase();labels.set(element,text);
+  }
+  return q.split(/\s+/).every(part=>text!.includes(part));
+}
 export function elementMatches(element:BimElement,model:ModelPackage,query:string){
   if(!query.trim())return true;
   const exact=/^revit\s*:\s*(\d+)$/i.exec(query.trim());if(exact)return elementIdentity(element).element_id===exact[1];

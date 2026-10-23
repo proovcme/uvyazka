@@ -378,6 +378,7 @@ export class Viewer {
       const edges=this.edges.get(element.id);
       if(edges){edges.material.opacity=state==='future'?.5:.3;edges.material.color.set(this.selected===element.id||state==='active'?0xefb65e:state==='future'?0x8c9ba8:(this.lightTheme()?0x647586:0x40505c));}
     }
+    if(this.highlight)this.highlight.visible=!!this.selected&&this.meshes.get(this.selected)?.visible===true;
     this.invalidate();
   }
 

@@ -29,6 +29,34 @@ dialog{border:1px solid var(--strong-edge);border-radius:6px;box-shadow:0 20px 8
 
 /* Coordination tools share the existing graphite workbench and amber selection. */
 #scene-members{max-height:45%;overflow:auto;flex-shrink:0;padding:0 16px;border-bottom:1px solid var(--edge)}#scene-members:empty{display:none}#scene-members>p{font-size:11px;color:var(--secondary)}.add-scene-model{width:100%;margin:12px 0}.scene-member{margin:0;padding:10px 0}.scene-member summary{overflow-wrap:anywhere}.scene-member small{display:block;color:var(--muted);font-size:10px;margin-top:8px}.scene-member button{font-size:11px;margin:6px 4px 0 0}.placement-fields{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:8px 0}.placement-fields input{width:100%;min-width:0}.placement-fields label{font-size:10px}#scene-members .check{display:flex;gap:8px;margin-top:10px}#scene-members input[type=checkbox]{width:auto;min-height:0}
+.tree-tools{max-height:48%;overflow:auto;flex-shrink:0}
+.parameter-search{min-width:0;border-bottom:1px solid var(--edge);padding-bottom:8px;font-size:11px}
+.parameter-search summary{padding:5px 0;cursor:pointer;color:var(--ink)}
+.parameter-search label{font-size:11px;margin:8px 0}.parameter-search input{width:100%;font-size:11px}
+.parameter-condition{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px}
+.parameter-condition select{width:100%;font-size:11px;padding:5px}.parameter-search small{display:block;font-size:10px;line-height:1.5;margin-top:6px}
+.parameter-search button{font-size:11px;min-height:28px;padding:4px 0;color:var(--secondary)}
+.tree-match-actions{display:flex;flex-wrap:wrap;gap:2px;padding:6px 10px;border-top:1px solid var(--edge);border-bottom:1px solid var(--edge);flex-shrink:0}
+.tree-match-actions button{font-size:10px;min-height:28px;padding:4px 6px}
+.model-branch{border:0;padding:0;margin:0;min-width:0}
+.model-branch>summary{list-style:none;display:flex;align-items:center;gap:6px;min-height:34px;padding:5px 2px;cursor:pointer;font-size:11px}
+.model-branch>summary::-webkit-details-marker{display:none}
+.model-branch>summary:before{content:'▸';font-size:10px;width:8px;flex-shrink:0;color:var(--muted)}
+.model-branch[open]>summary:before{content:'▾'}
+.model-branch input[type=checkbox],.tree-element-row input[type=checkbox]{width:14px;height:14px;padding:0;margin:0;flex-shrink:0}
+.tree-node-name{min-width:0;overflow-wrap:anywhere;flex:1}
+.model-branch>summary small{font-size:10px;font-variant-numeric:tabular-nums}
+.branch-model>summary{font-weight:500;border-bottom:1px solid var(--edge)}
+.branch-storey,.branch-class{margin-left:10px;padding-left:3px;border-left:1px solid var(--edge)}
+.tree-isolate{font-size:9px;min-height:24px;padding:3px;color:var(--secondary)}
+.tree-element-list{margin-left:8px}.tree-element-row{display:flex;gap:5px;align-items:center;min-width:0}
+.tree-element-row .element-item{min-width:0;min-height:38px;padding:5px 4px;flex:1}
+.tree-element-row .element-item small{display:block;font-size:9px;overflow-wrap:anywhere}
+.tree-element-row[data-visible=false] .element-item{color:var(--muted)}
+.tree-more{font-size:10px;color:var(--amber);white-space:normal;min-height:30px;width:100%}
+.selected-visibility-actions{display:flex;gap:4px;padding:4px 12px 8px;border-bottom:1px solid var(--edge);flex-shrink:0}
+.selected-visibility-actions button{font-size:11px;min-height:30px;padding:4px 8px}
+.cad-open .tree-match-actions,.cad-open .selected-visibility-actions{display:none}
 #cut-controls{width:250px;max-width:calc(100% - 68px)}#cut-controls select{display:inline-block;width:64px;margin-left:12px}#cut-controls button{font-size:11px;width:100%;margin-top:8px}#cut-controls .check{display:flex;align-items:center;gap:8px}#cut-controls input[type=checkbox]{width:auto;min-height:0}
 #measure-controls{position:absolute;bottom:40px;left:16px;width:280px;max-width:calc(100% - 32px);padding:14px;background:var(--panel);border:1px solid var(--strong-edge);box-shadow:0 8px 32px #0005;border-radius:4px;font-size:12px}#measure-controls strong{font:500 17px var(--technical)}#measure-controls p{color:var(--amber);font-variant-numeric:tabular-nums}#measure-controls small{display:block;color:var(--secondary);font-size:10px;margin-top:10px}.measure-actions{display:flex;gap:6px;margin-top:10px}.measure-actions button{padding:6px 8px;font-size:11px}.cad-open #measure,.cad-open #measure-controls{display:none}
 /* Model loading remains the primary action with and without a scene. */

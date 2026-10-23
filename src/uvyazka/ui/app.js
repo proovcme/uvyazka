@@ -26,7 +26,7 @@ function locatorName(l) {
   return 'Строка: ' + (l.line || l.row || '—');
 }
 let current = '', projects = [], facts = [], checks = [], status = {}, view = 'overview', offset = 0, timer, generation = 0, resultGeneration = 0;
-const routes = {overview:'Обзор проекта',facts:'Все показатели',rooms:'Помещения',capacity:'ТУ и мощности',quantities:'Объёмы и материалы',finance:'Финансы',checks:'Сопоставления',coordination:'Увязка разделов',rvt:'Загрузить RVT',simulation:'График и модель',measurements:'Лист и измерения',documents:'Документы',search:'Поиск по тексту',portfolio:'Все проекты'};
+const routes = {overview:'Обзор проекта',facts:'Все показатели',rooms:'Помещения',capacity:'ТУ и мощности',quantities:'Объёмы и материалы',finance:'Финансы',checks:'Сопоставления',coordination:'Увязка разделов',rvt:'Загрузить RVT',simulation:'График и модель',measurements:'Лист и измерения',documents:'Документы',search:'Поиск по тексту',intake:'Приём проектов',portfolio:'Все проекты'};
 function url(path) { const u = new URL(path, location.origin); u.searchParams.set('project_id', current); return u.pathname + u.search; }
 async function api(path) { const r = await fetch(path === '/api/projects' ? path : url(path)); const d = await r.json(); if (!r.ok) throw Error(d.error); return d; }
 function badge(s) { return `<span class="badge ${esc(s)}">${esc(statusNames[s] || s)}</span>`; }
@@ -48,9 +48,12 @@ async function loadProject(id) {
 }
 async function route() {
   view = location.hash.slice(1) || 'overview'; if (!routes[view]) view = 'overview'; offset = 0;
+  if (!current && view !== 'portfolio') view = 'intake';
   $('#page-title').textContent = routes[view];
+  $('.heading p').textContent = view === 'intake' ? 'Папка или ZIP — единая память для человека и модели.' : 'Показатели и их основания в исходных документах.';
   $('#navigation').innerHTML = Object.entries(routes).map(([key,title]) => `<a href="#${key}" class="nav-item ${key === view ? 'active' : ''}">${esc(title)}</a>`).join('');
   $('#section-select').innerHTML = Object.entries(routes).map(([key,title]) => `<option value="${key}" ${key === view ? 'selected' : ''}>${esc(title)}</option>`).join('');
+  if(view==='intake'){await window.UvyazkaIntake.mount($('#view'),{projectsChanged:refreshProjects,openProject:async id=>{await refreshProjects();history.replaceState(null,'','#overview');await loadProject(id);}});return;}
   if(view==='rvt'){await window.UvyazkaRvt.mount(current,$('#view'));return;}
   if(view==='measurements'){
     $('#view').innerHTML=panel('Измерения по отдельным видам',`<div class="detail-info"><p>Выберите PDF, выделите вид, задайте контрольный размер и обведите длину или площадь. Контуры, источники и ревизии сохраняются в той же базе, с которой работает агент.</p><a class="button" href="/measurements/?project=${encodeURIComponent(current)}">Открыть лист и измерения →</a><p>Смена масштаба требует явного пересчёта. Числа без актуального основания помечаются вопросом.</p></div>`);return;
@@ -123,4 +126,16 @@ $('#project-select').addEventListener('change', e => loadProject(e.target.value)
 $('#section-select').addEventListener('change', e => location.hash = e.target.value);
 $('#close-detail').addEventListener('click', () => $('#detail').close());
 window.addEventListener('hashchange', () => route().catch(showError));
-(async () => { try { const data = await api('/api/projects'); projects = data.projects; if (!projects.length) {$('#coverage').textContent='Проекты не зарегистрированы.';$('#view').innerHTML='<div class="empty">Для начала выполните uvyazka demo или зарегистрируйте свою папку командой add-project.</div>';return;} $('#project-select').innerHTML=projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''); await loadProject(new URL(location.href).searchParams.get('project') || data.default_project); } catch(e) {showError(e);} })();
+async function refreshProjects() {
+  const data=await api('/api/projects'); projects=data.projects;
+  $('#project-select').innerHTML=projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+  $('#project-select').disabled=!projects.length;
+  if(current)$('#project-select').value=current;
+  return data;
+}
+(async () => { try {
+  const data=await refreshProjects();
+  if(!projects.length){$('#coverage').textContent='Добавьте проект через папку или ZIP. Он будет доступен вам и модели через MCP.';await route();return;}
+  const requested=new URL(location.href).searchParams.get('project');
+  await loadProject(projects.some(p=>p.id===requested)?requested:data.default_project);
+} catch(e){showError(e);} })();

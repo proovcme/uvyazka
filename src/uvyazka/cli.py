@@ -1,4 +1,4 @@
-"""Explicit local setup/intake; MCP clients do not receive arbitrary filesystem registration."""
+"""Explicit local setup and intake; UI/MCP share the same project service."""
 from __future__ import annotations
 
 import argparse

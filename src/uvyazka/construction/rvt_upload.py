@@ -29,7 +29,7 @@ class RvtUploads:
         return path
 
     def runtime(self):
-        status=converter_status()
+        status=converter_status(self.workspace.home)
         return {'upload_token':self.token,'max_bytes':MAX_UPLOAD,'requires_revit':False,
             'data_ready':status['binaries']['ifccs-rvt-metadata']['available'],
             'geometry_ready':status['available'] and importlib.util.find_spec('ifcopenshell') is not None,

@@ -13,7 +13,7 @@ from .readers import READER_REVISION, SUPPORTED, read_blocks, revision_for
 IGNORE = {".git", ".venv", "venv", "envs", "node_modules", "__pycache__", "cache", "backups", "artifacts"}
 
 
-def scan(workspace: Workspace, project_id: str, limit: int = 100) -> dict:
+def scan(workspace: Workspace, project_id: str, limit: int = 100, *, retry_failed: bool = True, progress=None) -> dict:
     if not 1 <= limit <= 10000:
         raise ValueError("limit must be 1–10000")
     root = Path(workspace.project(project_id)["source_root"])
@@ -37,6 +37,8 @@ def scan(workspace: Workspace, project_id: str, limit: int = 100) -> dict:
         seen = set()
         for path in sorted(candidates):
             relative = path.relative_to(root).as_posix()
+            if progress:
+                progress(phase="inventory", current_document=relative, total_files=len(candidates), inventoried=len(seen))
             doc_id = uuid5(NAMESPACE_URL, project_id + "/" + relative).hex
             seen.add(doc_id); stat = path.stat()
             row = db.execute("select * from documents where doc_id=?", (doc_id,)).fetchone()
@@ -44,7 +46,9 @@ def scan(workspace: Workspace, project_id: str, limit: int = 100) -> dict:
             supported = path.suffix.lower() in SUPPORTED
             revision = revision_for(path.suffix.lower())
             sha = digest(path) if supported and stat.st_size <= 64 * 1024 * 1024 else None
-            unchanged = row and row["sha256"] == sha and (row["parser_revision"] == revision or (row["parser_revision"] or "").startswith(revision + ".ocr.")) and row["index_status"] == "text_indexed"
+            same_content = row and row["sha256"] == sha and (sha is not None or (row["size_bytes"], row["mtime_ns"]) == (stat.st_size, stat.st_mtime_ns))
+            stable_status = row and (row["index_status"] == "text_indexed" or not retry_failed and row["index_status"] in {"parse_failed", "empty_text", "unsupported"})
+            unchanged = same_content and (row["parser_revision"] == revision or (row["parser_revision"] or "").startswith(revision + ".ocr.")) and stable_status
             if unchanged:
                 db.execute("update documents set size_bytes=?,mtime_ns=? where doc_id=?", (stat.st_size, stat.st_mtime_ns, doc_id))
                 continue
@@ -74,6 +78,8 @@ def scan(workspace: Workspace, project_id: str, limit: int = 100) -> dict:
     processed = []; errors = []
     for doc_id, path, sha, revision in pending[:limit]:
         try:
+            if progress:
+                progress(phase="indexing", current_document=path.relative_to(root).as_posix(), batch_total=min(limit, len(pending)), batch_processed=len(processed)+len(errors))
             before = path.stat()
             if sha is None:
                 raise ValueError("Source exceeds 64 MiB")

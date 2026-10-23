@@ -32,7 +32,7 @@ from uvyazka.core import Workspace
 from uvyazka.server import build_server
 with tempfile.TemporaryDirectory() as directory:
     server = build_server(Workspace(Path(directory)/'state'))
-    assert len(asyncio.run(server.list_tools())) == 63
+    assert len(asyncio.run(server.list_tools())) == 66
     asyncio.run(server.call_tool('construction_schema', {}))
     asyncio.run(server.call_tool('get_unit_catalog', {'dimension': 'flow'}))
     asyncio.run(server.call_tool('rvt_converter_status', {}))
@@ -42,6 +42,36 @@ with tempfile.TemporaryDirectory() as directory:
 
     async def test_official_stdio_client_and_observation(self):
         await asyncio.wait_for(self.check_protocol(), timeout=60)
+
+    async def test_folder_intake_survives_stdio_restart_and_joins_ui_project(self):
+        from uvyazka.intake import ProjectIntake
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/"sources";source.mkdir()
+            (source/"AR.txt").write_text("Synthetic source: area 12 m2. "*5,encoding="utf-8")
+            workspace=Workspace(root/"state")
+            params=StdioServerParameters(command=sys.executable,args=["-m","uvyazka.server"],
+                env={**os.environ,"UVYAZKA_HOME":str(workspace.home),"PYTHONUTF8":"1"})
+            async def call(session,name,arguments):
+                result=await session.call_tool(name,arguments)
+                self.assertFalse(result.isError,result)
+                return json.loads(next(c.text for c in result.content if c.type=="text"))
+            key=project=None
+            for iteration in range(2):
+                async with stdio_client(params) as (read,write):
+                    async with ClientSession(read,write) as session:
+                        await session.initialize()
+                        job=await call(session,"import_project_folder",{"source_root":str(source),"name":"Shared","project_id":"shared"})
+                        key=job["intake_id"];project=job["project_id"]
+                        self.assertEqual(project,"shared")
+                        for _ in range(100):
+                            status=await call(session,"get_project_intake",{"intake_id":key})
+                            if status["status"] in {"ready","partial","failed"} and not status["running"]:break
+                            await asyncio.sleep(.025)
+                        self.assertEqual(status["status"],"ready",status)
+                        if iteration:
+                            self.assertTrue(job["project_reused"])
+                        self.assertEqual(ProjectIntake(workspace).get(key)["project_id"],project)
+            self.assertEqual(len(workspace.list_projects()["projects"]),1)
 
     async def test_document_tables_survive_stdio_restart(self):
         try:
@@ -148,7 +178,7 @@ with tempfile.TemporaryDirectory() as directory:
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    self.assertEqual(len(listed.tools), 63)
+                    self.assertEqual(len(listed.tools), 66)
                     parameters = next(tool for tool in listed.tools if tool.name == 'find_rvt_parameters')
                     self.assertIn('cursor', parameters.inputSchema['properties'])
                     self.assertIn('extraction_id', parameters.inputSchema['required'])

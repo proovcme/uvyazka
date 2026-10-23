@@ -117,15 +117,49 @@ class Workspace:
             raise ValueError("A source directory and nonempty project name are required")
         if self.home == root or self.home.is_relative_to(root):
             raise ValueError("State directory must be outside the source directory")
+        with connection(self.registry) as db:
+            db.execute("begin immediate")
+            self._create_project(db, project_id, name, root, location)
+        return self.project(project_id)
+
+    def _create_project(self, registry, project_id, name, root, location=""):
+        if registry.execute("select 1 from projects where project_id=?", (project_id,)).fetchone():
+            raise ValueError("Project ID already exists")
         folder = self.home / "projects" / project_id
-        # The exclusive directory creation also rejects a repeated project registration.
         folder.mkdir(parents=True, exist_ok=False)
         with connection(folder / "project.sqlite3") as db:
             db.executescript(PROJECT_SQL)
             db.executemany("insert into metadata values (?,?)", [("schema", SCHEMA), ("source_root", str(root)), ("snapshot_created", now()), ("approval_status", "unconfirmed")])
+        registry.execute("insert into projects values (?,?,?,?,?)", (project_id, name.strip(), location, str(root), now()))
+
+    def ensure_folder_project(self, source_root, name="", project_id=None):
+        """One registry transaction makes UI/MCP folder registration converge."""
+        if not isinstance(name, str):
+            raise ValueError("Project name must be text")
+        if not isinstance(source_root, (str, Path)) or not str(source_root).strip():
+            raise ValueError("Explicit source_root required")
+        if not Path(source_root).expanduser().is_absolute():
+            raise ValueError("Absolute source_root required; UI and MCP may have different working directories")
+        root = Path(source_root).expanduser().resolve(strict=True)
+        if not root.is_dir() or self.home == root or self.home.is_relative_to(root):
+            raise ValueError("Choose a source directory outside the state directory's ancestors")
+        if project_id is not None:
+            self.valid_id(project_id)
+        name = name.strip() or root.name or "Project"
+        if len(name) > 200:
+            raise ValueError("Project name exceeds 200 characters")
+        key = os.path.normcase(str(root))
         with connection(self.registry) as db:
-            db.execute("insert into projects values (?,?,?,?,?)", (project_id, name.strip(), location, str(root), now()))
-        return self.project(project_id)
+            db.execute("begin immediate")
+            rows = db.execute("select * from projects").fetchall()
+            existing = next((r for r in rows if os.path.normcase(str(Path(r["source_root"]).resolve())) == key), None)
+            if existing:
+                if project_id is not None and project_id != existing["project_id"]:
+                    raise ValueError("Folder already belongs to project " + existing["project_id"])
+                return {"project": dict(existing), "reused": True}
+            project_id = project_id or "project-" + uuid4().hex[:12]
+            self._create_project(db, project_id, name, root)
+        return {"project": self.project(project_id), "reused": False}
 
     def list_projects(self) -> dict:
         with connection(self.registry, readonly=True) as db:

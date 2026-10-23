@@ -13,6 +13,8 @@ STATIC = Path(__file__).resolve().parent / "ui"
 def make_handler(workspace: Workspace):
     from .construction.rvt_upload import RvtUploads,serve_get
     uploads=RvtUploads(workspace)
+    from .intake import ProjectIntake
+    intake = ProjectIntake(workspace)
     class Handler(BaseHTTPRequestHandler):
         def send(self, data, content_type="application/json; charset=utf-8", status=200):
             if isinstance(data, (dict, list)):
@@ -29,13 +31,15 @@ def make_handler(workspace: Workspace):
                 return self.send({"error": "Loopback host required"}, status=403)
             request = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(request.query).items()}
             try:
+                from .intake_http import serve_get as intake_get
+                if intake_get(self, intake, uploads.token, request.path, q):return
                 from .measurement_http import serve_get as measurement_get
                 if measurement_get(self, workspace, uploads.token, request.path, q):return
                 if serve_get(self,uploads,request.path,q):return
                 from .construction.http import serve_route
                 if serve_route(self, workspace, request.path, q):
                     return
-                static = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"), "/rvt.js": ("rvt.js", "text/javascript"), "/style.css": ("style.css", "text/css")}
+                static = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"), "/rvt.js": ("rvt.js", "text/javascript"), "/intake.js": ("intake.js", "text/javascript"), "/intake.css": ("intake.css", "text/css"), "/style.css": ("style.css", "text/css")}
                 static.update({"/measurements/": ("measurements.html", "text/html"),
                                "/measurements.js": ("measurements.js", "text/javascript"),
                                "/measurement-coordinates.js": ("measurement-coordinates.js", "text/javascript"),
@@ -92,12 +96,17 @@ def make_handler(workspace: Workspace):
                 return self.send({'error':'Loopback host required'},status=403)
             request=urlparse(self.path)
             measurement = request.path.startswith('/api/measurements/')
-            if request.path!='/api/rvt/upload' and not measurement:
+            intake_request = request.path.startswith('/api/intake/')
+            if request.path!='/api/rvt/upload' and not measurement and not intake_request:
                 return self.send({"error": "Use explicit MCP tools for observations"}, status=405)
             origin=self.headers.get('Origin')
             if (origin and origin!='http://'+self.headers['Host']) or not hmac.compare_digest(self.headers.get('X-Uvyazka-Token',''),uploads.token):
                 return self.send({'error':'Open the local dashboard before writing'},status=403)
             try:
+                if intake_request:
+                    from .intake_http import serve_post as intake_post
+                    query={k:v[0] for k,v in parse_qs(request.query).items()}
+                    return intake_post(self, intake, request.path, query)
                 if measurement:
                     from .measurement_http import serve_post
                     query={k:v[0] for k,v in parse_qs(request.query).items()}

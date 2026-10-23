@@ -13,6 +13,32 @@ def build_server(workspace: Workspace | None = None):
     mcp = FastMCP("uvyazka")
     read = {"readOnlyHint": True, "idempotentHint": True}
 
+    from .intake import ProjectIntake
+    intake = ProjectIntake(memory)
+
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False})
+    def import_project_folder(source_root: str, name: str = "", project_id: str | None = None) -> dict:
+        """Register an explicitly supplied local folder and start incremental literal extraction in background.
+        Same source root reuses its project and database, including UI-created projects. Originals remain read-only.
+        Keep intake_id and project_id; poll get_project_intake before semantic review. Requires user's folder scope.
+        """
+        return intake.import_folder(source_root, name, project_id)
+
+    @mcp.tool(annotations=read)
+    def get_project_intake(intake_id: str | None = None, project_id: str | None = None, limit: int = 10) -> dict:
+        """Read shared UI/MCP intake progress, journal, literal coverage and resumability; no model inference.
+        Without IDs list recent intakes, including incomplete UI uploads. A ready index is not an engineering audit.
+        """
+        return intake.get(intake_id, project_id, limit)
+
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False})
+    def resume_project_intake(intake_id: str, retry_failed: bool = False) -> dict:
+        """Continue/re-scan a saved intake after interruption. Optional explicit retry of failed literal readers.
+        Partial file transfer must finish in the UI first. An active worker is not duplicated across clients.
+        """
+        intake.start(intake_id, retry_failed)
+        return intake.get(intake_id)
+
     @mcp.tool(annotations=read)
     def list_technology_sources(query: str = "") -> dict:
         """Find metadata of manually inspected TTK reference cards. These are candidates, not accepted current project requirements."""

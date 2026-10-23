@@ -1,0 +1,5 @@
+BSI (2020) "Medical-Dental Test Files," buildingSMART International
+https://github.com/buildingsmart-community/Community-Sample-Test-Files/tree/7ddf57a201f88a0c213d5322b02ed15e94a60a40
+CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+Changes: IFC tessellation, separate mesh measurements, federation with source IDs. Original IFC sources unchanged.
+RE1 RVT: Drshelden/IFC-ECS, MIT; see IFC-ECS-LICENSE.txt.

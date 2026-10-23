@@ -44,7 +44,16 @@ button.add-model-primary:disabled{opacity:.5;cursor:wait;transform:none}
 #no-model strong{font:500 26px var(--technical);color:var(--ink)}
 #no-model p{margin:0;line-height:1.6}
 #no-model small{font-size:12px;color:var(--muted)}
-#system-summary{font-size:11px;color:var(--secondary);line-height:1.5;overflow-wrap:anywhere}
+/* The tree is a narrow workbench: intrinsic select/label widths must not size its grid. */
+.model-tree,.tree-tools,.tree-tools>*,#element-tree{min-width:0}
+.tree-tools{grid-template-columns:minmax(0,1fr)}
+.tree-tools .search-field input{flex:1;width:0}
+.tree-tools .storey-picker{display:grid;grid-template-columns:44px minmax(0,1fr);gap:8px}
+.tree-tools .storey-picker select{width:100%;min-width:0;max-width:100%}
+.tree-tools .system-only-toggle{display:grid;grid-template-columns:16px minmax(0,1fr);align-items:start;gap:8px;min-height:32px;padding:6px 0;line-height:1.5;cursor:pointer}
+.system-only-toggle input[type=checkbox]{width:16px;height:16px;min-height:0;margin:1px 0 0;padding:0}
+.system-only-toggle span{min-width:0;overflow-wrap:anywhere}
+#system-summary{min-width:0;max-height:240px;max-height:min(28dvh,240px);overflow:auto;font-size:11px;color:var(--secondary);line-height:1.5;overflow-wrap:anywhere}
 #system-summary strong{color:var(--ink);font-weight:500}
 #system-summary p{margin:8px 0}
 #system-summary pre{max-height:220px;overflow:auto;white-space:pre-wrap;font-size:10px}

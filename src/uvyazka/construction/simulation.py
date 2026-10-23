@@ -6,7 +6,7 @@ import hashlib
 import heapq
 import json
 
-ENGINE_VERSION = "0.1.1"
+ENGINE_VERSION = "0.1.2"
 
 
 def canonical_hash(value):
@@ -66,7 +66,17 @@ class SimulationEngine:
         self.queue = []
         self.next_sequence = 0
         self.dispatch_times = set()
+        self._rebuild_dispatch_index()
         self._dispatch_at(0)
+
+    def _rebuild_dispatch_index(self):
+        self.successors = {key: [] for key in self.operations}
+        self.remaining_parents = {}
+        for key,operation in self.operations.items():
+            self.remaining_parents[key] = sum(self.states[parent]['status']!='completed' for parent in operation['dependencies'])
+            for parent in operation['dependencies']:
+                self.successors[parent].append(key)
+        self.eligible = {key for key,state in self.states.items() if state['status'] in ('pending','waiting','ready') and not self.remaining_parents[key]}
 
     def _schedule(self, tick, priority, kind, operation_id=None):
         self.next_sequence += 1
@@ -89,6 +99,10 @@ class SimulationEngine:
             operation = self.operations[operation_id]
             state = self.states[operation_id]
             state.update(status="completed", finish=self.time, waiting_for=[])
+            for child in self.successors[operation_id]:
+                self.remaining_parents[child] -= 1
+                if not self.remaining_parents[child]:
+                    self.eligible.add(child)
             for resource_id, amount in sorted(operation.get("demands", {}).items()):
                 self.used[resource_id] -= amount
                 self._emit("resource_released", operation_id, resource_id=resource_id, amount=amount, used=self.used[resource_id], cause=sequence)
@@ -103,12 +117,11 @@ class SimulationEngine:
             self._dispatch_at(self.time)
         elif kind == "dispatch":
             self.dispatch_times.remove(self.time)
-            candidates = sorted(self.operations.values(), key=lambda operation: (operation.get("priority", 0), operation["id"]))
-            for operation in candidates:
+            candidates = sorted(self.eligible, key=lambda key: (self.operations[key].get("priority", 0), key))
+            for key in candidates:
+                operation = self.operations[key]
                 state = self.states[operation["id"]]
                 if state["status"] not in ("pending", "waiting", "ready"):
-                    continue
-                if any(self.states[parent]["status"] != "completed" for parent in operation["dependencies"]):
                     continue
                 if state["status"] == "pending":
                     state["status"] = "ready"
@@ -120,6 +133,7 @@ class SimulationEngine:
                     state.update(status="waiting", waiting_for=unavailable)
                     continue
                 state.update(status="running", start=self.time, waiting_for=[])
+                self.eligible.remove(operation['id'])
                 for resource_id, amount in sorted(operation.get("demands", {}).items()):
                     self.used[resource_id] += amount
                     self._emit("resource_acquired", operation["id"], resource_id=resource_id, amount=amount, used=self.used[resource_id], cause=sequence)
@@ -167,4 +181,5 @@ class SimulationEngine:
         engine.events = deepcopy(snapshot["events"])
         engine.next_sequence = snapshot["next_sequence"]
         engine.dispatch_times = set(snapshot["dispatch_times"])
+        engine._rebuild_dispatch_index()
         return engine

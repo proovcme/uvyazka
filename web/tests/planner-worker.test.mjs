@@ -14,7 +14,9 @@ test('planner worker reuses its loaded runtime and finishes cleanup before annou
     await writeFile(join(folder,'runtime/pyodide/pyodide.mjs'),`
 let loads=0,clean=true,runs=0;
 export async function loadPyodide(){loads++;return {unpackArchive(){},globals:{set(){},delete(){}},async runPythonAsync(code){
-  if(code.includes('request=json')){if(!clean)throw Error('previous cleanup incomplete');clean=false;return JSON.stringify({runs:++runs,loads});}
+  if(code.includes('request=json')){if(!clean)throw Error('previous cleanup incomplete');clean=false;runs++;return JSON.stringify({total:10});}
+  if(code.includes('engine.step'))return JSON.stringify({more:false,completed:10});
+  if(code.includes('result=engine.run'))return JSON.stringify({runs,loads});
   await new Promise(r=>setTimeout(r,20));clean=true;
 }};}`);
     const script=new URL('../src/planner.worker.ts',import.meta.url).href;

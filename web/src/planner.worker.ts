@@ -13,7 +13,7 @@ worker.onmessage=async({data})=>{
     }
     worker.postMessage({job,kind:'progress',text:'Расчёт работ, зависимостей и ожиданий ресурсов'});
     python.globals.set('request_json',JSON.stringify({model,scenario,variant,curingDays,capacityFactor}));
-    const result=await python.runPythonAsync(`
+    const prepared=JSON.parse(await python.runPythonAsync(`
 import json
 from uvyazka.construction.planner import build_scenario
 from uvyazka.construction.simulation import SimulationEngine
@@ -30,13 +30,28 @@ if factor!=1:
         resource['capacity']*=factor
     scenario['assumptions'].append(f'Доступность каждого ресурса увеличена в {factor} раз; производительность одной назначенной бригады не изменена')
 scenario.update(project_id='browser-local',revision=1)
-result=SimulationEngine(scenario).run()
+engine=SimulationEngine(scenario)
+json.dumps({'total':len(scenario['operations'])})
+`));
+    while(true){
+      const progress=JSON.parse(await python.runPythonAsync(`
+for _batch_index in range(200):
+    if not engine.step():break
+json.dumps({'more':bool(engine.queue),'completed':sum(s['status']=='completed' for s in engine.states.values())})
+`));
+      worker.postMessage({job,kind:'progress',text:`Расчёт: завершено ${progress.completed} / ${prepared.total} работ`});
+      if(!progress.more)break;
+      // Yield the worker event loop: heartbeat replies stay available during large runs.
+      await new Promise(resolve=>setTimeout(resolve,0));
+    }
+    const result=await python.runPythonAsync(`
+result=engine.run()
 result.update(project_id='browser-local',cpm=cpm(scenario))
 json.dumps(result,ensure_ascii=False,allow_nan=False)
 `);
     const run=JSON.parse(result);
     python.globals.delete('request_json');
-    await python.runPythonAsync('del request, scenario, result\nimport gc\ngc.collect()');
+    await python.runPythonAsync('del request, scenario, result, engine, _batch_index\nimport gc\ngc.collect()');
     worker.postMessage({job,kind:'planned',run});
   }catch(error){worker.postMessage({job,kind:'error',message:error instanceof Error?error.message:String(error)});}
 };

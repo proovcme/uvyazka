@@ -1,18 +1,24 @@
 """Pure dependency timing shared by native and browser planning."""
+import heapq
 def cpm(scenario: dict) -> dict:
     """FS-only longest path and floats without resource constraints/calendars."""
-    ops = {o["id"]: o for o in scenario["operations"]}; remaining = set(ops); order = []; starts = {}; ends = {}
-    while remaining:
-        ready = sorted(k for k in remaining if all(p in ends for p in ops[k]["dependencies"]))
-        if not ready:
-            raise ValueError("Cycle in dependency graph")
-        for key in ready:
-            starts[key] = max((ends[p] for p in ops[key]["dependencies"]), default=0)
-            ends[key] = starts[key] + ops[key]["duration"]; order.append(key); remaining.remove(key)
-    duration = max(ends.values(), default=0); successors = {k: [] for k in ops}; latest = {}
+    ops = {o["id"]: o for o in scenario["operations"]}; order = []; starts = {}; ends = {}
+    successors = {k: [] for k in ops}; remaining_parents = {}
     for key, op in ops.items():
+        remaining_parents[key] = len(op['dependencies'])
         for parent in op["dependencies"]:
+            if parent not in ops:raise ValueError('Unknown predecessor: '+str(parent))
             successors[parent].append(key)
+    ready = [key for key,count in remaining_parents.items() if not count]; heapq.heapify(ready)
+    while ready:
+        key=heapq.heappop(ready)
+        starts[key] = max((ends[parent] for parent in ops[key]['dependencies']),default=0)
+        ends[key] = starts[key]+ops[key]['duration']; order.append(key)
+        for child in successors[key]:
+            remaining_parents[child]-=1
+            if not remaining_parents[child]:heapq.heappush(ready,child)
+    if len(order)!=len(ops):raise ValueError('Cycle in dependency graph')
+    duration = max(ends.values(), default=0); latest = {}
     for key in reversed(order):
         finish = min((latest[k] for k in successors[key]), default=duration)
         latest[key] = finish - ops[key]["duration"]

@@ -142,4 +142,4 @@ class IntakeTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.intake.import_folder(self.source,project_id='two',background=False)
         other=self.root/'other';other.mkdir()
         with self.assertRaises(ValueError):self.intake.import_folder(other,project_id='one',background=False)
-        self.assertEqual(self.ws.project('one')['source_root'],str(self.source))
+        self.assertEqual(Path(self.ws.project('one')['source_root']).resolve(),self.source.resolve())

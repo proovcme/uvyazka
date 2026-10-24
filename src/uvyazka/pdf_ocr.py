@@ -28,7 +28,7 @@ def engine_info(language):
     available = subprocess.run([binary, '--list-langs'], **options).stdout.splitlines()
     missing = set(language.split('+')) - set(available)
     if missing: raise ValueError('Missing local Tesseract languages: ' + ', '.join(sorted(missing)))
-    return {'binary': binary, 'version': version, 'language': language, 'engine': 'Tesseract', 'method_revision': 'pdf-ocr-v1'}
+    return {'binary': binary, 'version': version, 'language': language, 'engine': 'Tesseract', 'method_revision': 'pdf-ocr-v2-tsv'}
 
 
 def recognize(page, engine, dpi):
@@ -45,7 +45,9 @@ def recognize(page, engine, dpi):
                                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         if response.returncode: raise ValueError('Tesseract failed: ' + response.stderr[-1500:])
     words, lines = [], {}
-    for row in csv.DictReader(io.StringIO(response.stdout), delimiter='\t'):
+    # Tesseract TSV does not quote text fields. A literal inch/ditto mark must
+    # not swallow subsequent rows as a multi-line CSV field.
+    for row in csv.DictReader(io.StringIO(response.stdout), delimiter='\t', quoting=csv.QUOTE_NONE):
         if row.get('level') != '5' or not row.get('text', '').strip(): continue
         if len(words) >= 30000: raise ValueError('OCR page exceeds 30000 words; choose a bounded page copy')
         x, y, w, h = (int(row[k]) for k in ('left', 'top', 'width', 'height'))

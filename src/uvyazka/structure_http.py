@@ -7,7 +7,10 @@ def serve_get(handler,workspace,token,path,q):
     if not path.startswith('/api/structure/'):return False
     if path=='/api/structure/config':handler.send({'write_token':token});return True
     service=ProjectStructure(workspace,q['project_id'])
-    if path=='/api/structure/catalog':
+    if path=='/api/structure/analysis':
+        from .structure_analysis import StructureAnalysis
+        handler.send(StructureAnalysis(workspace,q['project_id']).read(q['analysis_id']))
+    elif path=='/api/structure/catalog':
         handler.send(service.catalog(q.get('kind','sheets'),q.get('q',''),q.get('doc_id'),int(q.get('offset',0)),int(q.get('limit',40)),q.get('history')=='1'))
     elif path=='/api/structure/table':
         handler.send(service.read(q['table_id'],int(q.get('offset',0)),int(q.get('limit',40)),int(q.get('column_offset',0)),int(q.get('column_limit',20))))

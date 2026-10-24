@@ -56,6 +56,17 @@ class PdfOCRTests(unittest.TestCase):
         self.source.write_bytes(before+b'\nchanged')
         with self.assertRaises(ValueError):self.service.extract('p',self.record['doc_id'],[1],'ocr-one')
 
+    def test_tesseract_literal_quotes_do_not_consume_following_tsv_rows(self):
+        import pymupdf
+        from types import SimpleNamespace
+        from uvyazka.pdf_ocr import recognize
+        header='level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n'
+        rows='5\t1\t1\t1\t1\t1\t10\t10\t10\t10\t95\t"\n5\t1\t1\t1\t2\t1\t10\t30\t20\t10\t96\t12.50\n'
+        with pymupdf.open(self.source) as pdf,patch('uvyazka.pdf_ocr.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout=header+rows)):
+            result=recognize(pdf[0],{'binary':'fixture','language':'rus+eng'},200)
+        self.assertEqual([w['text'] for w in result['words']],['"','12.50'])
+        self.assertEqual(result['text'],'"\n12.50')
+
     def test_native_text_is_not_replaced_and_requests_are_project_scoped(self):
         with patch('uvyazka.pdf_ocr.engine_info',return_value={'engine':'fixture','version':'1'}),patch('uvyazka.pdf_ocr.recognize') as recognize:
             result=self.service.extract('p',self.record['doc_id'],[2],'native')

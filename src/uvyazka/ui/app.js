@@ -46,7 +46,7 @@ document.addEventListener('click',e=>{const b=e.target.closest('[data-automatic-
 function filterBar(placeholder) { return `<div class="toolbar"><label class="search"><span class="sr-only">Поиск</span><input id="query" placeholder="${esc(placeholder)}" aria-label="Поиск"></label></div>`; }
 async function loadProject(id) {
   const previousProject=current; const revision = ++generation; clearTimeout(timer); current = id; $('#detail').close();
-  const u = new URL(location.href); u.searchParams.set('project', id); if(previousProject&&previousProject!==id)u.searchParams.delete('structure_table'); history.replaceState(null, '', u);
+  const u = new URL(location.href); u.searchParams.set('project', id); if(previousProject&&previousProject!==id){u.searchParams.delete('structure_table');u.searchParams.delete('structure_analysis');} history.replaceState(null, '', u);
   const data = await Promise.all([api('/api/status'),api('/api/facts'),api('/api/checks'),api('/api/summary')]); if (revision !== generation) return;
   [status,{facts},{checks},summary] = data; $('#project-select').value = id;
   $('#project-name').textContent = status.project.name; document.title = status.project.name + ' — Увязка';

@@ -201,6 +201,7 @@ class StructureTests(unittest.TestCase):
             payload=dict(analysis_id='http-note',table_id=tid,title='Количество',summary='Вторая колонка — число.',data={'columns':{'2':'quantity'}},reader='human',request_id='http-analysis')
             req=Request(base+'analysis?project_id=a',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json','X-Uvyazka-Token':token},method='POST')
             with urlopen(req) as response:self.assertEqual(json.load(response)['revision'],1)
+            self.assertTrue(get('analysis?project_id=a&analysis_id=http-note')['items'][0]['current_sources'])
             self.assertEqual(ProjectStructure(self.workspace,'a').read(tid)['analyses']['items'][0]['analysis_id'],'http-note')
             req.add_header('Origin','https://example.org')
             with self.assertRaises(HTTPError) as error:urlopen(req)
@@ -233,6 +234,44 @@ class StructureTests(unittest.TestCase):
         items=store.read(a['table_id'])['analyses']['items'];self.assertTrue(all(not item['current_sources'] for item in items))
         args.update(request_id='analysis-stale',expected_revision=1,reason='Попытка после изменения файла')
         with self.assertRaisesRegex(ValueError,'Source changed'):notes.save(**args)
+
+    def test_analysis_depends_on_original_scan_without_an_extracted_table(self):
+        import pymupdf
+        from uvyazka.structure_analysis import StructureAnalysis
+        (self.sources/'table.csv').write_text('Pump,2\n',encoding='utf-8')
+        original=self.sources/'scan.pdf'
+        with pymupdf.open() as pdf:
+            pdf.new_page();pdf.save(original)
+        store=self.prepare();store.build()
+        tid=store.catalog('tables')['items'][0]['table_id']
+        doc=next(d for d in self.workspace.find_documents('a')['documents'] if d['extension']=='.pdf')
+        link=dict(doc_id=doc['doc_id'],sha256=doc['sha256'],page_number=1,reason='Read the original scan visually')
+        args=dict(analysis_id='scan',table_id=tid,title='Pump',summary='Two pumps in the scan.',data={},reader='model',request_id='scan-note',related_sources=[link])
+        notes=StructureAnalysis(self.workspace,'a');saved=notes.save(**args)
+        self.assertEqual(notes.save(**args),saved)
+        self.assertEqual(notes.list(doc_id=doc['doc_id'],verify_source=True)['total'],1)
+        self.assertTrue(store.read(tid)['analyses']['items'][0]['current_sources'])
+        standalone=notes.save(**{**args,'analysis_id':'scan-only','table_id':None,'request_id':'source-only'})
+        self.assertIsNone(standalone['table_id'])
+        self.assertTrue(notes.read('scan-only')['items'][0]['current_sources'])
+        self.assertEqual(notes.list(doc_id=doc['doc_id'])['total'],2)
+        with self.assertRaisesRegex(ValueError,'At least one'):
+            notes.save(**{**args,'analysis_id':'empty','table_id':None,'request_id':'empty','related_sources':[]})
+        args.update(expected_revision=1,reason='Validate correction sources')
+        with self.assertRaisesRegex(ValueError,'physical PDF page'):
+            notes.save(**{**args,'request_id':'bad-page','related_sources':[{**link,'page_number':2}]})
+        with self.assertRaisesRegex(ValueError,'physical PDF page'):
+            notes.save(**{**args,'request_id':'bool-page','related_sources':[{**link,'page_number':True}]})
+        with self.assertRaisesRegex(ValueError,'Source changed'):
+            notes.save(**{**args,'request_id':'bad-hash','related_sources':[{**link,'sha256':'0'*64}]})
+        # A related original must be registered in THIS project even if its bytes are known.
+        with self.assertRaises(ValueError):
+            notes.save(**{**args,'request_id':'bad-doc','related_sources':[{**link,'doc_id':'foreign'}]})
+        original.write_bytes(original.read_bytes()+b'\nchanged')
+        self.assertFalse(notes.read('scan-only')['items'][0]['current_sources'])
+        self.assertFalse(store.read(tid)['analyses']['items'][0]['current_sources'])
+        with self.assertRaisesRegex(ValueError,'Source changed'):
+            notes.save(**{**args,'request_id':'stale','expected_revision':1,'reason':'Retry'})
 
     def test_analysis_rejects_unknown_cells_cross_project_and_nonfinite_json(self):
         from uvyazka.structure_analysis import StructureAnalysis

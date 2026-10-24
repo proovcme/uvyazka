@@ -32,19 +32,20 @@ class StructureAnalysis:
         cache={} if cache is None else cache
         states={}
         for dependency in item['dependencies']:
-            source=dependency['source'];key=(source['doc_id'],source['sha256'],dependency['engine'])
+            source=dependency['source'];key=(source['doc_id'],source['sha256'],dependency.get('engine'))
             if key not in cache:
                 record,_=self.workspace.source_record(self.project_id,source['doc_id'])
-                current=record['sha256']==source['sha256'] and engine(record['extension'])==dependency['engine']
+                current=record['sha256']==source['sha256']
+                if dependency.get('engine') is not None:current=current and engine(record['extension'])==dependency['engine']
                 current=current and record['index_status']!='source_missing'
                 freshness=self.workspace.source_state(self.project_id,source['doc_id'],full_hash=True)['status'] if verify_source else 'registered_hash_only'
                 cache[key]=dict(current=current and (freshness=='content_hash_matches' if verify_source else True),freshness=freshness)
-            states[dependency['table_id']]=cache[key]
+            states[dependency.get('table_id') or dependency['source_id']]=cache[key]
         return {**item,'dependencies_state':states,'current_sources':all(s['current'] for s in states.values()),
                 'freshness_method':'actual_hash' if verify_source else 'registered_hash_only','accepted':False}
 
     def save(self,analysis_id,table_id,title,summary,data,reader,request_id,expected_revision=0,
-             reason='',related_tables=None,evidence_cells=None):
+             reason='',related_tables=None,evidence_cells=None,related_sources=None):
         number(expected_revision,'expected_revision')
         if not isinstance(analysis_id,str) or not re.fullmatch(r'[\w.-]{1,80}',analysis_id):raise ValueError('Invalid analysis_id')
         if reader not in {'model','human'}:raise ValueError('Reader must be model or human')
@@ -54,14 +55,19 @@ class StructureAnalysis:
         if not isinstance(data,dict):raise ValueError('data must be a JSON object; engineering interpretation belongs to the caller')
         related_tables=[] if related_tables is None else related_tables
         evidence_cells=[] if evidence_cells is None else evidence_cells
+        related_sources=[] if related_sources is None else related_sources
         if not isinstance(related_tables,list) or len(related_tables)>20:raise ValueError('At most 20 related tables')
         if not isinstance(evidence_cells,list) or len(evidence_cells)>200 or any(not isinstance(c,str) for c in evidence_cells):raise ValueError('At most 200 exact cell_ids')
+        if not isinstance(related_sources,list) or len(related_sources)>20:raise ValueError('At most 20 related sources')
         request=dict(analysis_id=analysis_id,table_id=table_id,title=title,summary=summary,data=data,reader=reader,
                      expected_revision=expected_revision,reason=reason,related_tables=related_tables,evidence_cells=evidence_cells)
+        # Preserve fingerprints of pre-existing requests when this optional field is absent.
+        if related_sources:request['related_sources']=related_sources
         try:raw=json.dumps(request,ensure_ascii=False,allow_nan=False)
         except (ValueError,TypeError) as exc:raise ValueError('Analysis must contain finite JSON values') from exc
         if len(raw.encode())>128*1024:raise ValueError('Analysis exceeds 128 KiB')
         request=json.loads(raw);data=request['data'];related_tables=request['related_tables'];evidence_cells=request['evidence_cells']
+        related_sources=request.get('related_sources',[])
         signature=fingerprint(request)
         with connection(self.path) as db:
             db.execute('begin immediate')
@@ -73,7 +79,8 @@ class StructureAnalysis:
             revision=old['revision'] if old else 0
             if expected_revision!=revision:raise ValueError('Analysis revision conflict; reread before correcting')
             if revision and not reason.strip():raise ValueError('Correction requires a reason')
-            cards={table_id:self.table(db,table_id)}
+            if table_id is not None and not isinstance(table_id,str):raise ValueError('Invalid table_id')
+            cards={table_id:self.table(db,table_id)} if table_id is not None else {}
             for link in related_tables:
                 if not isinstance(link,dict) or not all(isinstance(link.get(k),str) and link[k].strip() for k in ('table_id','relation','reason')):
                     raise ValueError('Related table needs table_id, relation and reason')
@@ -85,15 +92,42 @@ class StructureAnalysis:
                 row=db.execute('select payload from structure_rows where table_id=? and row_number=?',(tid,r)).fetchone()
                 if not row or not any(item['cell_id']==cid and item['column']==c for item in json.loads(row[0])):
                     raise ValueError('Unknown evidence cell')
+            source_links=[]
+            for link in related_sources:
+                if not isinstance(link,dict) or set(link)-{'doc_id','sha256','page_number','reason'} or not all(isinstance(link.get(k),str) and link[k].strip() for k in ('doc_id','sha256','reason')):
+                    raise ValueError('Related source needs doc_id, sha256, reason and optional PDF page_number')
+                if len(link['reason'])>4000:raise ValueError('Related source reason exceeds 4000 characters')
+                record,_=self.workspace.source_record(self.project_id,link['doc_id'])
+                if record['sha256']!=link['sha256']:raise ValueError('Source changed; refresh the related source')
+                if 'page_number' in link:
+                    page=link['page_number']
+                    if record['extension']!='.pdf' or type(page) is not int or not 1<=page<=(record['page_count'] or 0):
+                        raise ValueError('page_number must address a known physical PDF page')
+                source={k:record[k] for k in ('doc_id','sha256','relative_path','extension')}
+                if 'page_number' in link:source['page_number']=link['page_number']
+                source_links.append(dict(source_id='source:'+fingerprint(link),source=source,engine=None,reason=link['reason']))
+            if not cards and not source_links:raise ValueError('At least one registered source or table required')
             item=dict(analysis_id=analysis_id,table_id=table_id,title=title,summary=summary,data=data,reader=reader,
                       related_tables=related_tables,evidence_cells=evidence_cells,revision=revision+1,reason=reason,
                       dependencies=[dict(table_id=tid,source=card['source'],engine=card['engine']) for tid,card in cards.items()],
                       interpretation_status='caller_interpretation_not_approved',created_at=now(),accepted=False)
+            item['related_sources']=related_sources
+            item['dependencies'].extend(source_links)
             if not self.state(item,True)['current_sources']:raise ValueError('Source changed; refresh and rebase the interpretation')
             db.execute('insert into structure_analyses values(?,?,?,?,?)',(analysis_id,reader,revision+1,table_id,encode(item)))
             db.execute('insert into structure_analysis_requests values(?,?,?)',(request_id,signature,encode(item)))
             db.execute('insert into events(created_at,kind,payload) values(?,?,?)',(now(),'structure_analysis_saved',encode(dict(analysis_id=analysis_id,reader=reader,revision=revision+1))))
         return item
+
+    def read(self,analysis_id,verify_source=True):
+        if not isinstance(analysis_id,str) or not re.fullmatch(r'[\w.-]{1,80}',analysis_id):raise ValueError('Invalid analysis_id')
+        with connection(self.path,readonly=True) as db:
+            rows=[json.loads(r[0]) for r in db.execute('''select payload from structure_analyses a
+                where analysis_id=? and revision=(select max(revision) from structure_analyses b
+                where b.analysis_id=a.analysis_id and b.reader=a.reader) order by reader''',(analysis_id,))]
+        if not rows:raise ValueError('Unknown analysis in this project')
+        cache={}
+        return bounded(dict(project_id=self.project_id,kind='analyses',items=[self.state(r,verify_source,cache) for r in rows],total=len(rows),next_offset=None))
 
     def list(self,table_id=None,query='',doc_id=None,offset=0,limit=40,verify_source=False,history=False):
         number(offset,'offset');number(limit,'limit',1,100)

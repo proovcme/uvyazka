@@ -50,19 +50,41 @@ test('unmounting while a batch runs stops further project mutations',async()=>{
 });
 
 test('person can continue a model interpretation without replacing its lane',async()=>{
- const w=new Window({url:'http://127.0.0.1:8773/?project=a&structure_table=table#structure'});w.document.body.innerHTML='<div id="view"></div>';
- const model={analysis_id:'meaning',table_id:'table',reader:'model',title:'Шапка и связи',summary:'Сложить два способа крепления.',revision:1,data:{operation:'sum'},related_tables:[],evidence_cells:['table:1:2'],current_sources:true};
+ const w=new Window({url:'http://127.0.0.1:8773/?project=a&structure_analysis=meaning#structure'});w.document.body.innerHTML='<div id="view"></div>';
+ const model={analysis_id:'meaning',table_id:'table',reader:'model',title:'Шапка и связи',summary:'Сложить два способа крепления.',revision:1,data:{operation:'sum',checks:[{status:'match',title:'Количество совпало',detail:'991 + 170 = 1161'},{status:'unchecked',title:'Питание не проверено'}]},related_tables:[],related_sources:[{doc_id:'scan',sha256:'abc',page_number:3,reason:'Скан'}],dependencies:[{source_id:'scan-ref',source:{doc_id:'scan',sha256:'abc',page_number:3,extension:'.pdf',relative_path:'scan.pdf'}}],evidence_cells:['table:1:2'],current_sources:true};
  let saved;
  w.fetch=async(path,options={})=>{
   let data;
-  if(options.method==='POST'){saved=JSON.parse(options.body);assert.equal(saved.reader,'human');assert.equal(saved.expected_revision,0);assert.equal(saved.analysis_id,'meaning');assert.deepEqual(saved.data,{operation:'sum'});data={...saved,revision:1};}
+  if(options.method==='POST'){saved=JSON.parse(options.body);assert.equal(saved.reader,'human');assert.equal(saved.expected_revision,0);assert.equal(saved.analysis_id,'meaning');assert.equal(saved.data.operation,'sum');assert.equal(saved.related_sources[0].doc_id,'scan');data={...saved,revision:1};}
   else if(path.includes('/config'))data={write_token:'secret'};
+  else if(path.includes('/analysis?'))data={items:[model,...(saved?[{...saved,revision:1,current_sources:true}]:[])],next_offset:null};
   else if(path.includes('/table'))data={table:card,rows:[[cell(1,1,'Лоток'),cell(1,2,'991')]],current_registered_version:true,next_offset:null,next_column_offset:null,analyses:{items:[model,...(saved?[{...saved,revision:1,current_sources:true}]:[])],next_offset:null}};
   else data={items:[{name:'Лист',source,table_ids:['table'],warnings:[],physical_page:false}],coverage:counts,next_offset:null};
   return {ok:true,json:async()=>structuredClone(data)};
  };
  w.eval(code);await w.UvyazkaStructure.mount(w.document.querySelector('#view'),'a');await tick();
  assert.match(w.document.body.textContent,/Сложить два способа/);
+ const filter=w.document.querySelector('[data-check-filter]');filter.value='unchecked';filter.dispatchEvent(new w.Event('change',{bubbles:true}));assert.equal(w.document.querySelector('[data-check-status=match]').hidden,true);assert.equal(w.document.querySelector('[data-check-status=unchecked]').hidden,false);assert.match(w.document.querySelector('a[href*=scan]').href,/#page=3$/);
  const form=w.document.querySelector('[data-analysis]');form.querySelector('[name=summary]').value='Сверено человеком';form.dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();
- assert.equal(saved.summary,'Сверено человеком');assert.match(w.document.body.textContent,/Сверено человеком/);assert.equal(model.summary,'Сложить два способа крепления.');w.happyDOM.cancelAsync();
+ assert.equal(saved.table_id,'table');assert.equal(saved.summary,'Сверено человеком');assert.match(w.document.body.textContent,/Сверено человеком/);assert.equal(model.summary,'Сложить два способа крепления.');w.happyDOM.cancelAsync();
+});
+
+
+test('source-only analysis opens scans and preserves source dependencies on human handoff',async()=>{
+ const w=new Window({url:'http://127.0.0.1:8773/?project=a&structure_analysis=scan-only#structure'});w.document.body.innerHTML='<div id="view"></div>';
+ const model={analysis_id:'scan-only',table_id:null,reader:'model',title:'Скан и схема',summary:'Выбранные исходники.',revision:1,current_sources:false,data:{checks:[{status:'question',title:'Проверить комплектацию'}]},related_tables:[],related_sources:[{doc_id:'scan',sha256:'abc',page_number:2,reason:'Оригинал'}],dependencies:[{source_id:'s',source:{doc_id:'scan',sha256:'abc',page_number:2,extension:'.pdf',relative_path:'scan.pdf'}}],evidence_cells:[]};
+ let saved;
+ w.fetch=async(path,options={})=>{
+  let data;
+  if(options.method==='POST'){saved=JSON.parse(options.body);data={...saved,revision:1};}
+  else if(path.includes('/config'))data={write_token:'secret'};
+  else if(path.includes('/analysis?'))data={items:[model],next_offset:null};
+  else data={items:[],coverage:counts,next_offset:null};
+  return {ok:true,json:async()=>structuredClone(data)};
+ };
+ w.eval(code);await w.UvyazkaStructure.mount(w.document.querySelector('#view'),'a');await tick();
+ assert.match(w.document.body.textContent,/требуют повторной проверки/);
+ assert.match(w.document.querySelector('a[href*=scan]').href,/#page=2$/);
+ const form=w.document.querySelector('[data-analysis]');form.dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();
+ assert.equal(saved.table_id,null);assert.equal(saved.reader,'human');assert.equal(saved.related_sources[0].doc_id,'scan');w.happyDOM.cancelAsync();
 });

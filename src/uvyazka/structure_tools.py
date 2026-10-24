@@ -19,27 +19,36 @@ def register_tools(mcp,workspace):
         return ProjectStructure(workspace,project_id).build(doc_id,unit_limit,document_limit,retry_failed,start_unit)
 
     @mcp.tool(annotations=read)
-    def get_project_structure(project_id: str,kind: str='sheets',query: str='',doc_id: str | None=None,offset: int=0,limit: int=40,history: bool=False) -> dict:
+    def get_project_structure(project_id: str,kind: str='sheets',query: str='',doc_id: str | None=None,offset: int=0,limit: int=40,history: bool=False,analysis_id: str | None=None) -> dict:
         """Navigate current registered source versions: kind=sheets|tables|documents|analyses.
         Physical PDF pages, Excel sheets, logical Word parts remain distinct. Coverage reports unfinished,
         failed and unsupported documents separately. Analyses keeps caller interpretations, links, questions;
-        history=true includes old analysis revisions. Does not parse originals or verify actual bytes."""
+        history=true includes old analysis revisions. Navigation does not parse originals or verify bytes.
+        With kind=analyses and exact analysis_id, return the two latest reader lanes with actual SHA checks."""
+        if analysis_id is not None:
+            if kind!='analyses':raise ValueError('analysis_id requires kind=analyses')
+            from .structure_analysis import StructureAnalysis
+            return StructureAnalysis(workspace,project_id).read(analysis_id)
         return ProjectStructure(workspace,project_id).catalog(kind,query,doc_id,offset,limit,history)
 
     @mcp.tool(annotations={'readOnlyHint':False,'destructiveHint':False,'idempotentHint':True})
-    def save_structure_analysis(project_id: str,analysis_id: str,table_id: str,title: str,summary: str,data: dict,
+    def save_structure_analysis(project_id: str,analysis_id: str,table_id: str | None,title: str,summary: str,data: dict,
                                 reader: str,request_id: str,expected_revision: int=0,reason: str='',
-                                related_tables: list[dict] | None=None,evidence_cells: list[str] | None=None) -> dict:
+                                related_tables: list[dict] | None=None,evidence_cells: list[str] | None=None,
+                                related_sources: list[dict] | None=None) -> dict:
         """Persist YOUR interpretation so the person/model can resume it. No inference or model API is run.
         data is free JSON: column meanings, row sections, scope, mappings, calculations, questions, task coverage.
         reader=model|human have separate histories. related_tables needs table_id,relation,reason; all pointers
         must belong to this project and current source bytes. evidence_cells cite exact main/related cell_ids.
+        related_sources cites up to 20 registered originals even without extracted tables (scans/schemes):
+        doc_id, sha256, reason and optional physical PDF page_number. Changed originals stale the note.
+        table_id=null is allowed for a source-only analysis; at least one table or related source is required.
         First revision=0; a correction needs previous expected_revision and reason. Same request_id only
         retries identical input. Engineering values are never approved. Read through get_project_structure
         kind=analyses (history=true for past revisions), or analyses in read_structure_table."""
         from .structure_analysis import StructureAnalysis
         return StructureAnalysis(workspace,project_id).save(analysis_id,table_id,title,summary,data,reader,request_id,
-                                                            expected_revision,reason,related_tables,evidence_cells)
+                                                            expected_revision,reason,related_tables,evidence_cells,related_sources)
 
     @mcp.tool(annotations=read)
     def read_structure_table(project_id: str,table_id: str,offset: int=0,limit: int=40,column_offset: int=0,column_limit: int=20,verify_source: bool=True) -> dict:

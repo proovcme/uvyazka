@@ -218,7 +218,8 @@ class ProjectIntake:
             for row in rows:
                 item = json.loads(row["payload"])
                 received = db.execute("select count(*),coalesce(sum(size),0) from intake_files where intake_id=? and sha256 is not null", (row["intake_id"],)).fetchone()
-                running = row["status"] in ACTIVE and bool(row["owner"]) and row["lease_until"] > time.time()
+                # A terminal phase can still be closing its lease/database handles.
+                running = row["status"] != 'receiving' and bool(row["owner"]) and row["lease_until"] > time.time()
                 item.update(status=row["status"], running=running, can_resume=row["status"] != "receiving" and not running,
                             received_files=received[0], received_bytes=received[1])
                 item["journal"] = [dict(r) for r in db.execute("select created_at,status,detail from intake_events where intake_id=? order by event_id desc limit 12", (row["intake_id"],)).fetchall()][::-1]
@@ -263,11 +264,13 @@ class ProjectIntake:
                         db.execute("update intake_jobs set lease_until=? where intake_id=? and owner=?", (time.time()+LEASE_SECONDS,intake_id,owner))
                 except Exception:
                     return
-        threading.Thread(target=heartbeat, daemon=True).start()
+        lease_thread=threading.Thread(target=heartbeat, daemon=True, name='uvyazka-intake-lease')
+        lease_thread.start()
         try:
             yield
         finally:
             stop.set()
+            lease_thread.join()
             with connection(self.workspace.registry) as db:
                 db.execute("update intake_jobs set owner=null,lease_until=0 where intake_id=? and owner=?", (intake_id,owner))
 
@@ -319,7 +322,7 @@ class ProjectIntake:
             row = self._row(db, intake_id)
             if row["status"] == "receiving":
                 raise ValueError("Finish uploading before processing")
-            if row["owner"] and row["lease_until"] > time.time() and row["status"] in ACTIVE:
+            if row["owner"] and row["lease_until"] > time.time():
                 return self.get(intake_id)
             item = json.loads(row["payload"])
             item.update(phase="queued", updated_at=now())
@@ -330,7 +333,10 @@ class ProjectIntake:
                 self._process(intake_id, owner, retry_failed)
             except Exception as exc:
                 self._update(intake_id, owner, "failed", error=type(exc).__name__+": "+str(exc)[-2000:])
-        return self.get(intake_id)
+            # Read the response before releasing the lease: no DB access after reporting idle.
+            result=self.get(intake_id)
+        result.update(running=False,can_resume=result['status']!='receiving')
+        return result
 
     def _process(self, intake_id, owner, retry_failed):
         item = self.get(intake_id)

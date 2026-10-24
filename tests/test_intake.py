@@ -133,6 +133,28 @@ class IntakeTests(unittest.TestCase):
         with patch('uvyazka.ingest.read_blocks',side_effect=AssertionError('Unchanged failures are not retried silently')):
             self.assertEqual(self.intake.run(job['intake_id'])['status'],'partial')
 
+    def test_terminal_phase_is_busy_until_worker_closes_its_lease(self):
+        from contextlib import contextmanager
+        import threading
+        job=self.intake.import_folder(self.source,background=False);key=job['intake_id']
+        closing=threading.Event();release=threading.Event();original=self.intake._heartbeat;results=[]
+        @contextmanager
+        def hold_finalization(*args):
+            with original(*args):
+                yield
+                closing.set()
+                if not release.wait(5):raise TimeoutError('Test did not release finalization')
+        with patch.object(self.intake,'_heartbeat',hold_finalization):
+            worker=threading.Thread(target=lambda:results.append(self.intake.run(key)))
+            worker.start()
+            try:
+                self.assertTrue(closing.wait(5))
+                state=self.intake.get(key)
+                self.assertEqual(state['status'],'ready');self.assertTrue(state['running']);self.assertFalse(state['can_resume'])
+            finally:release.set();worker.join(5)
+        self.assertFalse(worker.is_alive());self.assertFalse(results[0]['running'])
+        self.assertFalse(self.intake.get(key)['running'])
+
     def test_manifest_and_registration_conflicts_are_explicit(self):
         for relative in ("", ".", "sources"):
             with self.assertRaises(ValueError):self.intake.import_folder(relative,background=False)

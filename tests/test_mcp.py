@@ -32,7 +32,7 @@ from uvyazka.core import Workspace
 from uvyazka.server import build_server
 with tempfile.TemporaryDirectory() as directory:
     server = build_server(Workspace(Path(directory)/'state'))
-    assert len(asyncio.run(server.list_tools())) == 78
+    assert len(asyncio.run(server.list_tools())) == 79
     asyncio.run(server.call_tool('construction_schema', {}))
     asyncio.run(server.call_tool('get_unit_catalog', {'dimension': 'flow'}))
     asyncio.run(server.call_tool('rvt_converter_status', {}))
@@ -109,6 +109,32 @@ with tempfile.TemporaryDirectory() as directory:
                             self.assertFalse(work['accepted']);self.assertEqual(work['status'],'reviewed_with_findings')
                             await call(session,'update_review_task',dict(project_id=project,task_id='resume',updates=[dict(unit_id='pump',notes='Human continuation')],expected_revision=work['revision'],request_id='human-continuation',reason='Continue from new process',actor='human'))
             self.assertIn('model',ProjectStructure(workspace,project).read(tid)['rows'][0][1]['readings'])
+
+    async def test_structure_calculation_trace_survives_stdio_restart(self):
+        try:from openpyxl import Workbook
+        except ImportError:self.skipTest('readers extra missing')
+        from uvyazka.ingest import scan
+        from uvyazka.project_structure import ProjectStructure
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'sources';source.mkdir()
+            book=Workbook();sheet=book.active;sheet['A1']=0.1;sheet['A2']=0.2;sheet['A3']='=A1+A2';book.save(source/'numbers.xlsx');book.close()
+            workspace=Workspace(root/'state');workspace.create_project('p','Synthetic',source);scan(workspace,'p')
+            store=ProjectStructure(workspace,'p');store.build();tid=store.catalog('tables')['items'][0]['table_id']
+            params=StdioServerParameters(command=sys.executable,args=['-m','uvyazka.server'],env={**os.environ,'UVYAZKA_HOME':str(workspace.home),'PYTHONUTF8':'1'})
+            async def call(session,name,**args):
+                result=await session.call_tool(name,dict(project_id='p',**args));self.assertFalse(result.isError,result)
+                return json.loads(next(c.text for c in result.content if c.type=='text'))
+            for iteration in range(2):
+                async with stdio_client(params) as (read,write):
+                    async with ClientSession(read,write) as session:
+                        await session.initialize()
+                        if not iteration:
+                            calculated=await call(session,'calculate_structure_expression',table_id=tid,expression='A3')
+                            self.assertEqual(calculated['result']['value'],'0.3')
+                            await call(session,'save_structure_analysis',analysis_id='calc',table_id=tid,title='Exact arithmetic',summary='Caller-selected expression.',data={'calculation':calculated},reader='model',request_id='calc-memory')
+                        else:
+                            note=await call(session,'get_project_structure',kind='analyses',analysis_id='calc')
+                            self.assertEqual(note['items'][0]['data']['calculation'],calculated)
 
     async def test_folder_intake_survives_stdio_restart_and_joins_ui_project(self):
         from uvyazka.intake import ProjectIntake
@@ -251,7 +277,7 @@ with tempfile.TemporaryDirectory() as directory:
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    self.assertEqual(len(listed.tools), 78)
+                    self.assertEqual(len(listed.tools), 79)
                     parameters = next(tool for tool in listed.tools if tool.name == 'find_rvt_parameters')
                     self.assertIn('cursor', parameters.inputSchema['properties'])
                     self.assertIn('extraction_id', parameters.inputSchema['required'])

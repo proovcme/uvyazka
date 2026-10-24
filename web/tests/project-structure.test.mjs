@@ -10,6 +10,25 @@ const source={doc_id:'doc',sha256:'a'.repeat(64),relative_path:'АР.xlsx'};
 const card={table_id:'table',name:'Оборудование',unit_name:'Лист 1',unit_kind:'excel_sheet',source,row_count:2,column_count:2,profile_candidate:{types:[]}};
 const cell=(row,column,value)=>({cell_id:`table:${row}:${column}`,row,column,text:value,state:'value',locator:{kind:'excel_cell',sheet:'Лист 1',cell:`${column===1?'A':'B'}${row}`},readings:{}});
 
+test('cell arithmetic is a separate read-only calculation with visible provenance',async()=>{
+ const w=new Window({url:'http://127.0.0.1:8773/?project=a&structure_table=table#structure'});w.document.body.innerHTML='<div id="view"></div>';
+ let calculation,posts=0;
+ const numeric={...cell(1,2,'=10-3'),state:'formula',formula:'=10-3',cached_value:'99',value_type:'f'};
+ w.fetch=async(path,options={})=>{
+  assert.notEqual(options.method,'POST');posts+=Number(options.method==='POST');
+  const u=new URL(path,w.location.origin);let data;
+  if(u.pathname.endsWith('/table'))data={table:card,rows:[[cell(1,1,'Item'),numeric]],current_registered_version:true,next_offset:null,next_column_offset:null};
+  else if(u.pathname.endsWith('/calculate')){calculation=u.searchParams;data={result:{value:'7',exact:'7/1'},cells:[{address:'B1',formula:'=10-3',cache_comparison:'differs'}],cached_discrepancies:1,accepted:false};}
+  else data={items:[],coverage:counts,next_offset:null};
+  return {ok:true,json:async()=>structuredClone(data)};
+ };
+ w.eval(code);await w.UvyazkaStructure.mount(w.document.querySelector('#view'),'a');await tick();
+ w.document.querySelector('[data-cell-id="table:1:2"]').click();
+ const form=w.document.querySelector('[data-calculation]');assert.ok(form);form.querySelector('[name=expression]').value='B1';form.dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();
+ assert.equal(calculation.get('project_id'),'a');assert.equal(calculation.get('expression'),'B1');
+ assert.match(form.textContent,/differs/);assert.match(form.textContent,/7\/1/);assert.equal(posts,0);w.happyDOM.cancelAsync();
+});
+
 test('shared task resumes selected work with exact revision and human provenance',async()=>{
  const w=new Window({url:'http://127.0.0.1:8773/?project=a&structure_task=scope#structure'});w.document.body.innerHTML='<div id="view"></div>';
  const task={task_id:'scope',title:'Насосная',scope:'Два выбранных условия',revision:2,counts:{total:2,reviewed:1,needs_recheck:0,blocked:0},outcomes:{match:0,discrepancy:0,question:1},next_action:{unit_id:'feed',action:'read_and_check'},next_unit_offset:null,units:[{id:'feed',title:'Питание',sources:[{doc_id:'pdf',sha256:'a',page_number:4}],notes:'Прочитать схему',state:'pending',effective_state:'pending',stale_reasons:[],outcome:'unchecked',result:null}]};

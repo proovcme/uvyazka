@@ -7,7 +7,10 @@ def serve_get(handler,workspace,token,path,q):
     if not path.startswith('/api/structure/'):return False
     if path=='/api/structure/config':handler.send({'write_token':token});return True
     service=ProjectStructure(workspace,q['project_id'])
-    if path=='/api/structure/tasks':
+    if path=='/api/structure/calculate':
+        from .structure_calculation import StructureCalculation
+        handler.send(StructureCalculation(workspace,q['project_id']).calculate(q['table_id'],q['expression']))
+    elif path=='/api/structure/tasks':
         from .review_work import ReviewWork
         handler.send(ReviewWork(workspace,q['project_id']).get(q.get('task_id'),int(q.get('offset',0)),int(q.get('limit',20)),
                      int(q.get('unit_offset',0)),int(q.get('unit_limit',40)),int(q['revision']) if q.get('revision') else None,query=q.get('q','')))

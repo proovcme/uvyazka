@@ -7,6 +7,18 @@ def register_tools(mcp,workspace):
     write={'readOnlyHint':False,'destructiveHint':False,'idempotentHint':False}
     from .review_work import ReviewWork
 
+    @mcp.tool(annotations=read)
+    def calculate_structure_expression(project_id: str,table_id: str,expression: str) -> dict:
+        """Recalculate chosen XLSX/XLSM scalar arithmetic from stored literal cells, with exact fractions and source trace.
+        Supports same-worksheet A1/$A$1 references, numbers, + - * / and parentheses, including referenced
+        formula chains. Example: K61+K62+K63. Does not trust cached formula values: reports matches/differs/missing.
+        Blank, absent, text, boolean, merged continuation and cycles are explicit errors, never zero.
+        No Excel execution, functions/ranges, external/sheet links or XLS formula recovery. Bound: 128 cells,
+        2048 characters per expression, depth 32. Caller determines units, meaning and comparable scope.
+        Verify actual source hashes; save the returned expression/trace in an analysis for project memory."""
+        from .structure_calculation import StructureCalculation
+        return StructureCalculation(workspace,project_id).calculate(table_id,expression)
+
     @mcp.tool(annotations={'readOnlyHint':False,'destructiveHint':False,'idempotentHint':True})
     def create_review_task(project_id: str,task_id: str,title: str,scope: str,units: list[dict],request_id: str,actor: str='model') -> dict:
         """Create a bounded shared review inventory, not an autonomous model job.

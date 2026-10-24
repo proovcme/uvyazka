@@ -32,7 +32,7 @@ from uvyazka.core import Workspace
 from uvyazka.server import build_server
 with tempfile.TemporaryDirectory() as directory:
     server = build_server(Workspace(Path(directory)/'state'))
-    assert len(asyncio.run(server.list_tools())) == 79
+    assert len(asyncio.run(server.list_tools())) == 80
     asyncio.run(server.call_tool('construction_schema', {}))
     asyncio.run(server.call_tool('get_unit_catalog', {'dimension': 'flow'}))
     asyncio.run(server.call_tool('rvt_converter_status', {}))
@@ -107,6 +107,10 @@ with tempfile.TemporaryDirectory() as directory:
                             work=await call(session,'get_review_tasks',dict(project_id=project,task_id='resume'))
                             self.assertEqual(work['counts']['reviewed'],1);self.assertEqual(work['outcomes']['question'],1)
                             self.assertFalse(work['accepted']);self.assertEqual(work['status'],'reviewed_with_findings')
+                            exported=await call(session,'export_review_report',dict(project_id=project,task_id='resume',format='json'))
+                            report=json.loads(exported['content']);self.assertEqual(len(report['rows']),1)
+                            self.assertEqual(report['rows'][0]['detail'],'');self.assertEqual(report['outcomes']['question'],1)
+                            self.assertFalse(report['complete_project_review'])
                             await call(session,'update_review_task',dict(project_id=project,task_id='resume',updates=[dict(unit_id='pump',notes='Human continuation')],expected_revision=work['revision'],request_id='human-continuation',reason='Continue from new process',actor='human'))
             self.assertIn('model',ProjectStructure(workspace,project).read(tid)['rows'][0][1]['readings'])
 
@@ -277,7 +281,7 @@ with tempfile.TemporaryDirectory() as directory:
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    self.assertEqual(len(listed.tools), 79)
+                    self.assertEqual(len(listed.tools), 80)
                     parameters = next(tool for tool in listed.tools if tool.name == 'find_rvt_parameters')
                     self.assertIn('cursor', parameters.inputSchema['properties'])
                     self.assertIn('extraction_id', parameters.inputSchema['required'])

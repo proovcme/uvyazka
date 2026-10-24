@@ -7,7 +7,12 @@ def serve_get(handler,workspace,token,path,q):
     if not path.startswith('/api/structure/'):return False
     if path=='/api/structure/config':handler.send({'write_token':token});return True
     service=ProjectStructure(workspace,q['project_id'])
-    if path=='/api/structure/calculate':
+    if path=='/api/structure/report':
+        from .review_report import ReviewReport
+        exported=ReviewReport(workspace,q['project_id']).export(q['task_id'],q.get('format','json'),
+                        int(q['revision']) if q.get('revision') else None,'http://'+handler.headers['Host'])
+        handler.send(exported['content'],exported['content_type'])
+    elif path=='/api/structure/calculate':
         from .structure_calculation import StructureCalculation
         handler.send(StructureCalculation(workspace,q['project_id']).calculate(q['table_id'],q['expression']))
     elif path=='/api/structure/tasks':

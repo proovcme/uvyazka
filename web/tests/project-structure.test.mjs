@@ -43,6 +43,9 @@ test('shared task resumes selected work with exact revision and human provenance
  };
  w.eval(code);await w.UvyazkaStructure.mount(w.document.querySelector('#view'),'a');await tick();
  assert.match(w.document.body.textContent,/Разобрано 1 из 2/);assert.match(w.document.body.textContent,/вопросов 1/);
+ const downloads=[...w.document.querySelectorAll('[data-report-format]')];assert.equal(downloads.length,3);
+ for(const a of downloads){const u=new URL(a.href);assert.equal(u.searchParams.get('project_id'),'a');assert.equal(u.searchParams.get('task_id'),'scope');assert.equal(u.searchParams.get('revision'),'2');assert.ok(a.download.startsWith('scope-r2.'));}
+ assert.match(w.document.body.textContent,/все выбранные пункты/);
  assert.equal(w.document.querySelector('a[href*=pdf]').href.endsWith('#page=4'),true);
  const form=w.document.querySelector('[data-task-update]');form.querySelector('[name=state]').value='working';form.querySelector('[name=notes]').value='Нашёл нужный лист';form.dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();
  assert.equal(saved.task_id,'scope');assert.equal(saved.actor,'human');assert.equal(saved.expected_revision,2);

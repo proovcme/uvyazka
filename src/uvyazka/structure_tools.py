@@ -8,6 +8,19 @@ def register_tools(mcp,workspace):
     from .review_work import ReviewWork
 
     @mcp.tool(annotations=read)
+    def export_review_report(project_id: str,task_id: str,format: str='json',revision: int | None=None,panel_url: str='') -> dict:
+        """Export every unit of one selected review task as JSON, CSV or Markdown, without approving it.
+        Returns filename, content_type and content for the caller to save. Includes fixed scope, counts,
+        source paths/hashes/locators, pinned check details, questions, blocked work and stale results.
+        Uses actual hashes and a consistent task/analysis DB snapshot; no UI pagination truncation.
+        revision optionally exports task history, evaluated against current source/analysis freshness.
+        Optional panel_url is an HTTP loopback origin for clickable source links; it is never fetched.
+        Stale conclusions are preserved but not counted as reviewed. Does not prove a complete project,
+        current approved issue, engineering correctness or resolution of findings. No original is modified."""
+        from .review_report import ReviewReport
+        return ReviewReport(workspace,project_id).export(task_id,format,revision,panel_url)
+
+    @mcp.tool(annotations=read)
     def calculate_structure_expression(project_id: str,table_id: str,expression: str) -> dict:
         """Recalculate chosen XLSX/XLSM scalar arithmetic from stored literal cells, with exact fractions and source trace.
         Supports same-worksheet A1/$A$1 references, numbers, + - * / and parentheses, including referenced

@@ -25,6 +25,7 @@ def main(argv: list[str] | None = None):
     sub.add_parser("projects")
     sub.add_parser("demo")
     sub.add_parser("rvt-status")
+    p=sub.add_parser('configure-embeddings');p.add_argument('--executable',required=True);p.add_argument('--models',required=True)
     p = sub.add_parser("add-project"); p.add_argument("project_id"); p.add_argument("source_root"); p.add_argument("--name", required=True); p.add_argument("--location", default="")
     p = sub.add_parser("scan"); p.add_argument("project_id"); p.add_argument("--limit", type=int, default=100); p.add_argument('--doc-id',action='append',dest='doc_ids',help='Refresh only registered document IDs; repeat for multiple documents')
     p = sub.add_parser("status"); p.add_argument("project_id")
@@ -39,6 +40,9 @@ def main(argv: list[str] | None = None):
         if args.action == "rvt-status":
             from .construction.rvt_runtime import converter_status
             print(json.dumps(converter_status(workspace.home),ensure_ascii=False,indent=2)); return
+        if args.action == 'configure-embeddings':
+            from .embedding_worker import configure
+            print(json.dumps(configure(workspace.home,args.executable,args.models),ensure_ascii=False,indent=2));return
         if args.action == "export-skills":
             checkout = Path(__file__).resolve().parents[2] / "skills"
             source = checkout if checkout.is_dir() else Path(sys.prefix) / "share/uvyazka/skills"

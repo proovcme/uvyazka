@@ -2,6 +2,7 @@ include plugin.json mcp.json server_entry.py
 include AGENTS.md
 include uv.lock
 include tests/fixtures/structure-synthetic.xls tests/fixtures/structure-synthetic.md
+include tests/fixtures/embedding_worker.py
 recursive-include src/uvyazka/_vendor *.txt *.json
 recursive-include tools *.py *.ps1 *.json *.mjs
 recursive-include integrations *.rs *.toml *.lock *.md *.json *.csv

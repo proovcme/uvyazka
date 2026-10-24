@@ -32,7 +32,7 @@ from uvyazka.core import Workspace
 from uvyazka.server import build_server
 with tempfile.TemporaryDirectory() as directory:
     server = build_server(Workspace(Path(directory)/'state'))
-    assert len(asyncio.run(server.list_tools())) == 80
+    assert len(asyncio.run(server.list_tools())) == 83
     asyncio.run(server.call_tool('construction_schema', {}))
     asyncio.run(server.call_tool('get_unit_catalog', {'dimension': 'flow'}))
     asyncio.run(server.call_tool('rvt_converter_status', {}))
@@ -281,16 +281,22 @@ with tempfile.TemporaryDirectory() as directory:
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    self.assertEqual(len(listed.tools), 80)
+                    self.assertEqual(len(listed.tools), 83)
                     parameters = next(tool for tool in listed.tools if tool.name == 'find_rvt_parameters')
                     self.assertIn('cursor', parameters.inputSchema['properties'])
                     self.assertIn('extraction_id', parameters.inputSchema['required'])
                     by_name = {tool.name: tool for tool in listed.tools}
                     self.assertTrue(by_name["read_evidence"].annotations.readOnlyHint)
                     self.assertTrue(by_name["get_unit_catalog"].annotations.readOnlyHint)
+                    self.assertTrue(by_name['search_project_memory'].annotations.readOnlyHint)
+                    self.assertFalse(by_name['build_semantic_index'].annotations.readOnlyHint)
+                    semantic=await session.call_tool('get_semantic_search_status',{'project_id':'demo-a'})
+                    self.assertFalse(semantic.isError,semantic)
+                    fallback=await session.call_tool('search_project_memory',{'project_id':'demo-a','query':'бетон'})
+                    self.assertFalse(fallback.isError,fallback)
+                    self.assertEqual(json.loads(next(c.text for c in fallback.content if c.type=='text'))['fallback_reason'],'worker_not_configured')
                     catalog = await session.call_tool("get_unit_catalog", {"dimension": "temperature"})
                     self.assertFalse(catalog.isError, catalog)
-                    import json
                     data = json.loads(next(c.text for c in catalog.content if c.type == "text"))
                     celsius = next(e for e in data["units"] if e["symbol"] == "°C")
                     self.assertEqual(celsius["offset_exact"], "5463/20")

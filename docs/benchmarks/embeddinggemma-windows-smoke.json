@@ -1,0 +1,594 @@
+{
+  "scope": "Synthetic 6-text smoke benchmark; no project-wide/engineering acceptance",
+  "cutoff": 0.72,
+  "model": {
+    "retrieval_revision": "retrieval-1:utf8-1000-overlap40:prompt1:pdf-region1600-budget560",
+    "space_id": "8eb8687ee4ecc2776e76cb1a9c04beef0fdd5ea728dbeaa778afc4d6bbe05900",
+    "worker": {
+      "asset_sha256": {
+        "models/embeddinggemma-2-Q8_0.gguf": "2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135",
+        "models/mmproj-embeddinggemma-2-Q8_0.gguf": "c4a8a52691ecef40618438928bdf9e68379b854e24166f292592353db0aab64f",
+        "runtime/BlocksRuntime.dll": "a7b0433ef9c1315388d5cd526f6a1e77506fa9570a9dc3fa9c1818add5f4e22a",
+        "runtime/Foundation.dll": "1641656145c1cc386ffd75dbc2627a95e2ec28a492b1b565b9f02aa3db14dad0",
+        "runtime/FoundationEssentials.dll": "c622b8aa08c4b0f2fac7bf0b6d60642c3fbb8ec1db91b3e8231ca39b012ab932",
+        "runtime/FoundationInternationalization.dll": "26ee3761e6ced903c704eda872f15966f445b819f4b777b101f56ce7f3fcf8ab",
+        "runtime/FoundationNetworking.dll": "d72cd188fd43dc46f7dd8c9f50e47bb35028dabb1ee9a3e993755080469ef914",
+        "runtime/FoundationXML.dll": "77ab2f2750199736e3c070f14ff2806644a99ff4447557224c0770c6998b4439",
+        "runtime/_FoundationICU.dll": "3ca21e4bea066483c81e85fda43da9f70671b435396b989f8b7676bbae24c105",
+        "runtime/concrt140.dll": "54716f0738af891f283d213b5c8d11b25896bb8ee3097d301eae718560cf974e",
+        "runtime/digup.exe": "8b8055bb6a5218f994d44fecc0564843efd3128af95551e9be36c686d2b54f2a",
+        "runtime/dispatch.dll": "3b2bf951e308b135c7467477722b3ae694a518d25e5b48c93a9a78b3a7043057",
+        "runtime/ggml-base.dll": "4fbc5638d95b2d0c8439b5df30436d9505d5123bb9062e1d34dc674498f59f25",
+        "runtime/ggml-cpu-alderlake.dll": "552c05fce6b2ab6e5416b6fc9b1876f736d0a9a90577ed54c754d44c3cf61542",
+        "runtime/ggml-cpu-cannonlake.dll": "ad471fbd12335b07f2be960ba10df1be752ac65cb30cfee2afbb5ab7dab908b4",
+        "runtime/ggml-cpu-cascadelake.dll": "33fa2e99bd020f5f8cf7210fcaae2ddcc980d196e1f6950d4524cb9203f1e68c",
+        "runtime/ggml-cpu-haswell.dll": "8e53a4e2191f81da5ab977a400a05daf54d8945f4be8b275e90d1e91d61925d8",
+        "runtime/ggml-cpu-icelake.dll": "ef23693324fa36d29a7f00118cc53ae2fbc2df9eb1262a5597bb9993a3a910d1",
+        "runtime/ggml-cpu-sandybridge.dll": "4bf773c38edf7a724de5cf2d3fbd32f908c07ee05ca3a17eb862a8e91ce5c526",
+        "runtime/ggml-cpu-skylakex.dll": "22394355e99f8a7998755fa505e8daf1db3ff3ba921928fc233e075e128ba62b",
+        "runtime/ggml-cpu-sse42.dll": "ef7ea389681c86488e377f1f58ab8e351497ff001ee53d8473e3bd5067562183",
+        "runtime/ggml-cpu-x64.dll": "217d96687c06b04b93f2864009729c330c1d6621dc1dff5e632c66d6f3fecf8a",
+        "runtime/ggml-vulkan.dll": "54196d6dede37fd13e0d9c1e9f0ee4b63c0e64f4f8afe72225ee3b0e883da72b",
+        "runtime/ggml.dll": "9270a8fe05d43dab6efa049ce5e99d0d48b4f08bd2bfae97c04f191378146370",
+        "runtime/llama.dll": "93bd66c1ec45430d85c1c8a7a5eee132ad87e925830a1b4f16589c4c845f5823",
+        "runtime/msvcp140.dll": "7c26614e1d733892c2deac7e245ce115504b1d80592dd0a01b08e3e5a55f89ca",
+        "runtime/msvcp140_1.dll": "206c931bf90fdad8816de3b5e2ef80b2bcaa9406c89ecc05fe6fddffe251e982",
+        "runtime/msvcp140_2.dll": "d50d7883f20d1dc6191768d3746f52dd9cac89c346ffaed5be1f110c2f34a838",
+        "runtime/msvcp140_atomic_wait.dll": "3d0cbfaa1bf3eecf5a3f4491d2960ee803cb994f30292c6adc4a07c498f60e2b",
+        "runtime/msvcp140_codecvt_ids.dll": "8a65c7596ef2e6938731f5a1058e7e40145b6d97967cc649231a076b9a608d78",
+        "runtime/mtmd.dll": "b1281e15cb3df7f20f02a9a278cb658d0a3f492b9c65b1d83acb9463059e812c",
+        "runtime/pdfium.dll": "1f2aee4286b8cf0413ab4562b7121aa454f9cfd9afd6ca8609bcef80927b3f80",
+        "runtime/swiftCRT.dll": "1739c6e1370812bbb78b6cb6f5a8943e23e3a23b804123141039fb7d636c94c9",
+        "runtime/swiftCore.dll": "3c881efbcddbca632d2dce2f4d59f6b3d53d7a02782ca1ba7a3cb5d9c698f0fa",
+        "runtime/swiftDispatch.dll": "e49fb75a23452e321f90fd7518e0787874e78029365f30ec18531c44cab7a4da",
+        "runtime/swiftDistributed.dll": "65d6727ce0c2749df3ccf3e4490630751c0b4f799272de98dc35d2f70371dcd8",
+        "runtime/swiftObservation.dll": "1a6616a1acb1ea1df44ea590d7944936996894de7ed481414cb37d0eb1a52166",
+        "runtime/swiftRegexBuilder.dll": "851e9fdc60d6d63207e1e9df4a7fa27ea17f92be20d6d504cf8f78c2a514ed96",
+        "runtime/swiftRemoteMirror.dll": "a8632719b573fde6805cf986068f1924704689f808c286ea2ab9dfe45e33fdd3",
+        "runtime/swiftRuntime.dll": "b845ee6522cd0a445b8cd9368a7d93df34206222dbf2009032d8065d0b529ad3",
+        "runtime/swiftSwiftOnoneSupport.dll": "b20ed8f9f89b490015b52b4844ac13994f0f29ddecd790f3a7996ac1673f1d5f",
+        "runtime/swiftSynchronization.dll": "454420b6252d5807195f3d3ad29977c9d7c73c0f3fbeacd4653c20f0ab35c0c9",
+        "runtime/swiftWinSDK.dll": "4a8ecfbdce840fd89fa98f850a0d82619b8f97e04f43449937533c608e447ffe",
+        "runtime/swift_Builtin_float.dll": "9b233cc7163e8d544221573a62210ed129d816184c472ce7e832b9622e74b3cf",
+        "runtime/swift_Concurrency.dll": "b85a4f0817981a4455d5324dbd626a40206328f6066767b5483c46fd5c852ec6",
+        "runtime/swift_Differentiation.dll": "43d3172b35a7ac22e589bf82c5fa12f97123c9738a614368f2e2bc4fa110c7b8",
+        "runtime/swift_RegexParser.dll": "f518e90801a9c3af3ff541a44aad55adfdd2aac7c5d7babb744cbe358c14d682",
+        "runtime/swift_StringProcessing.dll": "4c46e0e0300a1b954892dd8e596f0d2d2f8f133c8c6d8b7a152e66aaab3cdce0",
+        "runtime/swift_Volatile.dll": "8324ce9eaafa8cdef5b75289813f4db104ecb433c24ae4ca0cbe461e239b0320",
+        "runtime/vccorlib140.dll": "09f93d5ff96ae09767f3e1af3cdd43a5a58f2598654fc63089429bb6f9f4737f",
+        "runtime/vcruntime140.dll": "d1f4225df2cd877dbf130d5668a021dce3f94118455ff5ec952061c30afc9ce7",
+        "runtime/vcruntime140_1.dll": "a7146c08f89fe5b04541ab507cdb59ff7b44534d4ba3c668a426c6450a03434e",
+        "runtime/vcruntime140_threads.dll": "40f39e8cee5f5a531b4010e18b807e8fe265b908dc58f959ecb7ebc6ea6cb11a"
+      },
+      "dim": 768,
+      "dtype": "text-q8_0+mmproj-q8_0",
+      "model": "google/embeddinggemma-2",
+      "revision": "bfcd298762cc34d0357ece5ebdd31791a3a374d8",
+      "runtime": "llama.cpp-vectors1"
+    }
+  },
+  "build_seconds": 2.859,
+  "queries": [
+    {
+      "query": "чем обеспечивается напор воды наверху здания",
+      "kind": "paraphrase",
+      "expected": "water.txt",
+      "requested": "literal",
+      "effective": "literal",
+      "fallback": null,
+      "seconds": 0.0,
+      "top1": false,
+      "top3": false,
+      "negative_hits": null,
+      "hits": []
+    },
+    {
+      "query": "чем обеспечивается напор воды наверху здания",
+      "kind": "paraphrase",
+      "expected": "water.txt",
+      "requested": "semantic",
+      "effective": "semantic",
+      "fallback": null,
+      "seconds": 9.985,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "water.txt",
+          "similarity": 0.734142,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "bf41a4fb55304140b8b5ba47014c384d24a3db86c59897c2fb433f7671bd05c6"
+        }
+      ]
+    },
+    {
+      "query": "чем обеспечивается напор воды наверху здания",
+      "kind": "paraphrase",
+      "expected": "water.txt",
+      "requested": "hybrid",
+      "effective": "hybrid",
+      "fallback": null,
+      "seconds": 0.031,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "water.txt",
+          "similarity": 0.734142,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "bf41a4fb55304140b8b5ba47014c384d24a3db86c59897c2fb433f7671bd05c6"
+        }
+      ]
+    },
+    {
+      "query": "какой провод проложен к двигателям насосов",
+      "kind": "paraphrase",
+      "expected": "electrical.txt",
+      "requested": "literal",
+      "effective": "literal",
+      "fallback": null,
+      "seconds": 0.0,
+      "top1": false,
+      "top3": false,
+      "negative_hits": null,
+      "hits": []
+    },
+    {
+      "query": "какой провод проложен к двигателям насосов",
+      "kind": "paraphrase",
+      "expected": "electrical.txt",
+      "requested": "semantic",
+      "effective": "semantic",
+      "fallback": null,
+      "seconds": 0.031,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "electrical.txt",
+          "similarity": 0.773189,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "ad4f9bb8194d95e70f68a3029ff90f6246b116cd3eeec3e5653c4c78d1763410"
+        }
+      ]
+    },
+    {
+      "query": "какой провод проложен к двигателям насосов",
+      "kind": "paraphrase",
+      "expected": "electrical.txt",
+      "requested": "hybrid",
+      "effective": "hybrid",
+      "fallback": null,
+      "seconds": 0.031,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "electrical.txt",
+          "similarity": 0.773189,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "ad4f9bb8194d95e70f68a3029ff90f6246b116cd3eeec3e5653c4c78d1763410"
+        }
+      ]
+    },
+    {
+      "query": "что происходит с вентиляцией при возгорании",
+      "kind": "paraphrase",
+      "expected": "fire.txt",
+      "requested": "literal",
+      "effective": "literal",
+      "fallback": null,
+      "seconds": 0.0,
+      "top1": false,
+      "top3": false,
+      "negative_hits": null,
+      "hits": []
+    },
+    {
+      "query": "что происходит с вентиляцией при возгорании",
+      "kind": "paraphrase",
+      "expected": "fire.txt",
+      "requested": "semantic",
+      "effective": "semantic",
+      "fallback": null,
+      "seconds": 0.5,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "fire.txt",
+          "similarity": 0.749708,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "fb5cba43a19e06aa9be6b1cbce3a4bde1086b3c57612c1fd36f3c6a8a97b97d8"
+        },
+        {
+          "path": "ventilation.txt",
+          "similarity": 0.737139,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "80db189909b59c13f3cdb5f6203f97467b81110629fbbd1c52bf2b3e670580ea"
+        }
+      ]
+    },
+    {
+      "query": "что происходит с вентиляцией при возгорании",
+      "kind": "paraphrase",
+      "expected": "fire.txt",
+      "requested": "hybrid",
+      "effective": "hybrid",
+      "fallback": null,
+      "seconds": 0.047,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "fire.txt",
+          "similarity": 0.749708,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "fb5cba43a19e06aa9be6b1cbce3a4bde1086b3c57612c1fd36f3c6a8a97b97d8"
+        },
+        {
+          "path": "ventilation.txt",
+          "similarity": 0.737139,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "80db189909b59c13f3cdb5f6203f97467b81110629fbbd1c52bf2b3e670580ea"
+        }
+      ]
+    },
+    {
+      "query": "площадь комнаты для серверного оборудования",
+      "kind": "paraphrase",
+      "expected": "architecture.txt",
+      "requested": "literal",
+      "effective": "literal",
+      "fallback": null,
+      "seconds": 0.0,
+      "top1": false,
+      "top3": false,
+      "negative_hits": null,
+      "hits": []
+    },
+    {
+      "query": "площадь комнаты для серверного оборудования",
+      "kind": "paraphrase",
+      "expected": "architecture.txt",
+      "requested": "semantic",
+      "effective": "semantic",
+      "fallback": null,
+      "seconds": 0.016,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "architecture.txt",
+          "similarity": 0.752037,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "63f1628f26fbc28d342cb279bc018470874657722e7a239553d85dfc07671669"
+        }
+      ]
+    },
+    {
+      "query": "площадь комнаты для серверного оборудования",
+      "kind": "paraphrase",
+      "expected": "architecture.txt",
+      "requested": "hybrid",
+      "effective": "hybrid",
+      "fallback": null,
+      "seconds": 0.031,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "architecture.txt",
+          "similarity": 0.752037,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "63f1628f26fbc28d342cb279bc018470874657722e7a239553d85dfc07671669"
+        }
+      ]
+    },
+    {
+      "query": "какой материал несущего основания здания",
+      "kind": "paraphrase",
+      "expected": "structure.txt",
+      "requested": "literal",
+      "effective": "literal",
+      "fallback": null,
+      "seconds": 0.0,
+      "top1": false,
+      "top3": false,
+      "negative_hits": null,
+      "hits": []
+    },
+    {
+      "query": "какой материал несущего основания здания",
+      "kind": "paraphrase",
+      "expected": "structure.txt",
+      "requested": "semantic",
+      "effective": "semantic",
+      "fallback": null,
+      "seconds": 0.031,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "structure.txt",
+          "similarity": 0.746861,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "84cdcb9c745b415224678989082d3a081c83dcd1b2d1faf4ab9965a7cbac9bd6"
+        }
+      ]
+    },
+    {
+      "query": "какой материал несущего основания здания",
+      "kind": "paraphrase",
+      "expected": "structure.txt",
+      "requested": "hybrid",
+      "effective": "hybrid",
+      "fallback": null,
+      "seconds": 0.032,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "structure.txt",
+          "similarity": 0.746861,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "84cdcb9c745b415224678989082d3a081c83dcd1b2d1faf4ab9965a7cbac9bd6"
+        }
+      ]
+    },
+    {
+      "query": "ВВГнг-LS",
+      "kind": "literal",
+      "expected": "electrical.txt",
+      "requested": "literal",
+      "effective": "literal",
+      "fallback": null,
+      "seconds": 0.0,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "electrical.txt",
+          "similarity": null,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "ad4f9bb8194d95e70f68a3029ff90f6246b116cd3eeec3e5653c4c78d1763410"
+        }
+      ]
+    },
+    {
+      "query": "ВВГнг-LS",
+      "kind": "literal",
+      "expected": "electrical.txt",
+      "requested": "semantic",
+      "effective": "semantic",
+      "fallback": null,
+      "seconds": 0.031,
+      "top1": false,
+      "top3": false,
+      "negative_hits": null,
+      "hits": []
+    },
+    {
+      "query": "ВВГнг-LS",
+      "kind": "literal",
+      "expected": "electrical.txt",
+      "requested": "hybrid",
+      "effective": "hybrid",
+      "fallback": null,
+      "seconds": 0.016,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "electrical.txt",
+          "similarity": null,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "ad4f9bb8194d95e70f68a3029ff90f6246b116cd3eeec3e5653c4c78d1763410"
+        }
+      ]
+    },
+    {
+      "query": "Н-1",
+      "kind": "identifier",
+      "expected": "water.txt",
+      "requested": "literal",
+      "effective": "literal",
+      "fallback": null,
+      "seconds": 0.015,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "water.txt",
+          "similarity": null,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "bf41a4fb55304140b8b5ba47014c384d24a3db86c59897c2fb433f7671bd05c6"
+        }
+      ]
+    },
+    {
+      "query": "Н-1",
+      "kind": "identifier",
+      "expected": "water.txt",
+      "requested": "semantic",
+      "effective": "literal",
+      "fallback": "identifier_lookup_uses_exact_terms",
+      "seconds": 0.0,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "water.txt",
+          "similarity": null,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "bf41a4fb55304140b8b5ba47014c384d24a3db86c59897c2fb433f7671bd05c6"
+        }
+      ]
+    },
+    {
+      "query": "Н-1",
+      "kind": "identifier",
+      "expected": "water.txt",
+      "requested": "hybrid",
+      "effective": "literal",
+      "fallback": "identifier_lookup_uses_exact_terms",
+      "seconds": 0.0,
+      "top1": true,
+      "top3": true,
+      "negative_hits": null,
+      "hits": [
+        {
+          "path": "water.txt",
+          "similarity": null,
+          "locator": {
+            "kind": "text_line",
+            "line": 1
+          },
+          "sha256": "bf41a4fb55304140b8b5ba47014c384d24a3db86c59897c2fb433f7671bd05c6"
+        }
+      ]
+    },
+    {
+      "query": "Н-10",
+      "kind": "negative",
+      "expected": null,
+      "requested": "literal",
+      "effective": "literal",
+      "fallback": null,
+      "seconds": 0.016,
+      "top1": null,
+      "top3": null,
+      "negative_hits": 0,
+      "hits": []
+    },
+    {
+      "query": "Н-10",
+      "kind": "negative",
+      "expected": null,
+      "requested": "semantic",
+      "effective": "literal",
+      "fallback": "identifier_lookup_uses_exact_terms",
+      "seconds": 0.0,
+      "top1": null,
+      "top3": null,
+      "negative_hits": 0,
+      "hits": []
+    },
+    {
+      "query": "Н-10",
+      "kind": "negative",
+      "expected": null,
+      "requested": "hybrid",
+      "effective": "literal",
+      "fallback": "identifier_lookup_uses_exact_terms",
+      "seconds": 0.0,
+      "top1": null,
+      "top3": null,
+      "negative_hits": 0,
+      "hits": []
+    },
+    {
+      "query": "какие лифты установлены в здании",
+      "kind": "negative",
+      "expected": null,
+      "requested": "literal",
+      "effective": "literal",
+      "fallback": null,
+      "seconds": 0.0,
+      "top1": null,
+      "top3": null,
+      "negative_hits": 0,
+      "hits": []
+    },
+    {
+      "query": "какие лифты установлены в здании",
+      "kind": "negative",
+      "expected": null,
+      "requested": "semantic",
+      "effective": "semantic",
+      "fallback": null,
+      "seconds": 0.015,
+      "top1": null,
+      "top3": null,
+      "negative_hits": 0,
+      "hits": []
+    },
+    {
+      "query": "какие лифты установлены в здании",
+      "kind": "negative",
+      "expected": null,
+      "requested": "hybrid",
+      "effective": "hybrid",
+      "fallback": null,
+      "seconds": 0.0,
+      "top1": null,
+      "top3": null,
+      "negative_hits": 0,
+      "hits": []
+    }
+  ],
+  "environment": "Windows x64 / Legion, 2026-10-25",
+  "measurement_notes": "Shared host; warm filesystem cache. Small same-corpus smoke benchmark, not independent quality acceptance or stable latency/RAM measurement."
+}

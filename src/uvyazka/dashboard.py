@@ -31,6 +31,8 @@ def make_handler(workspace: Workspace):
                 return self.send({"error": "Loopback host required"}, status=403)
             request = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(request.query).items()}
             try:
+                from .semantic_http import serve_get as semantic_get
+                if semantic_get(self,workspace,request.path,q):return
                 from .intake_http import serve_get as intake_get
                 if intake_get(self, intake, uploads.token, request.path, q):return
                 from .measurement_http import serve_get as measurement_get
@@ -49,6 +51,7 @@ def make_handler(workspace: Workspace):
                                "/measurement-coordinates.js": ("measurement-coordinates.js", "text/javascript"),
                                "/measurements.css": ("measurements.css", "text/css")})
                 static.update({"/structure.js": ("structure.js", "text/javascript"), "/structure.css": ("structure.css", "text/css")})
+                static.update({"/search.js": ("search.js", "text/javascript"), "/search.css": ("search.css", "text/css")})
                 if request.path in static:
                     name, mime = static[request.path]
                     return self.send((STATIC / name).read_bytes(), mime + "; charset=utf-8")
@@ -107,12 +110,17 @@ def make_handler(workspace: Workspace):
             intake_request = request.path.startswith('/api/intake/')
             catalogue = request.path == '/api/rvt/catalog'
             structure = request.path.startswith('/api/structure/')
-            if request.path!='/api/rvt/upload' and not measurement and not intake_request and not catalogue and not structure:
+            semantic = request.path=='/api/semantic/build'
+            if request.path!='/api/rvt/upload' and not measurement and not intake_request and not catalogue and not structure and not semantic:
                 return self.send({"error": "Use explicit MCP tools for observations"}, status=405)
             origin=self.headers.get('Origin')
             if (origin and origin!='http://'+self.headers['Host']) or not hmac.compare_digest(self.headers.get('X-Uvyazka-Token',''),uploads.token):
                 return self.send({'error':'Open the local dashboard before writing'},status=403)
             try:
+                if semantic:
+                    from .semantic_http import serve_post as semantic_post
+                    query={k:v[0] for k,v in parse_qs(request.query).items()}
+                    return semantic_post(self,workspace,query)
                 if structure:
                     from .structure_http import serve_post as structure_post
                     query={k:v[0] for k,v in parse_qs(request.query).items()}

@@ -146,6 +146,8 @@ def build_server(workspace: Workspace | None = None):
     register_pdf_ocr(mcp, memory)
     from .structure_tools import register_tools as register_structure
     register_structure(mcp, memory)
+    from .semantic_tools import register_tools as register_semantic
+    register_semantic(mcp,memory)
     return mcp
 
 

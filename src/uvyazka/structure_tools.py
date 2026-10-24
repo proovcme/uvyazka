@@ -5,6 +5,36 @@ from .project_structure import ProjectStructure
 def register_tools(mcp,workspace):
     read={'readOnlyHint':True,'idempotentHint':True}
     write={'readOnlyHint':False,'destructiveHint':False,'idempotentHint':False}
+    from .review_work import ReviewWork
+
+    @mcp.tool(annotations={'readOnlyHint':False,'destructiveHint':False,'idempotentHint':True})
+    def create_review_task(project_id: str,task_id: str,title: str,scope: str,units: list[dict],request_id: str,actor: str='model') -> dict:
+        """Create a bounded shared review inventory, not an autonomous model job.
+        Select 1–200 units: each has id,title,sources (1–8 registered doc_id/sha256 anchors;
+        optional physical PDF page_number or table_id/row_number). All start pending.
+        Inventory is immutable: do not omit difficult rows or claim complete-project coverage.
+        Describe exclusions/revision uncertainties in scope. No source files are modified."""
+        return ReviewWork(workspace,project_id).create(task_id,title,scope,units,request_id,actor)
+
+    @mcp.tool(annotations={'readOnlyHint':False,'destructiveHint':False,'idempotentHint':True})
+    def update_review_task(project_id: str,task_id: str,updates: list[dict],expected_revision: int,request_id: str,reason: str,actor: str='model') -> dict:
+        """Checkpoint 1–200 units with optimistic revision and an audit reason; human/model share this work.
+        Each patch needs unit_id and state (pending|working|blocked|reviewed), notes, sources and/or result.
+        A reviewed unit requires result={analysis_id,reader,revision,check_id}: pin one named data.checks entry
+        in save_structure_analysis. All unit sources must be cited there. unchecked cannot complete a unit.
+        A question/discrepancy can finish the selected investigation without approving the project.
+        Changed sources/results become needs_recheck; explicitly refresh anchors and result to rebase.
+        Notes-only updates preserve stale evidence. An identical request_id retries its saved receipt."""
+        return ReviewWork(workspace,project_id).update(task_id,updates,expected_revision,request_id,reason,actor)
+
+    @mcp.tool(annotations=read)
+    def get_review_tasks(project_id: str,task_id: str | None=None,offset: int=0,limit: int=20,unit_offset: int=0,unit_limit: int=40,revision: int | None=None,verify_source: bool=True,query: str='') -> dict:
+        """Resume persisted review work, actual source hashes, pinned results and a suggested next unit.
+        Without task_id: paginated summaries; with task_id: selected units, source/check locators and counts.
+        Follow next_unit_offset to inspect all units. Counts cover the immutable selected inventory only.
+        revision reads history; head_revision guards edits. next_action is a suggestion, not background work.
+        Blocked units wait for missing input; no model API is invoked and no engineering approval is granted."""
+        return ReviewWork(workspace,project_id).get(task_id,offset,limit,unit_offset,unit_limit,revision,verify_source,query)
 
     @mcp.tool(annotations=write)
     def build_project_structure(project_id: str,doc_id: str | None=None,unit_limit: int=5,document_limit: int=3,retry_failed: bool=False,start_unit: int | None=None) -> dict:

@@ -32,7 +32,7 @@ from uvyazka.core import Workspace
 from uvyazka.server import build_server
 with tempfile.TemporaryDirectory() as directory:
     server = build_server(Workspace(Path(directory)/'state'))
-    assert len(asyncio.run(server.list_tools())) == 75
+    assert len(asyncio.run(server.list_tools())) == 78
     asyncio.run(server.call_tool('construction_schema', {}))
     asyncio.run(server.call_tool('get_unit_catalog', {'dimension': 'flow'}))
     asyncio.run(server.call_tool('rvt_converter_status', {}))
@@ -93,14 +93,21 @@ with tempfile.TemporaryDirectory() as directory:
                         table=await call(session,'read_structure_table',dict(project_id=project,table_id=tid))
                         if not iteration:
                             await call(session,'record_structure_review',dict(project_id=project,cell_id=table['rows'][0][1]['cell_id'],reader='model',observed_text='10',state='value',method='native_source',request_id='model-read'))
-                            await call(session,'save_structure_analysis',dict(project_id=project,analysis_id='pump',table_id=tid,title='Pump quantity',summary='Second column is a count.',data={'columns':{'2':'quantity'}},reader='model',request_id='model-analysis',evidence_cells=[table['rows'][0][1]['cell_id']]))
+                            await call(session,'save_structure_analysis',dict(project_id=project,analysis_id='pump',table_id=tid,title='Pump quantity',summary='Second column is a count.',data={'columns':{'2':'quantity'},'checks':[{'id':'count','status':'question','title':'Confirm quantity basis'}]},reader='model',request_id='model-analysis',evidence_cells=[table['rows'][0][1]['cell_id']]))
                             original=table['table']['source']
+                            anchor={k:original[k] for k in ('doc_id','sha256')}
+                            await call(session,'create_review_task',dict(project_id=project,task_id='resume',title='Pump review',scope='One selected row; remaining project unreviewed.',units=[dict(id='pump',title='Pump',sources=[anchor])],request_id='task-create'))
+                            await call(session,'update_review_task',dict(project_id=project,task_id='resume',updates=[dict(unit_id='pump',state='reviewed',result=dict(analysis_id='pump',reader='model',revision=1,check_id='count'))],expected_revision=1,request_id='task-progress',reason='Read selected source'))
                             await call(session,'save_structure_analysis',dict(project_id=project,analysis_id='source-only',table_id=None,title='Original source',summary='No table anchor required.',data={'checks':[{'status':'unchecked','title':'Connection path'}]},reader='model',request_id='source-analysis',related_sources=[dict(doc_id=original['doc_id'],sha256=original['sha256'],reason='Registered original')]))
                         else:
                             self.assertEqual(table['rows'][0][1]['readings']['model']['comparison'],'matches_literal')
                             self.assertEqual(table['analyses']['items'][0]['analysis_id'],'pump')
                             note=await call(session,'get_project_structure',dict(project_id=project,kind='analyses',analysis_id='source-only'))
                             self.assertTrue(note['items'][0]['current_sources']);self.assertIsNone(note['items'][0]['table_id'])
+                            work=await call(session,'get_review_tasks',dict(project_id=project,task_id='resume'))
+                            self.assertEqual(work['counts']['reviewed'],1);self.assertEqual(work['outcomes']['question'],1)
+                            self.assertFalse(work['accepted']);self.assertEqual(work['status'],'reviewed_with_findings')
+                            await call(session,'update_review_task',dict(project_id=project,task_id='resume',updates=[dict(unit_id='pump',notes='Human continuation')],expected_revision=work['revision'],request_id='human-continuation',reason='Continue from new process',actor='human'))
             self.assertIn('model',ProjectStructure(workspace,project).read(tid)['rows'][0][1]['readings'])
 
     async def test_folder_intake_survives_stdio_restart_and_joins_ui_project(self):
@@ -244,7 +251,7 @@ with tempfile.TemporaryDirectory() as directory:
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    self.assertEqual(len(listed.tools), 75)
+                    self.assertEqual(len(listed.tools), 78)
                     parameters = next(tool for tool in listed.tools if tool.name == 'find_rvt_parameters')
                     self.assertIn('cursor', parameters.inputSchema['properties'])
                     self.assertIn('extraction_id', parameters.inputSchema['required'])

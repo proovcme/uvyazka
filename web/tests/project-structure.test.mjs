@@ -10,6 +10,41 @@ const source={doc_id:'doc',sha256:'a'.repeat(64),relative_path:'АР.xlsx'};
 const card={table_id:'table',name:'Оборудование',unit_name:'Лист 1',unit_kind:'excel_sheet',source,row_count:2,column_count:2,profile_candidate:{types:[]}};
 const cell=(row,column,value)=>({cell_id:`table:${row}:${column}`,row,column,text:value,state:'value',locator:{kind:'excel_cell',sheet:'Лист 1',cell:`${column===1?'A':'B'}${row}`},readings:{}});
 
+test('shared task resumes selected work with exact revision and human provenance',async()=>{
+ const w=new Window({url:'http://127.0.0.1:8773/?project=a&structure_task=scope#structure'});w.document.body.innerHTML='<div id="view"></div>';
+ const task={task_id:'scope',title:'Насосная',scope:'Два выбранных условия',revision:2,counts:{total:2,reviewed:1,needs_recheck:0,blocked:0},outcomes:{match:0,discrepancy:0,question:1},next_action:{unit_id:'feed',action:'read_and_check'},next_unit_offset:null,units:[{id:'feed',title:'Питание',sources:[{doc_id:'pdf',sha256:'a',page_number:4}],notes:'Прочитать схему',state:'pending',effective_state:'pending',stale_reasons:[],outcome:'unchecked',result:null}]};
+ let saved;
+ w.fetch=async(path,options={})=>{
+  let data;
+  if(options.method==='POST'){saved=JSON.parse(options.body);task.revision=3;task.units[0].notes=saved.updates[0].notes;task.units[0].state=task.units[0].effective_state='working';data={revision:3};}
+  else if(path.includes('/config'))data={write_token:'secret'};
+  else if(path.includes('/tasks?'))data=new URL(path,w.location.origin).searchParams.has('task_id')?task:{items:[],next_offset:null};
+  else data={items:[],coverage:counts,next_offset:null};
+  return {ok:true,json:async()=>structuredClone(data)};
+ };
+ w.eval(code);await w.UvyazkaStructure.mount(w.document.querySelector('#view'),'a');await tick();
+ assert.match(w.document.body.textContent,/Разобрано 1 из 2/);assert.match(w.document.body.textContent,/вопросов 1/);
+ assert.equal(w.document.querySelector('a[href*=pdf]').href.endsWith('#page=4'),true);
+ const form=w.document.querySelector('[data-task-update]');form.querySelector('[name=state]').value='working';form.querySelector('[name=notes]').value='Нашёл нужный лист';form.dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();
+ assert.equal(saved.task_id,'scope');assert.equal(saved.actor,'human');assert.equal(saved.expected_revision,2);
+ assert.deepEqual(saved.updates,[{unit_id:'feed',notes:'Нашёл нужный лист',state:'working'}]);
+ assert.match(w.document.body.textContent,/Нашёл нужный лист/);w.happyDOM.cancelAsync();
+});
+
+test('task does not write after its project has been unmounted',async()=>{
+ const w=new Window({url:'http://127.0.0.1:8773/?project=a&structure_task=scope#structure'});w.document.body.innerHTML='<div id="view"></div>';
+ let resume,posts=0;
+ const task={task_id:'scope',title:'Проверить',scope:'Выбранный лист',revision:1,counts:{total:1,reviewed:0,needs_recheck:1,blocked:0},outcomes:{match:0,discrepancy:0,question:0},next_action:{unit_id:'p',action:'refresh_dependencies'},next_unit_offset:null,units:[{id:'p',title:'Насос',sources:[],notes:'',effective_state:'needs_recheck',stale_reasons:['source_changed'],outcome:'match'}]};
+ w.fetch=async(path,options={})=>{
+  if(options.method==='POST'){posts++;return {ok:true,json:async()=>({})};}
+  if(path.includes('/config'))return await new Promise(resolve=>{resume=()=>resolve({ok:true,json:async()=>({write_token:'secret'})});});
+  return {ok:true,json:async()=>structuredClone(path.includes('/tasks?')&&new URL(path,w.location.origin).searchParams.has('task_id')?task:{items:[],coverage:counts,next_offset:null})};
+ };
+ w.eval(code);const host=w.document.querySelector('#view');await w.UvyazkaStructure.mount(host,'a');await tick();
+ assert.match(host.textContent,/Старый результат/);assert.match(host.textContent,/Разобрано 0 из 1/);
+ host.querySelector('[data-task-update]').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();host.innerHTML='Другой проект';resume();await tick();assert.equal(posts,0);w.happyDOM.cancelAsync();
+});
+
 test('source grids expose copyable literal cells and append human reading to shared API',async()=>{
  const w=new Window({url:'http://127.0.0.1:8773/?project=a#structure'});w.document.body.innerHTML='<div id="view"></div>';
  const rows=[[cell(1,1,'Насос <script>'),cell(1,2,'0')],[cell(2,1,'Насос 2'),cell(2,2,'3')]];

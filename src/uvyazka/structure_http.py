@@ -7,7 +7,11 @@ def serve_get(handler,workspace,token,path,q):
     if not path.startswith('/api/structure/'):return False
     if path=='/api/structure/config':handler.send({'write_token':token});return True
     service=ProjectStructure(workspace,q['project_id'])
-    if path=='/api/structure/analysis':
+    if path=='/api/structure/tasks':
+        from .review_work import ReviewWork
+        handler.send(ReviewWork(workspace,q['project_id']).get(q.get('task_id'),int(q.get('offset',0)),int(q.get('limit',20)),
+                     int(q.get('unit_offset',0)),int(q.get('unit_limit',40)),int(q['revision']) if q.get('revision') else None,query=q.get('q','')))
+    elif path=='/api/structure/analysis':
         from .structure_analysis import StructureAnalysis
         handler.send(StructureAnalysis(workspace,q['project_id']).read(q['analysis_id']))
     elif path=='/api/structure/catalog':
@@ -19,7 +23,7 @@ def serve_get(handler,workspace,token,path,q):
 
 
 def serve_post(handler,workspace,path,q):
-    if path not in {'/api/structure/build','/api/structure/review','/api/structure/analysis'}:raise ValueError('Unknown structure action')
+    if path not in {'/api/structure/build','/api/structure/review','/api/structure/analysis','/api/structure/task-create','/api/structure/task-update'}:raise ValueError('Unknown structure action')
     if handler.headers.get('Transfer-Encoding') or handler.headers.get('Content-Type','').split(';')[0]!='application/json':
         raise ValueError('JSON with Content-Length required')
     length=int(handler.headers.get('Content-Length',0))
@@ -30,7 +34,11 @@ def serve_post(handler,workspace,path,q):
     body=json.loads(raw,parse_constant=reject)
     if not isinstance(body,dict):raise ValueError('JSON object required')
     service=ProjectStructure(workspace,q['project_id'])
-    if path.endswith('/build'):
+    if path.endswith('/task-create') or path.endswith('/task-update'):
+        from .review_work import ReviewWork
+        work=ReviewWork(workspace,q['project_id'])
+        handler.send((work.create if path.endswith('/task-create') else work.update)(**body))
+    elif path.endswith('/build'):
         handler.send(service.build(body.get('doc_id'),body.get('unit_limit',5),body.get('document_limit',3),body.get('retry_failed',False),body.get('start_unit')))
     elif path.endswith('/review'):
         allowed={'cell_id','reader','observed_text','state','method','request_id','reason','expected_revision'}

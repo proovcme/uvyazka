@@ -3,3 +3,5 @@
 .structure-analyses{padding:20px;border-top:1px solid var(--line)}.structure-analyses article{border-left:3px solid var(--accent);padding:4px 16px;margin:16px 0}.structure-analyses h4{margin:8px 0}.structure-analysis-summary{white-space:pre-wrap}.structure-analyses button{margin:4px 0}
 
 .structure-checks ul{list-style:none;padding:0}.structure-checks li{padding:12px 0;border-bottom:1px solid var(--line)}.structure-checks li p{margin:6px 0;white-space:pre-wrap}.structure-checks label{max-width:260px}
+
+.structure-work{padding:24px}.structure-work h3{margin-top:0}.structure-work-count{font-size:18px}.structure-work-unit{border-top:1px solid var(--line);padding:16px 0}.structure-work-unit summary{line-height:1.6}.structure-work-unit form{margin-top:16px;padding:16px;background:var(--soft)}.structure-work-unit code{font-size:11px;overflow-wrap:anywhere;user-select:text}.structure-work .structure-work-inline{display:flex;align-items:center;gap:8px}.structure-work-inline input{width:auto}

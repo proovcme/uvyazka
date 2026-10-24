@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None):
     sub.add_parser("demo")
     sub.add_parser("rvt-status")
     p = sub.add_parser("add-project"); p.add_argument("project_id"); p.add_argument("source_root"); p.add_argument("--name", required=True); p.add_argument("--location", default="")
-    p = sub.add_parser("scan"); p.add_argument("project_id"); p.add_argument("--limit", type=int, default=100)
+    p = sub.add_parser("scan"); p.add_argument("project_id"); p.add_argument("--limit", type=int, default=100); p.add_argument('--doc-id',action='append',dest='doc_ids',help='Refresh only registered document IDs; repeat for multiple documents')
     p = sub.add_parser("status"); p.add_argument("project_id")
     p = sub.add_parser("search"); p.add_argument("project_id"); p.add_argument("query")
     p = sub.add_parser("client-config"); p.add_argument("client", choices=["codex", "claude-desktop", "gemini-cli"])
@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None):
             result = workspace.create_project(args.project_id, args.name, args.source_root, args.location)
         elif args.action == "scan":
             from .ingest import scan
-            result = scan(workspace, args.project_id, args.limit)
+            result = scan(workspace, args.project_id, args.limit, doc_ids=args.doc_ids)
         elif args.action == "demo":
             from .demo import create_demo
             result = create_demo(workspace)

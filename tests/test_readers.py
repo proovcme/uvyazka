@@ -44,6 +44,17 @@ class ReaderTests(unittest.TestCase):
             self.assertEqual(block["locator"], {"kind": "pdf_page", "pdf_page": 1})
             self.assertIn("3.4", block["text"])
 
+    def test_excel_empty_first_cell_and_missing_rows_keep_real_addresses(self):
+        from openpyxl import Workbook
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/'sparse.xlsx';book=Workbook();sheet=book.active
+            sheet['D1']='Наименование';sheet['K1']='Кол-во';sheet['D4']='Насос';sheet['K4']=0
+            book.save(path);book.close()
+            blocks=read_blocks(path)
+            self.assertEqual([b['locator']['row'] for b in blocks],[1,4])
+            self.assertEqual(blocks[1]['locator']['cells'][1]['cell'],'K4')
+            self.assertEqual(blocks[1]['locator']['cells'][1]['value'],'0')
+
 
 if __name__ == "__main__":
     unittest.main()

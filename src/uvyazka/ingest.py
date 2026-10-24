@@ -13,9 +13,15 @@ from .readers import READER_REVISION, SUPPORTED, read_blocks, revision_for
 IGNORE = {".git", ".venv", "venv", "envs", "node_modules", "__pycache__", "cache", "backups", "artifacts"}
 
 
-def scan(workspace: Workspace, project_id: str, limit: int = 100, *, retry_failed: bool = True, progress=None) -> dict:
+def scan(workspace: Workspace, project_id: str, limit: int = 100, *, retry_failed: bool = True, progress=None, doc_ids: list[str] | None = None) -> dict:
     if not 1 <= limit <= 10000:
         raise ValueError("limit must be 1–10000")
+    selected=None
+    if doc_ids is not None:
+        if not isinstance(doc_ids,list) or not 1<=len(doc_ids)<=100 or any(not isinstance(i,str) for i in doc_ids):
+            raise ValueError('Choose 1–100 registered doc_ids')
+        selected=set(doc_ids)
+        for doc_id in selected:workspace.source_record(project_id,doc_id)
     root = Path(workspace.project(project_id)["source_root"])
     if not root.is_dir():
         raise ValueError("Source root unavailable; previous inventory preserved")
@@ -41,6 +47,7 @@ def scan(workspace: Workspace, project_id: str, limit: int = 100, *, retry_faile
                 progress(phase="inventory", current_document=relative, total_files=len(candidates), inventoried=len(seen))
             doc_id = uuid5(NAMESPACE_URL, project_id + "/" + relative).hex
             seen.add(doc_id); stat = path.stat()
+            if selected is not None and doc_id not in selected:continue
             row = db.execute("select * from documents where doc_id=?", (doc_id,)).fetchone()
             # Hash every supported source, even when timestamp/size are unchanged.
             supported = path.suffix.lower() in SUPPORTED
@@ -66,6 +73,7 @@ def scan(workspace: Workspace, project_id: str, limit: int = 100, *, retry_faile
         if db.execute("select 1 from sqlite_master where name='uploaded_sources'").fetchone():
             uploaded={r[0] for r in db.execute('select doc_id from uploaded_sources')}
         for row in db.execute("select doc_id,index_status from documents").fetchall():
+            if selected is not None and row['doc_id'] not in selected:continue
             if row['doc_id'] in uploaded:continue
             if row["doc_id"] not in seen:
                 ids = [r[0] for r in db.execute("select chunk_id from chunks where doc_id=?", (row["doc_id"],))]

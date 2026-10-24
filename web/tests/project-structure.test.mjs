@@ -48,3 +48,21 @@ test('unmounting while a batch runs stops further project mutations',async()=>{
  w.eval(code);const host=w.document.querySelector('#view');await w.UvyazkaStructure.mount(host,'a');host.querySelector('[data-build]').click();await tick();
  assert.equal(posts,1);host.innerHTML='Другой проект';complete();await tick();assert.equal(posts,1);assert.equal(host.textContent,'Другой проект');w.happyDOM.cancelAsync();
 });
+
+test('person can continue a model interpretation without replacing its lane',async()=>{
+ const w=new Window({url:'http://127.0.0.1:8773/?project=a&structure_table=table#structure'});w.document.body.innerHTML='<div id="view"></div>';
+ const model={analysis_id:'meaning',table_id:'table',reader:'model',title:'Шапка и связи',summary:'Сложить два способа крепления.',revision:1,data:{operation:'sum'},related_tables:[],evidence_cells:['table:1:2'],current_sources:true};
+ let saved;
+ w.fetch=async(path,options={})=>{
+  let data;
+  if(options.method==='POST'){saved=JSON.parse(options.body);assert.equal(saved.reader,'human');assert.equal(saved.expected_revision,0);assert.equal(saved.analysis_id,'meaning');assert.deepEqual(saved.data,{operation:'sum'});data={...saved,revision:1};}
+  else if(path.includes('/config'))data={write_token:'secret'};
+  else if(path.includes('/table'))data={table:card,rows:[[cell(1,1,'Лоток'),cell(1,2,'991')]],current_registered_version:true,next_offset:null,next_column_offset:null,analyses:{items:[model,...(saved?[{...saved,revision:1,current_sources:true}]:[])],next_offset:null}};
+  else data={items:[{name:'Лист',source,table_ids:['table'],warnings:[],physical_page:false}],coverage:counts,next_offset:null};
+  return {ok:true,json:async()=>structuredClone(data)};
+ };
+ w.eval(code);await w.UvyazkaStructure.mount(w.document.querySelector('#view'),'a');await tick();
+ assert.match(w.document.body.textContent,/Сложить два способа/);
+ const form=w.document.querySelector('[data-analysis]');form.querySelector('[name=summary]').value='Сверено человеком';form.dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();
+ assert.equal(saved.summary,'Сверено человеком');assert.match(w.document.body.textContent,/Сверено человеком/);assert.equal(model.summary,'Сложить два способа крепления.');w.happyDOM.cancelAsync();
+});

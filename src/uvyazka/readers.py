@@ -22,7 +22,9 @@ def revision_for(suffix: str) -> str:
         installed = version(package)
     except PackageNotFoundError:
         installed = "unavailable"
-    return READER_REVISION + ";" + package + "=" + installed
+    # Excel row locators changed without invalidating unrelated PDF/Word evidence.
+    adapter = ';row-locators-v2' if suffix in {'.xlsx','.xlsm'} else ''
+    return READER_REVISION + ";" + package + "=" + installed + adapter
 
 
 def read_blocks(path: Path) -> list[dict]:
@@ -93,7 +95,7 @@ def read_blocks(path: Path) -> list[dict]:
             for sheet in book:
                 if sheet.max_row > MAX_ROWS or sheet.max_column > 512 or sheet.max_row * sheet.max_column > MAX_CELLS:
                     raise ValueError("Workbook sheet exceeds row/column/cell bounds")
-                for row, values in zip(sheet.iter_rows(), cached[sheet.title].iter_rows(values_only=True)):
+                for row_number, (row, values) in enumerate(zip(sheet.iter_rows(), cached[sheet.title].iter_rows(values_only=True)),1):
                     cells = []
                     for cell, value in zip(row, values):
                         if cell.value is None:
@@ -107,7 +109,7 @@ def read_blocks(path: Path) -> list[dict]:
                         raise ValueError("Workbook exceeds total row/cell bounds")
                     if cells:
                         text = "Лист: " + sheet.title + "\n" + "\n".join(c["cell"] + ": " + c["value"] + (" [cached: " + str(c["cached_value"]) + "]" if "formula" in c else "") for c in cells)
-                        add(text, {"kind": "excel_row", "sheet": sheet.title, "row": row[0].row, "cells": cells, "note": "Formulas/macros are not executed"})
+                        add(text, {"kind": "excel_row", "sheet": sheet.title, "row": row_number, "cells": cells, "note": "Formulas/macros are not executed"})
         finally:
             book.close()
             if cached:

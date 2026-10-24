@@ -198,10 +198,88 @@ class StructureTests(unittest.TestCase):
             req=Request(base+'review?project_id=a',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json','X-Uvyazka-Token':token},method='POST')
             with urlopen(req) as response:self.assertEqual(json.load(response)['comparison'],'matches_literal')
             self.assertIn('human',ProjectStructure(self.workspace,'a').read(tid)['rows'][0][1]['readings'])
+            payload=dict(analysis_id='http-note',table_id=tid,title='Количество',summary='Вторая колонка — число.',data={'columns':{'2':'quantity'}},reader='human',request_id='http-analysis')
+            req=Request(base+'analysis?project_id=a',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json','X-Uvyazka-Token':token},method='POST')
+            with urlopen(req) as response:self.assertEqual(json.load(response)['revision'],1)
+            self.assertEqual(ProjectStructure(self.workspace,'a').read(tid)['analyses']['items'][0]['analysis_id'],'http-note')
             req.add_header('Origin','https://example.org')
             with self.assertRaises(HTTPError) as error:urlopen(req)
             self.assertEqual(error.exception.code,403)
         finally:server.shutdown();server.server_close();thread.join()
+
+    def test_analysis_links_two_sources_keeps_lanes_history_and_staleness(self):
+        from uvyazka.structure_analysis import StructureAnalysis
+        (self.sources/'spec.csv').write_text('Лоток,1161\n',encoding='utf-8')
+        other=self.sources/'work.csv';other.write_text('Подвес,991\nСтена,170\n',encoding='utf-8')
+        store=self.prepare();store.build();tables=store.catalog('tables')['items'];a,b=tables
+        notes=StructureAnalysis(self.workspace,'a')
+        args=dict(analysis_id='tray',table_id=a['table_id'],title='Лоток и монтаж',summary='Количество работ нужно складывать по способу крепления.',
+                  data={'columns':{'2':'quantity'},'mapping':{'operation':'sum','expected':'1161'},'questions':['Область должна совпадать']},
+                  reader='model',request_id='analysis-one',
+                  related_tables=[dict(table_id=b['table_id'],relation='Монтаж',reason='Один материал, два способа крепления')],
+                  evidence_cells=[a['table_id']+':1:2',b['table_id']+':1:2',b['table_id']+':2:2'])
+        saved=notes.save(**args);self.assertFalse(saved['accepted']);self.assertEqual(notes.save(**args),saved)
+        args['data']['mapping']['expected']='99'
+        with self.assertRaisesRegex(ValueError,'request_id'):notes.save(**args)
+        self.assertEqual(store.read(a['table_id'])['analyses']['items'][0]['data']['mapping']['expected'],'1161')
+        args.update(request_id='analysis-two',expected_revision=1,reason='Уточнение формулировки',summary='Нужно 991 + 170.')
+        notes.save(**args)
+        args.update(reader='human',expected_revision=0,reason='',request_id='analysis-human')
+        notes.save(**args)
+        latest=store.catalog('analyses');self.assertEqual(latest['total'],2)
+        self.assertEqual(store.catalog('analyses',history=True)['total'],3)
+        self.assertEqual(notes.list(table_id=b['table_id'])['total'],2)
+        other.write_text('Подвес,992\nСтена,170\n',encoding='utf-8')
+        items=store.read(a['table_id'])['analyses']['items'];self.assertTrue(all(not item['current_sources'] for item in items))
+        args.update(request_id='analysis-stale',expected_revision=1,reason='Попытка после изменения файла')
+        with self.assertRaisesRegex(ValueError,'Source changed'):notes.save(**args)
+
+    def test_analysis_rejects_unknown_cells_cross_project_and_nonfinite_json(self):
+        from uvyazka.structure_analysis import StructureAnalysis
+        (self.sources/'table.csv').write_text('Насос,10\n',encoding='utf-8');store=self.prepare();store.build()
+        tid=store.catalog('tables')['items'][0]['table_id'];notes=StructureAnalysis(self.workspace,'a')
+        args=dict(analysis_id='a',table_id=tid,title='Разбор',summary='Пояснение',data={},reader='model',request_id='request')
+        with self.assertRaisesRegex(ValueError,'Unknown evidence'):notes.save(**args,evidence_cells=[tid+':100:100'])
+        with self.assertRaisesRegex(ValueError,'finite JSON'):notes.save(**{**args,'data':{'bad':float('nan')}})
+        self.workspace.create_project('b','Other',self.sources)
+        with self.assertRaisesRegex(ValueError,'Build source structure'):StructureAnalysis(self.workspace,'b').save(**args)
+
+    def test_scoped_scan_leaves_unselected_sources_and_old_evidence_intact(self):
+        (self.sources/'a.txt').write_text('one 1 m2',encoding='utf-8')
+        other=self.sources/'b.txt';other.write_text('two 2 m2',encoding='utf-8');self.prepare()
+        docs=self.workspace.find_documents('a')['documents'];a,b=docs
+        (self.sources/'a.txt').write_text('one 3 m2',encoding='utf-8');other.unlink()
+        scan(self.workspace,'a',doc_ids=[a['doc_id']])
+        with connection(self.store.path,readonly=True) as db:
+            row=dict(db.execute('select * from documents where doc_id=?',(b['doc_id'],)).fetchone())
+        self.assertEqual(row['index_status'],'text_indexed')
+        self.assertIn('one 1',self.workspace.read_evidence('a',a['doc_id'],sha256=a['sha256'])['text'])
+        with self.assertRaises(ValueError):scan(self.workspace,'a',doc_ids=['not-registered'])
+        from uvyazka.project_summary import ProjectSummary
+        summary=ProjectSummary(self.workspace,'a')
+        result=summary.index(doc_ids=[a['doc_id']])
+        self.assertEqual(result['processed_pages'],1);self.assertEqual(result['scope_remaining_blocks'],0)
+        self.assertEqual(result['remaining_blocks'],1)
+        with connection(self.store.path,readonly=True) as db:
+            self.assertEqual(db.execute('select count(*) from quantity_pages where doc_id=?',(b['doc_id'],)).fetchone()[0],0)
+
+    def test_selected_pdf_pages_do_not_imply_preceding_pages_were_read(self):
+        import pymupdf
+        with pymupdf.open() as pdf:
+            for i in range(5):pdf.new_page().insert_text((40,40),f'Synthetic page {i+1}')
+            pdf.save(self.sources/'pages.pdf')
+        store=self.prepare();doc=self.workspace.find_documents('a')['documents'][0]['doc_id']
+        first=store.build(doc,unit_limit=1,start_unit=5)
+        self.assertEqual(first['coverage']['indexed_units'],1);self.assertEqual(first['processed'][0]['next_unit'],0)
+        self.assertEqual(first['processed'][0]['next_unread_unit'],1)
+        self.assertEqual(first['scope_coverage']['documents'],1)
+        self.assertEqual(store.catalog()['items'][0]['index'],5)
+        store.build(doc,unit_limit=2)
+        self.assertEqual(store.coverage()['indexed_units'],3)
+        # A targeted range may overlap already indexed units and extend beyond the first gap.
+        store.build(doc,unit_limit=3,start_unit=2)
+        self.assertEqual(store.coverage()['indexed_units'],5);self.assertEqual(store.coverage()['pending_documents'],0)
+        with self.assertRaisesRegex(ValueError,'outside source'):store.build(doc,start_unit=6)
 
 
 if __name__=='__main__':unittest.main()

@@ -108,15 +108,22 @@ class ProjectSummary:
     def __init__(self, workspace, project_id):
         self.workspace=workspace;self.project_id=project_id;self.path=workspace.db_path(project_id)
 
-    def index(self, page_limit=500):
+    def index(self, page_limit=500, doc_ids=None):
         if type(page_limit) is not int or not 1<=page_limit<=2000:
             raise ValueError("page_limit must be 1–2000")
+        scope='';parameters=[ALGORITHM]
+        if doc_ids is not None:
+            if not isinstance(doc_ids,list) or not 1<=len(doc_ids)<=100 or any(not isinstance(d,str) for d in doc_ids):raise ValueError('Choose 1–100 registered doc_ids')
+            for doc in set(doc_ids):self.workspace.source_record(self.project_id,doc)
+            scope=' and p.doc_id in ('+','.join('?' for _ in doc_ids)+')'
+            parameters.extend(doc_ids)
         with connection(self.path) as db:
             db.executescript(SQL)
-            pending = db.execute("""select p.* from pages p join documents d on d.doc_id=p.doc_id and d.sha256=p.sha256
+            pending_sql="""select p.* from pages p join documents d on d.doc_id=p.doc_id and d.sha256=p.sha256
               and d.parser_revision=p.parser_revision where d.index_status='text_indexed' and not exists(
               select 1 from quantity_pages q where q.doc_id=p.doc_id and q.sha256=p.sha256 and q.parser_revision=p.parser_revision
-              and q.page_number=p.page_number and q.algorithm=?) order by p.doc_id,p.page_number limit ?""",(ALGORITHM,page_limit)).fetchall()
+              and q.page_number=p.page_number and q.algorithm=?)"""+scope
+            pending=db.execute(pending_sql+" order by p.doc_id,p.page_number limit ?",(*parameters,page_limit)).fetchall()
         processed=0
         with connection(self.path) as db:
             db.execute("begin immediate")
@@ -136,7 +143,10 @@ class ProjectSummary:
                 db.execute("insert into quantity_pages values (?,?,?,?,?,?)",(*source.values(),ALGORITHM,encode({"count":len(items),"truncated":truncated,"indexed_at":now()})))
                 processed+=1
         state=self.state()
-        return {"project_id":self.project_id,"processed_pages":processed,**state}
+        with connection(self.path,readonly=True) as db:
+            remaining_scope=db.execute(pending_sql.replace('select p.*','select count(*)',1),parameters).fetchone()[0]
+        return {"project_id":self.project_id,"processed_pages":processed,"scope_remaining_blocks":remaining_scope,
+                "selected_doc_ids":doc_ids,**state}
 
     def state(self):
         result={"algorithm":ALGORITHM,"candidate_count":0,"indexed_blocks":0,"truncated_blocks":0,"by_group":{}}

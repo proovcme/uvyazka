@@ -32,7 +32,7 @@ from uvyazka.core import Workspace
 from uvyazka.server import build_server
 with tempfile.TemporaryDirectory() as directory:
     server = build_server(Workspace(Path(directory)/'state'))
-    assert len(asyncio.run(server.list_tools())) == 74
+    assert len(asyncio.run(server.list_tools())) == 75
     asyncio.run(server.call_tool('construction_schema', {}))
     asyncio.run(server.call_tool('get_unit_catalog', {'dimension': 'flow'}))
     asyncio.run(server.call_tool('rvt_converter_status', {}))
@@ -93,7 +93,10 @@ with tempfile.TemporaryDirectory() as directory:
                         table=await call(session,'read_structure_table',dict(project_id=project,table_id=tid))
                         if not iteration:
                             await call(session,'record_structure_review',dict(project_id=project,cell_id=table['rows'][0][1]['cell_id'],reader='model',observed_text='10',state='value',method='native_source',request_id='model-read'))
-                        else:self.assertEqual(table['rows'][0][1]['readings']['model']['comparison'],'matches_literal')
+                            await call(session,'save_structure_analysis',dict(project_id=project,analysis_id='pump',table_id=tid,title='Pump quantity',summary='Second column is a count.',data={'columns':{'2':'quantity'}},reader='model',request_id='model-analysis',evidence_cells=[table['rows'][0][1]['cell_id']]))
+                        else:
+                            self.assertEqual(table['rows'][0][1]['readings']['model']['comparison'],'matches_literal')
+                            self.assertEqual(table['analyses']['items'][0]['analysis_id'],'pump')
             self.assertIn('model',ProjectStructure(workspace,project).read(tid)['rows'][0][1]['readings'])
 
     async def test_folder_intake_survives_stdio_restart_and_joins_ui_project(self):
@@ -237,7 +240,7 @@ with tempfile.TemporaryDirectory() as directory:
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    self.assertEqual(len(listed.tools), 74)
+                    self.assertEqual(len(listed.tools), 75)
                     parameters = next(tool for tool in listed.tools if tool.name == 'find_rvt_parameters')
                     self.assertIn('cursor', parameters.inputSchema['properties'])
                     self.assertIn('extraction_id', parameters.inputSchema['required'])

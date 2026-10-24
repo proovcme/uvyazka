@@ -88,10 +88,13 @@ class ProjectStructure:
         self.path=workspace.db_path(project_id)
         with connection(self.path) as db: db.executescript(SQL)
 
-    def build(self,doc_id=None,unit_limit=5,document_limit=3,retry_failed=False):
+    def build(self,doc_id=None,unit_limit=5,document_limit=3,retry_failed=False,start_unit=None):
         number(unit_limit,'unit_limit',1,10);number(document_limit,'document_limit',1,10)
         if type(retry_failed) is not bool:raise ValueError('retry_failed must be boolean')
         if doc_id is not None:text(doc_id,'doc_id',200,False)
+        if start_unit is not None:
+            number(start_unit,'start_unit',1,10000)
+            if doc_id is None:raise ValueError('start_unit requires one explicit doc_id')
         with connection(self.path,readonly=True) as db:
             documents=[dict(r) for r in db.execute('select * from documents where (? is null or doc_id=?) order by relative_path',(doc_id,doc_id))]
         if doc_id and not documents: raise ValueError('Unknown document')
@@ -101,8 +104,16 @@ class ProjectStructure:
             revision=engine(doc['extension']); vid=key(self.project_id,doc['doc_id'],doc['sha256'],revision)
             with connection(self.path,readonly=True) as db:
                 old=db.execute('select * from structure_versions where version_id=?',(vid,)).fetchone()
+            if old and start_unit is not None and old['total_units'] is not None and start_unit>old['total_units']:
+                raise ValueError('Unit outside source')
             if old and (old['status'] in {'indexed','partial'} or (old['status']=='failed' and not retry_failed)): continue
-            start=old['next_unit'] if old else 0
+            start=start_unit-1 if start_unit is not None else (old['next_unit'] if old else 0)
+            if old and old['total_units'] is not None and start>=old['total_units']:raise ValueError('Unit outside source')
+            if start_unit is not None and old:
+                with connection(self.path,readonly=True) as db:
+                    cached=db.execute('select count(*) from structure_units where version_id=? and unit_index between ? and ?',
+                                      (vid,start+1,min(start+unit_limit,old['total_units'] or start+unit_limit))).fetchone()[0]
+                if cached==min(unit_limit,(old['total_units'] or start+unit_limit)-start):continue
             source=dict(doc_id=doc['doc_id'],sha256=doc['sha256'],relative_path=doc['relative_path'])
             try:
                 record,path=self.workspace.source_record(self.project_id,doc['doc_id'])
@@ -116,6 +127,7 @@ class ProjectStructure:
                     context=open_pdf(self.workspace,self.project_id,doc['doc_id'],doc['sha256'])
                 else: context=nullcontext(None)
                 with context as pdf: total,units=extract(data,doc['extension'],start,unit_limit,pdf)
+                if start>=total:raise IndexError('Unit outside source')
                 if self.workspace.source_state(self.project_id,doc['doc_id'],full_hash=True)['status']!='content_hash_matches':
                     raise ValueError('Source changed during extraction; rescan')
                 with connection(self.path) as db:
@@ -123,7 +135,7 @@ class ProjectStructure:
                     current=db.execute('select sha256 from documents where doc_id=?',(doc['doc_id'],)).fetchone()
                     if not current or current[0]!=doc['sha256']: raise ValueError('Source revision changed during extraction')
                     concurrent=db.execute('select next_unit from structure_versions where version_id=?',(vid,)).fetchone()
-                    if concurrent and concurrent[0]>start:
+                    if concurrent and concurrent[0]>start and start_unit is None:
                         processed.append(dict(**source,status='advanced_by_another_worker',processed_units=0))
                         if len(processed)>=document_limit:break
                         continue
@@ -144,14 +156,18 @@ class ProjectStructure:
                             cards.append(tid)
                         unit['table_ids']=cards
                         db.execute('insert or ignore into structure_units values(?,?,?,?)',(uid,vid,unit['index'],encode(unit)))
-                    next_unit=start+len(units)
+                    indices={r[0] for r in db.execute('select unit_index from structure_units where version_id=?',(vid,))}
+                    next_unit=next((n for n in range(total) if n+1 not in indices),total)
                     if next_unit < total and not units: raise ValueError('Reader made no progress')
                     warnings=any(u['warnings'] for u in units) or bool(old and json.loads(old['payload']).get('has_warnings'))
                     status='pending' if next_unit<total else ('partial' if warnings else 'indexed')
                     payload=dict(source=source,has_warnings=warnings,updated_at=now(),engineering_review='unchecked')
                     db.execute('insert or replace into structure_versions values(?,?,?,?,?,?,?,?)',
                                (vid,doc['doc_id'],doc['sha256'],revision,next_unit,total,status,encode(payload)))
-                processed.append(dict(**source,status=status,processed_units=len(units),next_unit=next_unit,total_units=total))
+                processed.append(dict(**source,status=status,processed_units=len(units),next_unit=next_unit,
+                                      next_unread_unit=next_unit+1 if next_unit<total else None,total_units=total))
+            except IndexError as exc:
+                raise ValueError(str(exc)) from exc
             except Exception as exc:
                 # Explicit terminal failure, retried only on request; intake must not spin forever.
                 payload=dict(source=source,error=type(exc).__name__+': '+str(exc)[:1000],updated_at=now())
@@ -163,14 +179,16 @@ class ProjectStructure:
                                    (vid,doc['doc_id'],doc['sha256'],revision,start,None,'failed',encode(payload)))
                 processed.append(dict(**source,status='failed',error=payload['error']))
             if len(processed)>=document_limit: break
-        return dict(project_id=self.project_id,processed=processed,coverage=self.coverage())
+        coverage=self.coverage()
+        return dict(project_id=self.project_id,processed=processed,coverage=coverage,
+                    scope_coverage=self.coverage(doc_id) if doc_id else coverage)
 
-    def coverage(self):
+    def coverage(self,doc_id=None):
         counts=dict(documents=0,supported_documents=0,unsupported_documents=0,unhashed_documents=0,
                     pending_documents=0,indexed_documents=0,partial_documents=0,failed_documents=0,
                     indexed_units=0,total_known_units=0,tables=0,stored_rows=0,reviewed_cells=0)
         with connection(self.path,readonly=True) as db:
-            docs=[dict(r) for r in db.execute('select doc_id,sha256,extension from documents')]
+            docs=[dict(r) for r in db.execute('select doc_id,sha256,extension from documents where (? is null or doc_id=?)',(doc_id,doc_id))]
             counts['documents']=len(docs)
             for d in docs:
                 if d['extension'] not in FORMATS: counts['unsupported_documents']+=1;continue
@@ -180,16 +198,21 @@ class ProjectStructure:
                 v=db.execute('select * from structure_versions where version_id=?',(vid,)).fetchone()
                 counts[(v['status'] if v else 'pending')+'_documents']+=1
                 if v:
-                    counts['indexed_units']+=v['next_unit']
+                    counts['indexed_units']+=db.execute('select count(*) from structure_units where version_id=?',(vid,)).fetchone()[0]
                     counts['total_known_units']+=v['total_units'] or 0
                     counts['tables']+=db.execute('select count(*) from structure_tables where version_id=?',(vid,)).fetchone()[0]
                     counts['stored_rows']+=db.execute('select count(*) from structure_rows r join structure_tables t on t.table_id=r.table_id where t.version_id=?',(vid,)).fetchone()[0]
-            counts['reviewed_cells']=db.execute('select count(distinct cell_id) from structure_reviews').fetchone()[0]
+            counts['reviewed_cells']=db.execute('''select count(distinct r.cell_id) from structure_reviews r
+                join structure_tables t on t.table_id=substr(r.cell_id,1,instr(r.cell_id,':')-1)
+                join structure_versions v on v.version_id=t.version_id where (? is null or v.doc_id=?)''',(doc_id,doc_id)).fetchone()[0]
         return {**counts,'source_freshness':'registered_hash_navigation_only',
                 'note':'Extraction coverage is not engineering review. Reviewed cells includes history; unknown total units remain unknown.'}
 
-    def catalog(self,kind='sheets',query='',doc_id=None,offset=0,limit=40):
+    def catalog(self,kind='sheets',query='',doc_id=None,offset=0,limit=40,history=False):
         number(offset,'offset');number(limit,'limit',1,100);text(query,'query',500)
+        if kind=='analyses':
+            from .structure_analysis import StructureAnalysis
+            return StructureAnalysis(self.workspace,self.project_id).list(query=query,doc_id=doc_id,offset=offset,limit=limit,history=history)
         if kind not in {'sheets','tables','documents'}: raise ValueError('Unknown structure kind')
         with connection(self.path,readonly=True) as db:
             documents={r['doc_id']:dict(r) for r in db.execute('select doc_id,relative_path,sha256,extension from documents')}
@@ -250,7 +273,9 @@ class ProjectStructure:
                 for c in row:
                     for reading in c['readings'].values():
                         reading['recorded_comparison']=reading['comparison'];reading['comparison']='stale'
-        return bounded(dict(project_id=self.project_id,table=card,rows=rows,current_registered_version=current,
+        from .structure_analysis import StructureAnalysis
+        analyses=StructureAnalysis(self.workspace,self.project_id).list(table_id=table_id,limit=10,verify_source=verify_source)
+        return bounded(dict(project_id=self.project_id,table=card,rows=rows,current_registered_version=current,analyses=analyses,
                             source_freshness=freshness,
                             next_offset=offset+limit if offset+limit<card['row_count'] else None,
                             next_column_offset=column_offset+column_limit if column_offset+column_limit<card['column_count'] else None,

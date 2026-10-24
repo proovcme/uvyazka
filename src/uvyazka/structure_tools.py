@@ -7,21 +7,39 @@ def register_tools(mcp,workspace):
     write={'readOnlyHint':False,'destructiveHint':False,'idempotentHint':False}
 
     @mcp.tool(annotations=write)
-    def build_project_structure(project_id: str,doc_id: str | None=None,unit_limit: int=5,document_limit: int=3,retry_failed: bool=False) -> dict:
+    def build_project_structure(project_id: str,doc_id: str | None=None,unit_limit: int=5,document_limit: int=3,retry_failed: bool=False,start_unit: int | None=None) -> dict:
         """Resume literal PDF pages/tables, Excel worksheets/cells, Word XML parts/tables or CSV.
         Uses registered source hashes and the shared project DB. Call scan first. Bounded batches:
-        repeat until coverage.pending_documents=0; failed/unsupported sources are explicit, not errors
+        repeat until scope_coverage.pending_documents=0 for the selected document scope; failed/unsupported sources are explicit, not errors
         in the engineering project. Formulas are NOT calculated, Word parts are NOT physical pages.
         Header/profile candidates do not approve facts. retry_failed=true retries a failed batch once;
-        use false for subsequent progress calls. No model API, hidden OCR or external uploads."""
-        return ProjectStructure(workspace,project_id).build(doc_id,unit_limit,document_limit,retry_failed)
+        use false for subsequent progress calls. start_unit targets a 1-based PDF page, worksheet or Word part
+        in one explicit doc_id; unvisited earlier units remain pending. A targeted-page task need not clear
+        pending units outside that selection. No model API or external uploads."""
+        return ProjectStructure(workspace,project_id).build(doc_id,unit_limit,document_limit,retry_failed,start_unit)
 
     @mcp.tool(annotations=read)
-    def get_project_structure(project_id: str,kind: str='sheets',query: str='',doc_id: str | None=None,offset: int=0,limit: int=40) -> dict:
-        """Navigate current registered source versions: kind=sheets|tables|documents.
+    def get_project_structure(project_id: str,kind: str='sheets',query: str='',doc_id: str | None=None,offset: int=0,limit: int=40,history: bool=False) -> dict:
+        """Navigate current registered source versions: kind=sheets|tables|documents|analyses.
         Physical PDF pages, Excel sheets, logical Word parts remain distinct. Coverage reports unfinished,
-        failed and unsupported documents separately. Does not parse originals or verify actual bytes."""
-        return ProjectStructure(workspace,project_id).catalog(kind,query,doc_id,offset,limit)
+        failed and unsupported documents separately. Analyses keeps caller interpretations, links, questions;
+        history=true includes old analysis revisions. Does not parse originals or verify actual bytes."""
+        return ProjectStructure(workspace,project_id).catalog(kind,query,doc_id,offset,limit,history)
+
+    @mcp.tool(annotations={'readOnlyHint':False,'destructiveHint':False,'idempotentHint':True})
+    def save_structure_analysis(project_id: str,analysis_id: str,table_id: str,title: str,summary: str,data: dict,
+                                reader: str,request_id: str,expected_revision: int=0,reason: str='',
+                                related_tables: list[dict] | None=None,evidence_cells: list[str] | None=None) -> dict:
+        """Persist YOUR interpretation so the person/model can resume it. No inference or model API is run.
+        data is free JSON: column meanings, row sections, scope, mappings, calculations, questions, task coverage.
+        reader=model|human have separate histories. related_tables needs table_id,relation,reason; all pointers
+        must belong to this project and current source bytes. evidence_cells cite exact main/related cell_ids.
+        First revision=0; a correction needs previous expected_revision and reason. Same request_id only
+        retries identical input. Engineering values are never approved. Read through get_project_structure
+        kind=analyses (history=true for past revisions), or analyses in read_structure_table."""
+        from .structure_analysis import StructureAnalysis
+        return StructureAnalysis(workspace,project_id).save(analysis_id,table_id,title,summary,data,reader,request_id,
+                                                            expected_revision,reason,related_tables,evidence_cells)
 
     @mcp.tool(annotations=read)
     def read_structure_table(project_id: str,table_id: str,offset: int=0,limit: int=40,column_offset: int=0,column_limit: int=20,verify_source: bool=True) -> dict:

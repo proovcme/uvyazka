@@ -65,13 +65,14 @@ def build_server(workspace: Workspace | None = None):
         return ProjectSummary(memory,project_id).read(query,group,offset,limit)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True})
-    def build_project_summary(project_id: str, page_limit: int = 500) -> dict:
+    def build_project_summary(project_id: str, page_limit: int = 500, doc_ids: list[str] | None = None) -> dict:
         """Incrementally prepare numerical candidates from cached source blocks, without rereading originals or an LLM.
-        Intake runs this automatically. For an older project repeat while remaining_blocks > 0; page_limit 1–2000.
+        Intake runs this automatically. Optional doc_ids selects registered sources. Repeat while
+        scope_remaining_blocks > 0; remaining_blocks is project-wide. page_limit 1–2000.
         Source versions and raw values are retained; candidate matches do not accept meaning or engineering quantities.
         """
         from .project_summary import ProjectSummary
-        return ProjectSummary(memory,project_id).index(page_limit)
+        return ProjectSummary(memory,project_id).index(page_limit,doc_ids)
 
     @mcp.tool(annotations=read)
     def find_documents(project_id: str, query: str = "", limit: int = 20, offset: int = 0) -> dict:

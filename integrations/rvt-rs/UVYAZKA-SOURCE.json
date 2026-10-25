@@ -758,7 +758,7 @@
     },
     {
       "id": "uvyazka-native-2021-v1",
-      "description": "Experimental Revit 2021 native records with checked 32-bit framing; explicit 32-bit MEP member IDs and IFC system attachment. Focused profiles retain output budgets. Validated locally on AUPT, not universal version/category coverage.",
+      "description": "Experimental Revit 2021 native records with checked 32-bit framing; explicit 32-bit MEP member IDs and IFC system attachment. Focused profiles retain output budgets. Validated locally on a private test model, not universal version/category coverage.",
       "files": [
         "src/native_document.rs",
         "src/partition_mep_systems.rs",

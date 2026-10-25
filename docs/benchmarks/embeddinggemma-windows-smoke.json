@@ -589,6 +589,6 @@
       "hits": []
     }
   ],
-  "environment": "Windows x64 / Legion, 2026-10-25",
+  "environment": "Windows x64, 2026-10-25",
   "measurement_notes": "Shared host; warm filesystem cache. Small same-corpus smoke benchmark, not independent quality acceptance or stable latency/RAM measurement."
 }

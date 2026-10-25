@@ -1,0 +1,11 @@
+title = "Uvyazka public source checks"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated release manifest: SHA-256 of the public web-ifc API asset"
+condition = "AND"
+paths = ['''(^|/)release\.json$''']
+regexTarget = "match"
+regexes = ['''web-ifc-api\.js(\.gz)?"\s*:\s*"[a-f0-9]{64}"''']

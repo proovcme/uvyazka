@@ -12,7 +12,7 @@ window.UvyazkaIntake = (() => {
     // Depth: existing panel borders; spacing 8/16/24; typography inherited, headings 22/600.
     target.innerHTML=`<div class="intake-root"><section class="panel"><div class="panel-head"><h2>Один проект для вас и модели</h2></div><form class="intake-form">
       <p class="intake-lead">Добавьте комплект документов. Увязка сохранит состав, извлечёт доступные данные и покажет, что требует дальнейшего разбора.</p>
-      <label>Название проекта<input name="name" maxlength="200" placeholder="Например, Инновационный центр" required></label>
+      <label>Название проекта<input name="name" maxlength="200" placeholder="Например, Учебный объект" required></label>
       <fieldset><legend>Откуда взять документы</legend><div class="intake-methods">
       <label><input type="radio" name="mode" value="linked_folder" checked><strong>Существующая папка</strong><span>Выбрать на компьютере и читать по месту</span></label>
       <label><input type="radio" name="mode" value="zip_upload"><strong>Архив ZIP</strong><span>Загрузить и распаковать структуру</span></label></div></fieldset>

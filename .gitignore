@@ -6,6 +6,16 @@
 *.key
 *.pfx
 *.p12
+*.keystore
+*.jks
+.ssh/
+.aws/
+.azure/
+.npmrc
+.pypirc
+.netrc
+credentials*.json
+service-account*.json
 projects.local.json
 settings.local.json
 .codex/config.toml
@@ -27,6 +37,10 @@ logs/
 *.sqlite-shm
 *.sqlite3-wal
 *.sqlite3-shm
+*.duckdb
+*.duckdb.wal
+*.mdb
+*.accdb
 *.db
 *.db-wal
 *.db-shm
@@ -47,6 +61,18 @@ logs/
 *.xlsm
 *.zip
 *.rar
+*.7z
+*.bak
+*.dwl
+*.dwl2
+*.nwc
+*.nwd
+*.rte
+*.rft
+*.bcf
+*.bcfzip
+*.gguf
+*.safetensors
 # Development environments
 .venv/
 venv/

@@ -235,10 +235,15 @@ GIF показывает демонстрацию IFCCS 0.4; в код Увяз�
 uv sync --extra all
 uv run python -m unittest discover -s tests -v
 uv run python tools/validate_package.py
+uv run python tools/check_public_content.py
 uv build
+uv run python tools/check_public_content.py --archive dist/uvyazka-0.3.0a12.tar.gz --archive dist/uvyazka-0.3.0a12-py3-none-any.whl
 ```
 
 Фронтенд — каталог `web`: `npm ci`, `npm test`, `npm run build`.
 CI содержит проверки Python для Windows/Linux, фронтенда и дополнительных
 BIM-компонентов. Тестовые документы создаются синтетически; реальные проекты,
 базы, кеши и секреты в коммиты не включаются.
+CI также проверяет историю Git с Gitleaks 8.30.1 и состав готовых wheel/sdist:
+неотслеживаемый файл в папке исходников не должен попасть в публичный архив.
+Проверка не заменяет просмотр скриншотов и инженерных отчётов перед публикацией.

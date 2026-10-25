@@ -106,10 +106,10 @@
     "demo/schedule-4ffdf006e02fb7518030bf6b05f0fadb515f9c403b20e378f66c5a6068603047.csv": "3eb13468a646c274fb93161afc7778b73138f3233c756353402c2b729e236425",
     "demo/sources.json": "68fd6a9ab93fb69f852c8beea66ceb4164620a478c8fb5d15a1edab4f2a7c185",
     "demo/sources.json.gz": "2eed0011e93f206b6c2c96f84a26419965bc4872228da885afd56cfbbe45f8e5",
-    "downloads/index.html": "d038e9364ace97cad5ef6879ec9749e00959794ffa453964a41fc83bcd6a5513",
-    "downloads/SHA256SUMS.txt": "3ecb666d218357f9f7469b80fcf96bfd723d5bf99c0f617ba5a4b5e987cd7015",
-    "downloads/uvyazka-0.3.0a12-py3-none-any.whl": "080a03d1f4796b24cc1e7a063c75376520da7d7d742b148bea0f5f96e4486a80",
-    "downloads/uvyazka-0.3.0a12.tar.gz": "4d3467f08ea3d53c290b9039626e570d2dc9ca0e0c5a1aed0d84ff2d4cf5fc4d",
+    "downloads/index.html": "e0116835257c2e218c38ab4956691793d0c4ec3aa27cb85f4ed5a0223b7d5907",
+    "downloads/SHA256SUMS.txt": "280efbfdcb3541916e0040d0f443e3c0116a29fa5a50c7dfa87ee8db662007cc",
+    "downloads/uvyazka-0.3.0a12-py3-none-any.whl": "b8e515b25448523be84f0be679ebd461b418f537f1ecf94efc4f9619162e2ace",
+    "downloads/uvyazka-0.3.0a12.tar.gz": "868aef20146ea6410d093cf5fecc2d4cab2a68b09a40aaa49dfebd13711d76ae",
     "FONT-LICENSES.txt": "502d5acce7fbbe2e331f6076cdfd6c3cc376be6748c769308730ce529ad5dfb6",
     "index.html": "b07f9d2b892d8551be4a6c1456c74eb703294ee77fba272efde0e380c39e828f",
     "runtime/ifc-hierarchy.json": "41eb60736f25eb60ae093aaa85b42efba47100e0da7a71d6f21cffa8f71184f1",
@@ -138,5 +138,6 @@
     "runtime/web-ifc/web-ifc.wasm": "1fbd30bd5515ff6ad15268e87aa26e41d57b29411c8461618b63bee92735d349",
     "runtime/web-ifc/web-ifc.wasm.gz": "82779c181dbcf7d80d911fda055ade27c4e825a9f890b105d36cbf8d1d8f9a9d",
     "THREE-LICENSE.txt": "3c6a7c89527e939f738cb908ab2580df0bbf32da8a0a0fed932917be51579225"
-  }
+  },
+  "downloads_source_revision": "2d910ded24e8ed3a29f043986db2aea251a3438c"
 }

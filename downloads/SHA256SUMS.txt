@@ -1,2 +1,2 @@
-4d3467f08ea3d53c290b9039626e570d2dc9ca0e0c5a1aed0d84ff2d4cf5fc4d  uvyazka-0.3.0a12.tar.gz
-080a03d1f4796b24cc1e7a063c75376520da7d7d742b148bea0f5f96e4486a80  uvyazka-0.3.0a12-py3-none-any.whl
+868aef20146ea6410d093cf5fecc2d4cab2a68b09a40aaa49dfebd13711d76ae  uvyazka-0.3.0a12.tar.gz
+b8e515b25448523be84f0be679ebd461b418f537f1ecf94efc4f9619162e2ace  uvyazka-0.3.0a12-py3-none-any.whl

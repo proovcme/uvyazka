@@ -5,6 +5,8 @@ export function convertRvtBytes(bytes: Uint8Array): any;
 
 export function extractRvtDocument(bytes: Uint8Array): any;
 
+export function extractRvtEngineering(bytes: Uint8Array): any;
+
 export function extractRvtScheduleData(bytes: Uint8Array): any;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -13,6 +15,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly convertRvtBytes: (a: number, b: number) => [number, number, number];
     readonly extractRvtDocument: (a: number, b: number) => [number, number, number];
+    readonly extractRvtEngineering: (a: number, b: number) => [number, number, number];
     readonly extractRvtScheduleData: (a: number, b: number) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

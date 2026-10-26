@@ -32,6 +32,20 @@ export function extractRvtDocument(bytes) {
  * @param {Uint8Array} bytes
  * @returns {any}
  */
+export function extractRvtEngineering(bytes) {
+    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.extractRvtEngineering(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * @param {Uint8Array} bytes
+ * @returns {any}
+ */
 export function extractRvtScheduleData(bytes) {
     const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;

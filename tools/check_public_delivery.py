@@ -10,7 +10,15 @@ import json
 import re
 import time
 from urllib.parse import urljoin
-from urllib.request import Request,urlopen
+from urllib.request import Request,HTTPRedirectHandler,build_opener
+
+class NoRedirect(HTTPRedirectHandler):
+    """A mirror must never pass for the origin being tested."""
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        raise ValueError('Delivery redirected; check the destination explicitly: '+new_url)
+
+def urlopen(request,timeout):
+    return build_opener(NoRedirect()).open(request,timeout=timeout)
 
 def fetch(base,name,timeout):
     started=time.perf_counter()
@@ -20,7 +28,7 @@ def fetch(base,name,timeout):
         if encoding not in {'identity','gzip'}:raise ValueError('Unexpected content encoding: '+encoding)
     return body,{'path':name,'wire_bytes':len(raw),'decoded_bytes':len(body),'first_byte_seconds':round(first-started,3),'seconds':round(time.perf_counter()-started,3)}
 
-def check(base,timeout=20,revision=None,large=False,all_models=False):
+def check(base,timeout=60,revision=None,large=False,all_models=False,all_files=False):
     base=base.rstrip('/')+'/'
     manifest=json.loads(fetch(base,'release.json',timeout)[0])
     if manifest['mode']!='browser-compute-and-public-examples':raise ValueError('Unexpected demo release')
@@ -44,16 +52,20 @@ def check(base,timeout=20,revision=None,large=False,all_models=False):
         names.extend([rvt['url'],
             'runtime/rvt/uvyazka_rvt_browser_bg.wasm','runtime/web-ifc/web-ifc.wasm',
             'runtime/pyodide/pyodide.asm.wasm','runtime/planner.zip','cad/index.html'])
-    names=list(dict.fromkeys(names))
+    if all_files:names.extend(digests)
+    fetched={item['path'] for item in results}
+    names=list(dict.fromkeys(name for name in names if name not in fetched))
     with ThreadPoolExecutor(max_workers=4) as pool:
         for _,measurement in pool.map(verified,names):results.append(measurement)
-    return {'url':base,'revision':manifest['revision'],'verification':'complete HTTP bodies and SHA-256, not browser visual acceptance','downloads':results}
+    return {'url':base,'revision':manifest['revision'],'redirects_allowed':False,
+            'verification':'complete HTTP bodies and SHA-256, not browser visual acceptance','downloads':results}
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('url',nargs='?',default='https://locia.work/uvyazka/')
-    parser.add_argument('--revision');parser.add_argument('--timeout',type=float,default=20)
+    parser.add_argument('--revision');parser.add_argument('--timeout',type=float,default=60)
     parser.add_argument('--large',action='store_true',help='Also fetch model, geometry, RVT and compute runtimes')
     parser.add_argument('--all-models',action='store_true',help='Verify every catalogued model, including the federation')
+    parser.add_argument('--all-files',action='store_true',help='Verify every release artifact, including sources and downloads')
     args=parser.parse_args()
-    print(json.dumps(check(args.url,args.timeout,args.revision,args.large,args.all_models),ensure_ascii=False,indent=2))
+    print(json.dumps(check(args.url,args.timeout,args.revision,args.large,args.all_models,args.all_files),ensure_ascii=False,indent=2))

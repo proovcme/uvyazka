@@ -10,7 +10,28 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import tarfile
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, build_opener
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        raise ValueError('Deployment health check redirected: ' + new_url)
+
+
+def urlopen(url, timeout):
+    return build_opener(NoRedirect()).open(url, timeout=timeout)
+
+
+def verify_live_release(url, manifest):
+    with urlopen(url + 'release.json', timeout=30) as response:
+        live = json.load(response)
+    if live != manifest:
+        raise ValueError('Live manifest differs from the deployed release')
+    expected = manifest['files_sha256']
+    for name in ['index.html', 'runtime/rvt/uvyazka_rvt_browser_bg.wasm', 'cad/index.html']:
+        with urlopen(url + name, timeout=30) as response:
+            if hashlib.sha256(response.read()).hexdigest() != expected[name]:
+                raise ValueError('Live artifact differs: ' + name)
 
 
 def digest(path):
@@ -77,12 +98,7 @@ def main():
     try:
         switch(current, release)
         switched = True
-        with urlopen(args.url + 'release.json', timeout=30) as response:
-            live = json.load(response)
-        assert live['revision'] == args.revision, 'Live revision differs'
-        for name in ['index.html', 'runtime/rvt/uvyazka_rvt_browser_bg.wasm', 'cad/index.html']:
-            with urlopen(args.url + name, timeout=30) as response:
-                assert hashlib.sha256(response.read()).hexdigest() == expected[name], name
+        verify_live_release(args.url, manifest)
     except Exception:
         if switched:
             switch(current, previous)

@@ -1,3 +1,5 @@
+import {attachNativeEngineering} from './native-engineering';
+import {importNwd} from './browser-nwd';
 import {geometryCache} from './geometry-cache';
 import { importIfc } from './browser-ifc';
 import {documentCache} from './rvt-document-cache';
@@ -17,6 +19,15 @@ worker.onmessage=async({data})=>{
     progress('Вычисление SHA-256 исходного файла','Хеширование');
     const sourceHash=await digest(bytes),sourceSize=bytes.byteLength;
     worker.postMessage({job,kind:'source',sha256:sourceHash});
+    if(/\.nwd$/i.test(filename)){
+      progress('Загрузка независимого NWD-декодера','NWD-движок');
+      const module=await import(/* @vite-ignore */base+'runtime/nwd/uvyazka_nwd_experiment.js');
+      await module.default({module_or_path:base+'runtime/nwd/uvyazka_nwd_experiment_bg.wasm'});
+      const result=module.inspectNwdBytes(bytes,(text:string)=>progress(text,'Данные NWD'));
+      progress('Пересчёт координат по выбранным единицам','Геометрия');
+      const {model,binary}=await importNwd(result,filename,data.nwdUnit);
+      worker.postMessage({job,kind:'imported',model,binary},[binary]);return;
+    }
     if(/\.ifc$/i.test(filename)){
       let cache;
       try{cache=await geometryCache();const cached=await cache.get(sourceHash);if(cached){
@@ -35,9 +46,9 @@ worker.onmessage=async({data})=>{
         try {cache=await documentCache();}catch(error){worker.postMessage({job,kind:'document-cache-error',message:String(error)});}
         try {
           let document;try {document=await cache?.get(sourceHash);}catch(error){worker.postMessage({job,kind:'document-cache-error',message:String(error)});}
-          const cached=!!document;
+          const cached=!!document;let parametersUpdated=false;
           if(!document)document=module.extractRvtDocument(bytes);
-          if(!cached&&document.records.some((r:any)=>r.kind==='schedule')){
+          if(!document.schedule_data){parametersUpdated=true;
             // Keep the catalogue even if parameter extraction fails.
             document.source={filename,sha256:sourceHash,size_bytes:sourceSize};
             rvtDocument=document;worker.postMessage({job,kind:'document',document,cached:false});
@@ -48,13 +59,15 @@ worker.onmessage=async({data})=>{
           document.source={filename,sha256:sourceHash,size_bytes:sourceSize};
           // Publish before saving: a quota error must not discard usable data.
           rvtDocument=document;worker.postMessage({job,kind:'document',document,cached});
-          if(!cached&&document.status!=='partial'&&document.schedule_data?.status!=='partial')try {await cache?.put(sourceHash,document);}catch(error){worker.postMessage({job,kind:'document-cache-error',message:String(error)});}
+          if((!cached||parametersUpdated)&&document.status!=='partial'&&document.schedule_data?.status!=='partial')try {await cache?.put(sourceHash,document);}catch(error){worker.postMessage({job,kind:'document-cache-error',message:String(error)});}
         }finally{cache?.close();}
       } catch(error) {
         worker.postMessage({job,kind:'document-error',message:String(error)});
       }
+      let engineering;
+      if(module.extractRvtEngineering){progress('Чтение систем и базового оборудования цепей','Связи RVT');try{engineering=module.extractRvtEngineering(bytes);}catch(error){engineering={status:'partial',systems:[],diagnostics:[String(error)]};}}
       progress('Конверсия RVT и чтение сохранённых сеток','RVT → IFC');
-      conversion=module.convertRvtBytes(bytes);
+      conversion=module.convertRvtBytes(bytes);conversion.engineering=engineering;
       if(!conversion.ifc_step)throw Error(conversion.quality_error||'RVT: пригодная геометрия не получена');
       progress('Подготовка промежуточного IFC','IFC-буфер');
       bytes=new TextEncoder().encode(conversion.ifc_step);convertedIfc=bytes.buffer as ArrayBuffer;delete conversion.ifc_step;
@@ -67,6 +80,7 @@ worker.onmessage=async({data})=>{
     const {model,binary}=await importIfc(api,bytes,filename,await digest(bytes),await response.json(),
       text=>progress(text,text.startsWith('Геометрия:')?'Геометрия':'Свойства IFC'),!!conversion,memoryMiB);
     if(conversion){model.model_id=sourceHash;model.source={...model.source,format:'rvt',sha256:sourceHash,size_bytes:sourceSize,conversion:{engine:'rvt-rs',local_patches:['uvyazka-native-mep-v1','uvyazka-wasm-field-bounds-v1','uvyazka-native-2021-v1'],warnings:conversion.diagnostics.warnings,unsupported_features:conversion.diagnostics.unsupported_features,ifc_sha256:model.source.sha256,confidence:conversion.diagnostics.confidence,source_revision:'b6086d41b9758fd9b92f42f0a47b8345b9c58056'}};}
+    if(conversion?.engineering)attachNativeEngineering(model,conversion.engineering,sourceHash);
     if(!conversion){let cache;try{cache=await geometryCache();await cache.put(sourceHash,model,binary);}catch(error){progress('Модель прочитана; кеш не сохранён','Кеш IFC',{warning:String(error)});}finally{cache?.close();}}
     worker.postMessage({job,kind:'imported',model,binary,conversion,convertedIfc},[binary,...(convertedIfc?[convertedIfc]:[])]);
   } catch(error) {

@@ -17,7 +17,7 @@ import ifcopenshell.util.unit as units
 import numpy as np
 from .quantities import explicit_quantities, mesh_quantities, source_quantity_values
 
-IMPORTER_VERSION = "0.4.3"
+IMPORTER_VERSION = "0.4.4"
 CONTRACT_VERSION = "0.1.0"
 IDENTITY_VERSION = "ifc-revit-tag-1"
 
@@ -151,6 +151,28 @@ def import_model(source_path: str, output_path: str, source_name: str | None = N
         raise ValueError("В IFC не определены единицы длины проекта. Масштаб модели нельзя установить достоверно.")
     scale = units.calculate_unit_scale(model)
     resolve_storey, relationships = spatial_index(model)
+    # These relations must not enter the spatial parent index: a circuit is not a level.
+    for class_name, parent_key, child_key in (
+        ('IfcRelAssignsToGroup','RelatingGroup','RelatedObjects'),
+        ('IfcRelConnectsPortToElement','RelatedElement','RelatingPort'),
+        ('IfcRelConnectsPorts','RelatingPort','RelatedPort'),
+        ('IfcRelConnectsElements','RelatingElement','RelatedElement'),
+        ('IfcRelConnectsPathElements','RelatingElement','RelatedElement'),
+        ('IfcRelFlowControlElements','RelatingFlowElement','RelatedControlElements')):
+        try:
+            schema.declaration_by_name(class_name)
+        except RuntimeError:
+            continue
+        for relation in model.by_type(class_name, include_subtypes=False):
+            parent,children=getattr(relation,parent_key,None),getattr(relation,child_key,None)
+            if parent is None or children is None:continue
+            children=children if isinstance(children,tuple) else (children,)
+            relationships.append({'step_id':relation.id(),'class':relation.is_a(),'parent_id':str(parent.id()),'child_ids':[str(c.id()) for c in children]})
+    systems=[{'id':str(system.id()),'global_id':system.GlobalId,'name':system.Name or system.is_a(),'class':system.is_a(),
+              'description':system.Description,'property_sets':jsonable(elements.get_psets(system,psets_only=True)),
+              'member_ids':sorted({child for r in relationships if r['class']=='IfcRelAssignsToGroup' and r['parent_id']==str(system.id()) for child in r['child_ids']}),
+              'connectivity_verified':False} for system in model.by_type('IfcSystem')]
+
     products = sorted(model.by_type("IfcProduct"), key=lambda item: item.id())
     settings = ifcopenshell.geom.settings()
     settings.set(settings.USE_WORLD_COORDS, True)
@@ -259,7 +281,7 @@ def import_model(source_path: str, output_path: str, source_name: str | None = N
         "exported_at": model.header.file_name.time_stamp, "exporter": model.header.file_name.preprocessor_version},
         "coordinate_system": {"length_to_m": scale, "render_origin_m": origin.tolist(),
                               "up_axis": "Z", "bounds_min_m": lower.tolist(), "bounds_max_m": upper.tolist()},
-        "storeys": storeys, "elements": rows, "relationships": relationships, "diagnostics": diagnostics,
+        "storeys": storeys, "elements": rows, "relationships": relationships, "systems": systems, "diagnostics": diagnostics,
         "statistics": {"products": len(rows), "physical_elements": sum(row["role"] == "element" for row in rows),
                        "meshes": len(raw_meshes), "triangles": sum(len(faces) for _, _, faces in raw_meshes),
                        "geometry_errors": len(diagnostics), "binary_bytes": binary_path.stat().st_size},

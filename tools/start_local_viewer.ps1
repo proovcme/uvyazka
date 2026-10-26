@@ -10,7 +10,7 @@ $pythonPath = Join-Path $viewerRoot '.venv/Scripts/python.exe'
 if (-not (Test-Path -LiteralPath $pythonPath)) {
     throw 'Local Python environment missing. Install the project into .venv first.'
 }
-foreach ($asset in @('index.html', 'release.json', 'runtime/rvt/uvyazka_rvt_browser_bg.wasm', 'runtime/web-ifc/web-ifc.wasm')) {
+foreach ($asset in @('index.html', 'release.json', 'runtime/rvt/uvyazka_rvt_browser_bg.wasm', 'runtime/web-ifc/web-ifc.wasm', 'runtime/nwd/uvyazka_nwd_experiment_bg.wasm')) {
     if (-not (Test-Path -LiteralPath (Join-Path $sitePath $asset))) {
         throw "Viewer assets missing: $asset. Build tools/build_browser_runtime.py and tools/build_demo_site.py first."
     }
@@ -18,7 +18,7 @@ foreach ($asset in @('index.html', 'release.json', 'runtime/rvt/uvyazka_rvt_brow
 function Test-ViewerReady {
     try {
         $release = Invoke-RestMethod -Uri ($viewerUrl + 'release.json') -TimeoutSec 2
-        return ($release.mode -eq 'browser-compute-and-synthetic-demo' -and $release.browser_file_open -eq $true)
+        return (($release.mode -in @('browser-compute-and-synthetic-demo', 'browser-compute-and-public-examples')) -and $release.browser_file_open -eq $true)
     } catch { return $false }
 }
 if (-not (Test-ViewerReady)) {

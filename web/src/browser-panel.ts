@@ -1,3 +1,4 @@
+import {chooseNwdUnits} from './nwd-unit-dialog';
 import {processingPanel} from './processing-panel';
 import {geometryCache} from './geometry-cache';
 import type { ModelPackage } from './model';
@@ -13,8 +14,8 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
   const section=document.createElement('section');section.className='panel browser-import';section.innerHTML=`
 <h2>Открыть файл</h2>
 <p>Файл остаётся на вашем устройстве. Для RVT и IFC прежний порог размера снят; большие модели требуют больше памяти. DWG/DXF до 64 MiB. Чтение RVT экспериментальное; Revit и агент не нужны.</p>
-<div class="browser-actions"><label>DWG / RVT / IFC<input id="browser-file" type="file" accept=".dwg,.dxf,.rvt,.ifc"></label><button id="browser-cancel" disabled>Отменить</button><button id="browser-demo">Учебный пример</button><button id="browser-log">Журнал обработки</button><button id="browser-document">Виды и таблицы</button></div>
-<label class="check"><input id="browser-append" type="checkbox">Добавить IFC / RVT к открытой сцене</label><button id="browser-clear-cache">Очистить кеш IFC</button>
+<div class="browser-actions"><label>DWG / RVT / IFC / NWD<input id="browser-file" type="file" accept=".dwg,.dxf,.rvt,.ifc,.nwd"></label><button id="browser-cancel" disabled>Отменить</button><button id="browser-demo">Учебный пример</button><button id="browser-log">Журнал обработки</button><button id="browser-document">Виды и таблицы</button></div>
+<label class="check"><input id="browser-append" type="checkbox">Добавить IFC / RVT / NWD к открытой сцене</label><button id="browser-clear-cache">Очистить кеш IFC</button>
 <p id="browser-status" role="status" aria-live="polite">Выберите файл или изучите готовый пример ниже.</p>
 <details><summary>Память и большие модели</summary><label>Бюджет IFC-декодера<select id="browser-memory"><option value="512">512 MiB</option><option value="1024" selected>1 GiB</option><option value="2048">2 GiB</option></select></label><p>Это бюджет IFC-движка, а не всей вкладки. RVT, промежуточный IFC и 3D требуют дополнительной памяти. Технический предел RVT-читателя — 2 GiB входного файла; успешное чтение такого размера не гарантируется.</p></details>
 <div class="browser-actions simulation-only"><label>Ресурсы<select id="browser-variant"><option value="base">Базовые</option><option value="reinforced">Усиленные</option></select></label><label>Доступность ресурсов<select id="browser-capacity"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option></select></label><label>Выдержка бетона, суток<input id="browser-curing" type="number" min="1" max="365" value="28"></label><button id="browser-plan" disabled>Рассчитать сценарий</button></div>
@@ -37,7 +38,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
   addEventListener('pagehide',()=>clearInterval(probe));
 
   const status=(text:string)=>{el('browser-status').textContent=text;const footer=document.getElementById('workspace-status')!;footer.textContent=text;footer.title=text;};
-  const busy=(yes:boolean)=>{document.body.classList.toggle('is-busy',yes);el<HTMLButtonElement>('browser-cancel').disabled=!yes;el<HTMLButtonElement>('browser-plan').disabled=yes||!current;for(const id of ['open-file','empty-add-model','replace-model']){const button=document.getElementById(id) as HTMLButtonElement|null;if(button)button.disabled=yes;}};
+  const busy=(yes:boolean)=>{document.body.classList.toggle('is-busy',yes);el<HTMLButtonElement>('browser-cancel').disabled=!yes;el<HTMLButtonElement>('browser-plan').disabled=yes||!current||current.source.format==='nwd';for(const id of ['open-file','empty-add-model','replace-model']){const button=document.getElementById(id) as HTMLButtonElement|null;if(button)button.disabled=yes;}};
   const stop=(reason='Обработка отменена: выбран другой файл или режим.',keepPlanner=false)=>{
     if(run?.state==='running')finishRun(run,'cancelled',reason);
     active++;importer?.terminate();importer=null;if(!keepPlanner){planner?.terminate();planner=null;}busy(false);
@@ -49,6 +50,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
   el('browser-demo').onclick=async()=>{stop('Переход к учебному примеру.');await journal.flush();location.href=base;};
   const openFile=async(file:File,appendMode?:boolean)=>{
     document.querySelector<HTMLDialogElement>('#file-dialog')!.close();
+    const nwdUnit=/\.nwd$/i.test(file.name)?await chooseNwdUnits(file.name):null;if(/\.nwd$/i.test(file.name)&&!nwdUnit)return;
     stop();const job=active;await log.ready;if(job!==active)return;
     run=journal.begin('import',file.name,file.size);const jobRun=run;log.select(run);processing.begin(file.name,file.size);
     fallback=current;
@@ -106,16 +108,17 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
           reportProgress(jobRun,'Отображение','Создание 3D-сцены');status('Отображение модели');
           try{const displayed=await callbacks.model(data.model,data.binary,append);if(job!==active)return;current=displayed;fallback=null;}
           catch(e){if(job===active)fail('Не удалось отобразить модель: '+String(e));return;}
-          const result=`${file.name}: ${s.physical_elements} физических элементов, ${s.meshes} сеток, ${s.geometry_errors} без геометрии.`;
-          finishRun(jobRun,'completed',result);status(result+' Можно рассчитать сценарий.');busy(false);
+          const result=`${file.name}: ${data.model.source.format==='nwd'?data.model.elements.length+' геометрических экземпляров':s.physical_elements+' физических элементов'}, ${s.meshes} сеток, ${s.geometry_errors} без геометрии.`;
+          finishRun(jobRun,'completed',result);status(result+(data.model.source.format==='nwd'?' Семантика BIM и исходные единицы не прочитаны.':' Можно рассчитать сценарий.'));busy(false);
         }
       };
-      importer.postMessage({job,buffer,filename:file.name,base,memoryMiB},[buffer]);
+      importer.postMessage({job,buffer,filename:file.name,base,memoryMiB,nwdUnit},[buffer]);
     }catch(e){if(job===active)fail(String(e),{stack:e instanceof Error?e.stack:undefined});}
   };
   el<HTMLInputElement>('browser-file').onchange=()=>{const input=el<HTMLInputElement>('browser-file'),file=input.files?.[0];input.value='';if(file)void openFile(file);};
   el('browser-plan').onclick=async()=>{
     if(!current)return;
+    if(current.elements.some(e=>e.semantic_kind==='geometry_fragment')){status('Сценарий для геометрических фрагментов NWD не рассчитывается: семантика объектов не прочитана.');return;}
     const curingDays=Number(el<HTMLInputElement>('browser-curing').value);if(!Number.isInteger(curingDays)||curingDays<1||curingDays>365){status('Выдержка бетона: целое число от 1 до 365 суток');return;}
     await log.ready;stop('Запущен новый расчёт.',true);const job=active;fallback=current;
     run=journal.begin('simulation',current.source.filename,current.source.size_bytes);const jobRun=run;log.select(run);journal.source(run,current.source.sha256);document.querySelector<HTMLDialogElement>('#file-dialog')!.close();processing.begin(current.source.filename,current.source.size_bytes,true);

@@ -43,7 +43,7 @@ export function modelDataPanel(getModel:()=>ModelPackage|null,select:(id:string)
   };
   const refresh=()=>{
     const model=getModel();rows=[];if(model){let cached=tables.get(model);if(!cached){cached=new Map();tables.set(model,cached);}let table=cached.get(section());if(!table){table=dataRows(model,section());cached.set(section(),table);}rows=table;}offset=0;
-    node('.model-data-summary').textContent=model?`${model.source.filename} · ${model.statistics.physical_elements} элементов · ${model.elements.filter(e=>e.role==='space').length} помещений · ${model.storeys.length} уровней · ${model.systems?.length??0} систем в выгрузке`:'Модель ещё не прочитана. Для RVT без геометрии откройте «Виды и таблицы».';
+    node('.model-data-summary').textContent=model?.source.format==='nwd'?`${model.source.filename} · ${model.elements.length} геометрических фрагментов. BIM-объекты, уровни и системы не прочитаны.`:model?`${model.source.filename} · ${model.statistics.physical_elements} элементов · ${model.elements.filter(e=>e.role==='space').length} помещений · ${model.storeys.length} уровней · ${model.systems?.length??0} систем в выгрузке`:'Модель ещё не прочитана. Для RVT без геометрии откройте «Виды и таблицы».';
     node('.model-data-detail').replaceChildren();render();
   };
   const save=(kind:'json'|'csv')=>{const model=getModel();if(!model)return;const blob=new Blob([kind==='json'?JSON.stringify(dataSnapshot(model,section(),filtered),null,2):parameterCsv(model,filtered)],{type:kind==='json'?'application/json':'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`uvyazka-${section()}.${kind}`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};

@@ -26,3 +26,6 @@ prune web/node_modules
 prune web/public/runtime
 prune integrations/rvt-browser-bridge/target
 prune web/test-results
+
+include integrations/nwd-browser-bridge/NOTICE.txt integrations/nwd-browser-bridge/THIRD_PARTY_LICENSES.txt
+prune integrations/nwd-browser-bridge/target

@@ -20,6 +20,12 @@ def build(skip_rust=False):
     if not skip_rust:
         subprocess.run(['cargo', 'build', '--locked', '--release', '--target', 'wasm32-unknown-unknown', '--manifest-path', str(crate/'Cargo.toml')], check=True)
     subprocess.run(['wasm-bindgen', str(crate/'target/wasm32-unknown-unknown/release/uvyazka_rvt_browser.wasm'), '--target', 'web', '--out-dir', str(target/'rvt')], check=True)
+    nwd = ROOT / 'integrations/nwd-browser-bridge'
+    if not skip_rust:
+        subprocess.run(['cargo', 'build', '--locked', '--release', '--target', 'wasm32-unknown-unknown', '--manifest-path', str(nwd/'Cargo.toml')], check=True)
+    subprocess.run(['wasm-bindgen', str(nwd/'target/wasm32-unknown-unknown/release/uvyazka_nwd_experiment.wasm'), '--target', 'web', '--out-dir', str(target/'nwd')], check=True)
+    for name in ['NOTICE.txt', 'THIRD_PARTY_LICENSES.txt']:
+        shutil.copyfile(nwd/name, target/'nwd'/name)
     for package, files in {
         'web-ifc': ['web-ifc-api.js', 'web-ifc.wasm', 'LICENSE.md'],
         'pyodide': ['pyodide.mjs', 'pyodide.asm.mjs', 'pyodide.asm.wasm', 'pyodide-lock.json', 'python_stdlib.zip'],

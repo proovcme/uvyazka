@@ -127,7 +127,8 @@ export async function importIfc(api: any, data: Uint8Array, filename: string, sh
     for(const rel of typed)for(const id of ids(rel.RelatedObjects)){const e=byId.get(id);if(e)e.materials=materials.get(value(rel.RelatingType))||[];}
     for(const [id,names] of materials){const e=byId.get(id);if(e)e.materials=[...new Set([...e.materials,...names])];}
     const relationships:ModelPackage['relationships']=[];
-    for(const [name,parent,children] of [['IfcRelAggregates','RelatingObject','RelatedObjects'],['IfcRelNests','RelatingObject','RelatedObjects'],['IfcRelVoidsElement','RelatingBuildingElement','RelatedOpeningElement'],['IfcRelFillsElement','RelatingOpeningElement','RelatedBuildingElement'],['IfcRelContainedInSpatialStructure','RelatingStructure','RelatedElements'],['IfcRelAssignsToGroup','RelatingGroup','RelatedObjects']]) {
+    for(const [name,parent,children] of [['IfcRelAggregates','RelatingObject','RelatedObjects'],['IfcRelNests','RelatingObject','RelatedObjects'],['IfcRelVoidsElement','RelatingBuildingElement','RelatedOpeningElement'],['IfcRelFillsElement','RelatingOpeningElement','RelatedBuildingElement'],['IfcRelContainedInSpatialStructure','RelatingStructure','RelatedElements'],['IfcRelAssignsToGroup','RelatingGroup','RelatedObjects'],['IfcRelConnectsPortToElement','RelatedElement','RelatingPort'],['IfcRelConnectsPorts','RelatingPort','RelatedPort'],['IfcRelConnectsElements','RelatingElement','RelatedElement'],['IfcRelConnectsPathElements','RelatingElement','RelatedElement'],['IfcRelFlowControlElements','RelatingFlowElement','RelatedControlElements']]) {
+      if(!api.GetTypeCodeFromName(name.toUpperCase()))continue;
       for(const rel of lines(name.toUpperCase()))relationships.push({step_id:rel.expressID,class:name,parent_id:String(value(rel[parent])),child_ids:ids(rel[children]).map(String)});
     }
     const systems:NonNullable<ModelPackage['systems']>=[];

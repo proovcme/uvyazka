@@ -1,6 +1,8 @@
 /** ModelPackage 0.1.0: renderer-independent, SI coordinates, explicit provenance. */
+import type {EngineeringLink} from './engineering-graph';
 export type Vec3 = [number, number, number];
 export interface MeshData {
+  primitive?: 'triangles' | 'lines';
   bbox_min_m: Vec3;
   bbox_max_m: Vec3;
   position_byte_offset: number;
@@ -13,6 +15,7 @@ export interface MeshData {
   source: { kind: 'derived'; method: string; version: string; representation_id: number };
 }
 export interface BimElement {
+  semantic_kind?: 'geometry_fragment';
   long_name?:string|null;
   tag?:string|null;
   source_quantities?:Record<string,Record<string,unknown>>;
@@ -52,11 +55,13 @@ export interface ModelPackage {
   importer_version: string;
   model_id: string;
   source: { filename: string; sha256: string; size_bytes: number; schema: string; exported_at: string; exporter: string; format?: string;
+    calibration?: {unit:string;length_to_m:number;basis:'user_assumption';source_units_decoded:false};
     conversion?: { engine: string; local_patches?: string[]; warnings: string[]; unsupported_features: string[]; ifc_sha256: string; confidence: { level?: string }; source_revision: string } };
   coordinate_system: { length_to_m: number; render_origin_m: Vec3; up_axis: 'Z'; bounds_min_m: Vec3; bounds_max_m: Vec3 };
   storeys: Storey[];
   elements: BimElement[];
-  relationships: { step_id: number; class: string; parent_id: string; child_ids: string[] }[];
+  relationships: { step_id: number; class: string; parent_id: string; child_ids: string[]; source_instance_id?:string }[];
+  engineering_links?:EngineeringLink[];
   diagnostics: { element_id: string; kind: string; message: string }[];
   statistics: { products: number; physical_elements: number; meshes: number; triangles: number; geometry_errors: number; binary_bytes: number };
   capabilities: { read: boolean; geometry_ready: boolean; technology_resolved: boolean; schedule_ready: boolean };

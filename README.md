@@ -1,7 +1,7 @@
 ![Увязка — каждое число со своим источником](docs/assets/cover.svg)
 
 [![Проверки](https://github.com/proovcme/uvyazka/actions/workflows/ci.yml/badge.svg)](https://github.com/proovcme/uvyazka/actions/workflows/ci.yml)
-![Версия: 0.3.0 alpha 12](https://img.shields.io/badge/version-0.3.0--alpha.12-337E83?style=flat-square)
+![Версия: 0.3.0 alpha 13](https://img.shields.io/badge/version-0.3.0--alpha.13-337E86?style=flat-square)
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-19323D?style=flat-square)
 ![Локальный MCP, stdio](https://img.shields.io/badge/MCP-local%20stdio-536971?style=flat-square)
 
@@ -34,7 +34,7 @@
 
 ## Что уже работает
 
-**Alpha: 83 MCP-инструмента и шесть навыков.**
+**Alpha: 86 MCP-инструментов и шесть навыков.**
 
 | Возможность | Результат |
 |---|---|
@@ -143,6 +143,16 @@ uv run uvyazka client-config codex
 
 Эти экраны сняты на синтетических данных. [Полная галерея](docs/SCREENSHOTS.md).
 
+## Рабочее место вьювера — локальная рабочая версия
+
+Добавлены инженерная навигация по системам и портам с источниками связей,
+сохранённые сцены, подборки, сравнение ревизий, множественное выделение,
+отмена видимости и замеры с привязками к сетке. Локальная панель и MCP
+обмениваются состоянием через SQLite проекта; геометрия хранится отдельно.
+Публичное демо обновляется отдельной выкладкой.
+
+[Как пользоваться, контракт состояния и ограничения](docs/VIEWER_WORKSPACE.md).
+
 ## Веб-демо: вьювер и симуляция
 
 **[Открыть демо](https://locia.work/uvyazka/)** ·
@@ -157,6 +167,8 @@ uv run uvyazka client-config codex
 - IFC/RVT: дерево модели, категории, уровни, системы, поиск элементов и
   параметров, скрытие и изоляция, копируемые свойства и доступные исходные ID.
 - DWG/DXF: отдельный CAD-вьювер со слоями.
+- [NWD](docs/NWD.md): экспериментальное прямое чтение геометрии и линий в общей сцене; исходные единицы пока задаются пользователем.
+- [Спецификации по параметрам](docs/PARAMETER_SPECIFICATIONS.md): поля, условия, группы, сортировка, итоги и CSV/JSON с источниками; RVT, IFC и прочитанные данные NWD.
 - RVT: каталог прочитанных видов, листов и сохранённых данных спецификаций.
 - IFC/RVT: расчёт сценария и симуляция; линии DWG сами по себе не задают работы.
 
@@ -243,7 +255,7 @@ uv run python -m unittest discover -s tests -v
 uv run python tools/validate_package.py
 uv run python tools/check_public_content.py
 uv build
-uv run python tools/check_public_content.py --archive dist/uvyazka-0.3.0a12.tar.gz --archive dist/uvyazka-0.3.0a12-py3-none-any.whl
+uv run python tools/check_public_content.py --archive dist/uvyazka-0.3.0a13.tar.gz --archive dist/uvyazka-0.3.0a13-py3-none-any.whl
 ```
 
 Фронтенд — каталог `web`: `npm ci`, `npm test`, `npm run build`.

@@ -86,3 +86,21 @@ def register_tools(mcp, workspace):
     def get_construction_run(project_id: str, run_id: str, section: str = "schedule", offset: int = 0, limit: int = 40) -> dict:
         """Read bounded schedule rows or events. Schedule contains starts, finishes, demands, provenance and dependency-only CPM floats. Simulation events are not actual construction records."""
         return Planning(workspace).run_page(project_id, run_id, section, offset, limit)
+
+    @mcp.tool(annotations=read)
+    def get_model_network(project_id: str, model_id: str, node_id: str = '', target_id: str = '', mode: str = 'physical', offset: int = 0, limit: int = 100) -> dict:
+        """Read explicit system/port/control/base-equipment relations and optional bounded path. Membership never proves physical connection or electrical supply. Missing read topology remains unknown."""
+        from .engineering import network_page
+        return network_page(Planning(workspace).model(project_id,model_id),node_id,target_id,mode,offset,limit)
+
+    @mcp.tool(annotations=read)
+    def get_viewer_workspace(project_id: str, revision: int | None = None) -> dict:
+        """Read viewer camera/sections/visibility/filters, source-pinned selection sets and measurement observations from the common project DB. Geometry stays in the model cache/browser."""
+        from .viewer_workspace import ViewerWorkspace
+        return ViewerWorkspace(workspace).get(project_id,revision)
+
+    @mcp.tool(annotations=write)
+    def save_viewer_workspace(project_id: str, state: dict, expected_revision: int, request_id: str) -> dict:
+        """Save presentation state read with get_viewer_workspace. Preserve all fields; schema version 1. Requires matching expected_revision; retries with the same request_id are idempotent. This never approves observations or changes engineering facts."""
+        from .viewer_workspace import ViewerWorkspace
+        return ViewerWorkspace(workspace).save(project_id,state,expected_revision,request_id)

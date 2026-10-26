@@ -1,5 +1,5 @@
 import type {RunState} from './import-journal';
-export const stagesFor=(filename:string,simulation=false)=>simulation?['Подготовка','Расчёт','Отображение']:/\.(dwg|dxf)$/i.test(filename)?['Чтение файла','CAD']:['Чтение файла','Хеширование',...(/\.rvt$/i.test(filename)?['RVT-движок','Документ RVT','Параметры RVT','RVT → IFC','IFC-буфер']:[]),'IFC-движок','Структура IFC','Свойства IFC','Геометрия','Отображение'];
+export const stagesFor=(filename:string,simulation=false)=>simulation?['Подготовка','Расчёт','Отображение']:/\.(dwg|dxf)$/i.test(filename)?['Чтение файла','CAD']:/\.nwd$/i.test(filename)?['Чтение файла','Хеширование','NWD-движок','Данные NWD','Геометрия','Отображение']:['Чтение файла','Хеширование',...(/\.rvt$/i.test(filename)?['RVT-движок','Документ RVT','Параметры RVT','Связи RVT','RVT → IFC','IFC-буфер']:[]),'IFC-движок','Структура IFC','Свойства IFC','Геометрия','Отображение'];
 export type StepState='waiting'|'active'|'done'|'skipped'|'stopped';
 export class ProcessingState {
   startedAt=0;stageAt=0;lastReply=0;lastUpdate=0;stage='';message='';filename='';size=0;state:RunState='running';

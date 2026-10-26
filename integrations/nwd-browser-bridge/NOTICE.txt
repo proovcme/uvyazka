@@ -1,0 +1,9 @@
+Uvyazka independent experimental NWD reader
+
+This implementation was developed from observations of publicly available sample
+file bytes. It does not use Navisworks, ODA or Autodesk cloud services, and does
+not incorporate another NWD decoder implementation. Autodesk and Navisworks are
+trademarks of their respective owners; no affiliation or endorsement is implied.
+
+Cargo dependencies and their license notices are listed in THIRD_PARTY_LICENSES.txt.
+Model samples and private project data are not included in this source directory.

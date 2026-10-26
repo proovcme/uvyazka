@@ -41,6 +41,8 @@ def make_handler(workspace: Workspace):
                 if structure_get(self, workspace, uploads.token, request.path, q):return
                 from .construction.rvt_catalog_http import serve_get as catalog_get
                 if catalog_get(self, workspace, uploads.token, request.path, q):return
+                from .construction.viewer_workspace_http import serve_get as viewer_get
+                if viewer_get(self,workspace,uploads.token,request.path,q):return
                 if serve_get(self,uploads,request.path,q):return
                 from .construction.http import serve_route
                 if serve_route(self, workspace, request.path, q):
@@ -108,15 +110,20 @@ def make_handler(workspace: Workspace):
             request=urlparse(self.path)
             measurement = request.path.startswith('/api/measurements/')
             intake_request = request.path.startswith('/api/intake/')
+            viewer_workspace = request.path == '/api/viewer/workspace'
             catalogue = request.path == '/api/rvt/catalog'
             structure = request.path.startswith('/api/structure/')
             semantic = request.path=='/api/semantic/build'
-            if request.path!='/api/rvt/upload' and not measurement and not intake_request and not catalogue and not structure and not semantic:
+            if request.path!='/api/rvt/upload' and not measurement and not intake_request and not catalogue and not structure and not semantic and not viewer_workspace:
                 return self.send({"error": "Use explicit MCP tools for observations"}, status=405)
             origin=self.headers.get('Origin')
             if (origin and origin!='http://'+self.headers['Host']) or not hmac.compare_digest(self.headers.get('X-Uvyazka-Token',''),uploads.token):
                 return self.send({'error':'Open the local dashboard before writing'},status=403)
             try:
+                if viewer_workspace:
+                    from .construction.viewer_workspace_http import serve_post as viewer_post
+                    query={k:v[0] for k,v in parse_qs(request.query).items()}
+                    return viewer_post(self,workspace,query)
                 if semantic:
                     from .semantic_http import serve_post as semantic_post
                     query={k:v[0] for k,v in parse_qs(request.query).items()}

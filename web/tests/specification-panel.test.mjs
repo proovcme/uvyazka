@@ -1,0 +1,21 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {build} from 'esbuild';import {Window} from 'happy-dom';import {fileURLToPath} from 'node:url';
+test('specification edits are read before building/saving; selected scope links back to model IDs',async t=>{
+ const win=new Window({url:'http://localhost/'});t.after(()=>win.happyDOM.close());
+ for(const k of ['document','localStorage','Option'])Object.defineProperty(globalThis,k,{value:win[k],writable:true,configurable:true});
+ globalThis.Option=function(text,value){const o=document.createElement('option');o.textContent=text;o.value=value;return o;};
+ document.body.innerHTML='<button id="theme-toggle"></button>';
+ const bundle=await build({entryPoints:[fileURLToPath(new URL('../src/specification-panel.ts',import.meta.url))],bundle:true,write:false,format:'esm'});
+ const {specificationPanel}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
+ const hash='a'.repeat(64);const model={model_id:hash,source:{sha256:hash,filename:'synthetic.ifc'},storeys:[],elements:[1,2].map(id=>({id:String(id),step_id:id,name:'Насос',class:'IfcPump',role:'element',storey_id:null,materials:[],source:{file_sha256:hash},property_sets:{},quantity_sets:{}}))};
+ let shown=[];const panel=specificationPanel({model:()=>model,documents:()=>[],project:()=>'synthetic',selection:()=>['2'],matches:()=>['1','2'],show:ids=>shown=ids,shared:false});
+ document.getElementById('open-specifications').click();
+ const name=document.querySelector('[data-name]');name.value='Синтетическая ведомость';
+ const label=document.querySelector('input[aria-label="Заголовок поля 1"]');label.value='Новая подпись';
+ const scope=document.querySelector('[data-scope]');scope.value='selection';scope.dispatchEvent(new win.Event('change'));
+ document.querySelector('[data-build]').click();assert.match(document.querySelector('[data-summary]').textContent,/В области 1/);
+ assert.match(document.querySelector('[data-table] thead').textContent,/Новая подпись/);
+ document.querySelector('[data-save]').click();assert.equal(panel.definitions()[0].name,'Синтетическая ведомость');assert.equal(panel.definitions()[0].columns[0].label,'Новая подпись');
+ document.querySelector('[data-table] tbody tr td button').click();assert.deepEqual(shown,['2']);
+ panel.restore([]);assert.equal(panel.definitions().length,0);
+});

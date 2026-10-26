@@ -5,6 +5,7 @@ use rvt::ifc::{ExportQualityMode, ExportResult, RvtDocExporter, saved_meshes, re
 use serde::Serialize;
 mod document;
 mod schedule_data;
+mod engineering;
 pub use document::extract_document;
 
 // Match the reader's technical limit rather than imposing the former demo cap.
@@ -57,6 +58,13 @@ pub fn convert_bytes(bytes: Vec<u8>) -> Result<BrowserConversion, String> {
 mod web {
     use wasm_bindgen::prelude::*;
     use serde::Serialize;
+
+    #[wasm_bindgen(js_name = extractRvtEngineering)]
+    pub fn extract_rvt_engineering(bytes: &[u8]) -> Result<JsValue, JsValue> {
+        super::validate_input_size(bytes.len()).map_err(|e|JsValue::from_str(&e))?;
+        let result=super::engineering::extract(bytes.to_vec()).map_err(|e|JsValue::from_str(&e))?;
+        result.serialize(&serde_wasm_bindgen::Serializer::json_compatible()).map_err(|e|JsValue::from_str(&e.to_string()))
+    }
 
     #[wasm_bindgen(js_name = extractRvtScheduleData)]
     pub fn extract_rvt_schedule_data(bytes: &[u8]) -> Result<JsValue, JsValue> {

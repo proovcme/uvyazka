@@ -53,4 +53,10 @@ test('workspace wires simple/parameter search, hidden rows, selection, reset and
  node('parameter-name').value='Наименование';node('parameter-value').value='Насос';node('parameter-operator').value='contains';node('parameter-operator').dispatchEvent(new win.Event('change'));assert.deepEqual(globalThis.__workspaceViewer.visible,['1']);
  node('parameter-combine').value='any';node('parameter-combine').dispatchEvent(new win.Event('change'));assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);
  node('element-search').value='812345';node('element-search').dispatchEvent(new win.Event('input'));await wait(220);assert.equal(document.querySelectorAll('.element-item').length,0);
+ node('reset-visibility').click();node('element-search').value='Насос';node('element-search').dispatchEvent(new win.Event('input'));await wait(220);node('visibility-filter').click();
+ const pumps=[...document.querySelectorAll('.element-item')];pumps[0].click();pumps[1].dispatchEvent(new win.MouseEvent('click',{bubbles:true,ctrlKey:true}));
+ assert.equal(node('selection-count').textContent,'Выбрано 2');node('hide-selected').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['3']);
+ node('undo-visibility').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);assert.equal(node('element-search').value,'Насос');
+ node('reset-visibility').click();node('undo-visibility').click();assert.equal(node('element-search').value,'Насос');assert.equal(node('visibility-filter').checked,false);
+
 });

@@ -28,7 +28,7 @@ def verify_live_release(url, manifest):
     if live != manifest:
         raise ValueError('Live manifest differs from the deployed release')
     expected = manifest['files_sha256']
-    for name in ['index.html', 'runtime/rvt/uvyazka_rvt_browser_bg.wasm', 'cad/index.html']:
+    for name in ['index.html', 'runtime/rvt/uvyazka_rvt_browser_bg.wasm', 'runtime/nwd/uvyazka_nwd_experiment_bg.wasm', 'cad/index.html']:
         with urlopen(url + name, timeout=30) as response:
             if hashlib.sha256(response.read()).hexdigest() != expected[name]:
                 raise ValueError('Live artifact differs: ' + name)

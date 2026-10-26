@@ -40,7 +40,7 @@ export async function federate(members:SceneMember[]):Promise<{model:ModelPackag
       elements.push(e);
     }
     storeys.push(...source.storeys.map(s=>({...s,id:prefix(s.id),name:source.source.filename+' · '+s.name,elevation_m:s.elevation_m===null?null:s.elevation_m+member.offset[2],placement_origin_m:s.placement_origin_m?placedPoint(s.placement_origin_m,member.offset,member.rotation):null})));
-    relationships.push(...source.relationships.map(r=>({...r,parent_id:prefix(r.parent_id),child_ids:r.child_ids.map(prefix)})));
+    relationships.push(...source.relationships.map(r=>({...r,source_instance_id:member.instanceId,parent_id:prefix(r.parent_id),child_ids:r.child_ids.map(prefix)})));
     diagnostics.push(...source.diagnostics.map(d=>({...d,element_id:prefix(d.element_id)})));
     systems.push(...(source.systems??[]).map(s=>({...s,id:prefix(s.id),member_ids:s.member_ids.map(prefix)})));
   }
@@ -56,9 +56,10 @@ export async function federate(members:SceneMember[]):Promise<{model:ModelPackag
   const model:ModelPackage={contract:'ModelPackage',contract_version:'0.1.0',importer_version:'browser-federation-1',model_id:hash,
     source:{filename:`Сводная модель · ${members.length} файлов`,sha256:hash,size_bytes:members.reduce((n,m)=>n+m.model.source.size_bytes,0),schema:'Federation',format:'federation',exported_at:'',exporter:'uvyazka'},
     coordinate_system:{length_to_m:1,render_origin_m:origin,up_axis:'Z',bounds_min_m:low,bounds_max_m:high},elements,storeys,relationships,diagnostics,systems,
+    engineering_links:members.flatMap(m=>(m.model.engineering_links??[]).map(link=>({...link,id:m.instanceId+':'+link.id,from:m.instanceId+':'+link.from,to:m.instanceId+':'+link.to}))),
     federation:{members:records,note:'Исходные координаты в метрах + заданные пользователем смещения и повороты. Совмещение не подтверждено.'},
     phase_sources:Object.fromEntries(members.map(m=>[m.instanceId,m.model.revit??{status:'unavailable',phases:[]}])),
-    statistics:{products:elements.length,physical_elements:elements.filter(e=>e.role==='element').length,meshes:elements.filter(e=>e.mesh).length,triangles:members.reduce((n,m)=>n+m.model.statistics.triangles,0),geometry_errors:elements.filter(e=>e.geometry_error).length,binary_bytes:size},
+    statistics:{products:elements.length,physical_elements:elements.filter(e=>e.role==='element'&&e.semantic_kind!=='geometry_fragment').length,meshes:elements.filter(e=>e.mesh).length,triangles:members.reduce((n,m)=>n+m.model.statistics.triangles,0),geometry_errors:elements.filter(e=>e.geometry_error).length,binary_bytes:size},
     capabilities:{read:true,geometry_ready:true,technology_resolved:false,schedule_ready:false}};
   return {model,binary};
 }

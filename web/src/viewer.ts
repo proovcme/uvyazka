@@ -30,7 +30,7 @@ export class Viewer {
   private selected?: string;
   private highlightedElements = new Set<string>();
   private highlight?: THREE.Box3Helper;
-  private edges = new Map<string, THREE.LineSegments<THREE.EdgesGeometry, THREE.LineBasicMaterial>>();
+  private edges = new Map<string, THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>>();
   private xray = false;
   private sourceColors = false;
   private construction: Map<string, ConstructionState> | null = null;
@@ -40,6 +40,12 @@ export class Viewer {
   private clipPlanes: THREE.Plane[] = [];
   private measureHandler: ((point:SurfacePoint)=>void)|null = null;
   private measurementOverlay?:THREE.Line;
+  measureSnap=true;
+  captureView(){return {position:this.camera.position.toArray(),target:this.controls.target.toArray(),up:this.camera.up.toArray(),planes:this.clipPlanes.map(p=>({normal:p.normal.toArray(),constant:p.constant})),xray:this.xray};}
+  restoreView(view:{position:number[];target:number[];up:number[];planes:{normal:number[];constant:number}[];xray:boolean}){
+    const vectors=[view.position,view.target,view.up];if(vectors.some(v=>v.length!==3||!v.every(Number.isFinite))||view.up.every(x=>x===0)||view.planes.length>6||view.planes.some(p=>p.normal.length!==3||!p.normal.every(Number.isFinite)||!Number.isFinite(p.constant)||Math.abs(Math.hypot(...p.normal)-1)>1e-5))throw Error('Неверное состояние камеры или сечений');
+    this.camera.position.fromArray(view.position);this.controls.target.fromArray(view.target);this.camera.up.fromArray(view.up);this.xray=view.xray;this.applyClip(view.planes.map(p=>new THREE.Plane(new THREE.Vector3(...p.normal as [number,number,number]),p.constant)));this.controls.update();this.refreshPresentation();
+  }
   setMeasureHandler(handler:((point:SurfacePoint)=>void)|null){this.measureHandler=handler;this.renderer.domElement.style.cursor=handler?'crosshair':'';}
   showMeasurement(points:Vec3[]){
     if(this.measurementOverlay){this.scene.remove(this.measurementOverlay);for(const child of this.measurementOverlay.children)if(child instanceof THREE.Points)(child.material as THREE.Material).dispose();this.measurementOverlay.geometry.dispose();(this.measurementOverlay.material as THREE.Material).dispose();this.measurementOverlay=undefined;}
@@ -53,9 +59,9 @@ export class Viewer {
   private observer: ResizeObserver;
   private frame = 0;
   private pointerStart = { x: 0, y: 0 };
-  private onPick: (id: string | null) => void;
+  private onPick: (id: string | null,additive?:boolean) => void;
 
-  constructor(readonly host: HTMLElement, onPick: (id: string | null) => void) {
+  constructor(readonly host: HTMLElement, onPick: (id: string | null,additive?:boolean) => void) {
     this.onPick = onPick;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -102,10 +108,19 @@ export class Viewer {
       if (event.button !== 0 || Math.hypot(event.clientX - this.pointerStart.x, event.clientY - this.pointerStart.y) > 4) return;
       const rect = canvas.getBoundingClientRect();
       this.raycaster.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), this.camera);
-      const targets = [...this.meshes.values()].filter((mesh) => mesh.visible);
+      const targets:THREE.Object3D[] = [...this.meshes.values()].filter((mesh) => mesh.visible);
+      for(const edge of this.edges.values())if(edge.userData.sourceLines&&edge.parent?.visible)targets.push(edge);
+      this.raycaster.params.Line.threshold=Math.max(.001,this.bounds.getSize(new THREE.Vector3()).length()*.001);
       const hit = this.raycaster.intersectObjects(targets, false).find((hit) => this.clipPlanes.every(plane=>plane.distanceToPoint(hit.point)>=-1e-7));
-      if(this.measureHandler){if(hit&&this.model){const o=this.model.coordinate_system.render_origin_m;this.measureHandler({element_id:String(hit.object.userData.elementId),point_m:[hit.point.x+o[0],-hit.point.z+o[1],hit.point.y+o[2]],triangle_index:hit.faceIndex??null});}return;}
-      this.onPick(hit ? String(hit.object.userData.elementId) : null);
+      if(this.measureHandler){if(hit&&this.model){const o=this.model.coordinate_system.render_origin_m;let point=hit.point.clone(),snap:SurfacePoint['snap']='surface',vertex_indices:number[]=[];
+        if(this.measureSnap&&hit.face){const mesh=hit.object as ElementMesh,position=mesh.geometry.getAttribute('position'),ids=[hit.face.a,hit.face.b,hit.face.c],vertices=ids.map(i=>new THREE.Vector3().fromBufferAttribute(position,i).applyMatrix4(mesh.matrixWorld));
+          const screen=(p:THREE.Vector3)=>{const v=p.clone().project(this.camera);return new THREE.Vector2((v.x+1)*rect.width/2,(1-v.y)*rect.height/2);},cursor=new THREE.Vector2(event.clientX-rect.left,event.clientY-rect.top);
+          let best=12;for(let i=0;i<3;i++){const distance=screen(vertices[i]).distanceTo(cursor);if(distance<best){best=distance;point=vertices[i];snap='vertex';vertex_indices=[ids[i]];}}
+          if(snap==='surface')for(let i=0;i<3;i++){const candidate=new THREE.Line3(vertices[i],vertices[(i+1)%3]).closestPointToPoint(hit.point,true,new THREE.Vector3()),distance=screen(candidate).distanceTo(cursor);if(distance<best){best=distance;point=candidate;snap='edge';vertex_indices=[ids[i],ids[(i+1)%3]];}}
+          if(this.clipPlanes.some(p=>p.distanceToPoint(point)<-1e-7)){point=hit.point;snap='surface';vertex_indices=[];}
+        }
+        this.measureHandler({element_id:String(hit.object.userData.elementId),point_m:[point.x+o[0],-point.z+o[1],point.y+o[2]],triangle_index:hit.faceIndex??null,snap,vertex_indices});}return;}
+      this.onPick(hit ? String(hit.object.userData.elementId) : null,event.ctrlKey||event.metaKey||event.shiftKey);
     });
     canvas.addEventListener('keydown', (event) => {
       if (event.key.toLowerCase() === 'f') { event.preventDefault(); this.fit(); }
@@ -140,7 +155,7 @@ export class Viewer {
       if (!data) continue;
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(binary, data.position_byte_offset, data.vertex_count * 3), 3));
-      geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(binary, data.index_byte_offset, data.index_count), 1));
+      geometry.setIndex(new THREE.BufferAttribute(data.primitive==='lines'?new Uint32Array(0):new Uint32Array(binary, data.index_byte_offset, data.index_count), 1));
       // All model materials use flatShading: the shader derives face normals.
       // Computing vertex normals here was wasted main-thread work on every import.
       geometry.computeBoundingSphere();
@@ -160,7 +175,11 @@ export class Viewer {
       mesh.castShadow = element.role === 'element';
       mesh.receiveShadow = true;
       mesh.visible = element.role === 'element';
-      if(element.role==='element' && data.index_count<=Math.min(edgeBudget,150_000)) {
+      if(data.primitive==='lines'){
+        const lineGeometry=geometry.clone();lineGeometry.clearGroups();lineGeometry.setIndex(new THREE.BufferAttribute(new Uint32Array(binary,data.index_byte_offset,data.index_count),1));
+        const lines=new THREE.LineSegments(lineGeometry,new THREE.LineBasicMaterial({color:materials[0]?.color??0x586877}));
+        lines.userData={elementId:element.id,sourceLines:true};mesh.add(lines);this.edges.set(element.id,lines);
+      }else if(element.role==='element' && data.index_count<=Math.min(edgeBudget,150_000)) {
         const edges=new THREE.LineSegments(new THREE.EdgesGeometry(geometry,25),new THREE.LineBasicMaterial({color:0x586877,transparent:true,opacity:.25,depthWrite:false}));
         mesh.add(edges);this.edges.set(element.id,edges);edgeBudget-=data.index_count;
         materials.forEach(material=>{material.polygonOffset=true;material.polygonOffsetFactor=1;material.polygonOffsetUnits=1;});
@@ -376,7 +395,7 @@ export class Viewer {
         material.depthWrite = alpha >= 1;
       });
       const edges=this.edges.get(element.id);
-      if(edges){edges.material.opacity=state==='future'?.5:.3;edges.material.color.set(this.selected===element.id||state==='active'?0xefb65e:state==='future'?0x8c9ba8:(this.lightTheme()?0x647586:0x40505c));}
+      if(edges){if(edges.userData.sourceLines){edges.material.color.copy(mesh.material[0].color);edges.material.opacity=mesh.material[0].opacity;edges.material.transparent=mesh.material[0].transparent;}else{edges.material.opacity=state==='future'?.5:.3;edges.material.color.set(this.selected===element.id||state==='active'?0xefb65e:state==='future'?0x8c9ba8:(this.lightTheme()?0x647586:0x40505c));}}
     }
     if(this.highlight)this.highlight.visible=!!this.selected&&this.meshes.get(this.selected)?.visible===true;
     this.invalidate();

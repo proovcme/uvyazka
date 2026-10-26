@@ -18,7 +18,7 @@ export function modelTreeNodes(model:ModelPackage,items:BimElement[],grouping:'c
   return roots;
 }
 /** Native details/checkboxes, lazy category rows, and stable expansion during visibility changes. */
-export function modelTreePanel(host:HTMLElement,visibility:ModelVisibility,actions:{select:(id:string)=>void;show:(ids:string[],visible:boolean)=>void;isolate:(ids:string[])=>void;document?:(document:RvtDocument,record:NativeRecord)=>void}){
+export function modelTreePanel(host:HTMLElement,visibility:ModelVisibility,actions:{select:(id:string,additive?:boolean)=>void;show:(ids:string[],visible:boolean)=>void;isolate:(ids:string[])=>void;document?:(document:RvtDocument,record:NativeRecord)=>void}){
   let current:ModelPackage|null=null;const expanded=new Map<string,boolean>(),limits=new Map<string,number>(),offsets=new Map<string,number>();
   let lastItems:BimElement[]=[],lastSearching=false,lastSearchKey='',lastGrouping:'categories'|'levels'='categories';
   let catalogues:RvtDocument[]=[],documentQuery='';const documentExpanded=new Set<string>();
@@ -62,7 +62,7 @@ export function modelTreePanel(host:HTMLElement,visibility:ModelVisibility,actio
             const row=document.createElement('div');row.className='tree-element-row';row.dataset.visible=String(visibility.visible(element.id));
             const toggle=document.createElement('input');toggle.type='checkbox';toggle.checked=visibility.visible(element.id);toggle.disabled=!element.mesh;toggle.setAttribute('aria-label','Показывать '+(element.name||element.id));toggle.title=element.mesh?'Показать / скрыть элемент':'Геометрия не прочитана';toggle.onchange=()=>actions.show([element.id],toggle.checked);
             const select=document.createElement('button');select.className='element-item';select.dataset.id=element.id;select.setAttribute('aria-pressed',String(selected===element.id));
-            const text=document.createElement('span'),title=document.createElement('strong'),identity=document.createElement('small');title.textContent=element.name||element.id;const revit=elementIdentity(element).element_id;identity.textContent=(revit?'Revit '+revit:'#'+element.id)+(element.mesh?'':' · без геометрии');text.append(title,identity);select.append(text);select.onclick=()=>actions.select(element.id);
+            const text=document.createElement('span'),title=document.createElement('strong'),identity=document.createElement('small');title.textContent=element.name||element.id;const revit=elementIdentity(element).element_id;identity.textContent=(revit?'Revit '+revit:'#'+element.id)+(element.mesh?'':' · без геометрии');text.append(title,identity);select.append(text);select.onclick=event=>actions.select(element.id,event.ctrlKey||event.metaKey||event.shiftKey);
             row.append(toggle,select);list.append(row);
           }
           if(node.items.length>offset+limit){const more=document.createElement('button');more.className='tree-more';more.textContent=`Ещё ${Math.min(50,node.items.length-offset-limit)} · осталось ${node.items.length-offset-limit}`;more.onclick=()=>{limits.set(node.key,limit+50);rows();};list.append(more);}

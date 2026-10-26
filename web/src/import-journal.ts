@@ -14,7 +14,8 @@ export function compactDetails(value:unknown):unknown {
   return json.length<=65536?value:{truncated:true,original_characters:json.length,preview:json.slice(0,65536)};
 }
 export function filePolicy(name:string,size:number):{error?:string;warning?:string} {
-  if(!/\.(ifc|rvt|dwg|dxf)$/i.test(name)||!Number.isSafeInteger(size)||size<=0)return {error:'Нужен непустой RVT, IFC, DWG или DXF.'};
+  if(!/\.(ifc|rvt|nwd|dwg|dxf)$/i.test(name)||!Number.isSafeInteger(size)||size<=0)return {error:'Нужен непустой RVT, IFC, NWD, DWG или DXF.'};
+  if(/\.nwd$/i.test(name)&&size>512*1024**2)return {error:'NWD: технический бюджет экспериментального читателя — 512 MiB.'};
   if(/\.(dwg|dxf)$/i.test(name)&&size>64*1024*1024)return {error:'CAD-движок поддерживает DWG/DXF до 64 MiB.'};
   if(/\.rvt$/i.test(name)&&size>2*1024**3)return {error:'Размер RVT превышает технический предел текущего читателя: 2 GiB.'};
   return size>64*1024**2?{warning:'Большой файл: обработка может потребовать значительно больше памяти, чем размер файла. Отмена доступна; длительность заранее неизвестна.'}:{};

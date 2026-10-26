@@ -5,5 +5,7 @@ export class ModelVisibility {
   set(ids:Iterable<string>,visible:boolean){for(const id of ids)if(visible)this.hidden.delete(id);else this.hidden.add(id);}
   isolate(ids:Iterable<string>,all:Iterable<string>){const keep=new Set(ids);this.hidden=new Set([...all].filter(id=>!keep.has(id)));}
   reset(){this.hidden.clear();}
+  snapshot(){return [...this.hidden];}
+  restore(ids:Iterable<string>){this.hidden=new Set(ids);}
   count(ids:Iterable<string>){let total=0,shown=0;for(const id of ids){total++;if(this.visible(id))shown++;}return {total,shown,checked:total>0&&shown===total,mixed:shown>0&&shown<total};}
 }

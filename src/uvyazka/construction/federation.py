@@ -9,7 +9,7 @@ import numpy as np
 
 from .importer import write_json, CONTRACT_VERSION
 
-FEDERATION_VERSION = '0.1.0'
+FEDERATION_VERSION = '0.1.1'
 
 
 def placement(member):
@@ -93,6 +93,8 @@ def create_federation(cache, members):
         relationships.extend([{**deepcopy(r), 'parent_id': remap(r['parent_id']), 'child_ids': [remap(k) for k in r['child_ids']],
             'source_instance_id': member['instance_id']} for r in model['relationships']])
         diagnostics.extend([{**deepcopy(d), 'element_id': remap(d['element_id'])} for d in model['diagnostics']])
+    systems = [{**deepcopy(s),'id':member['instance_id']+':'+s['id'],'member_ids':[member['instance_id']+':'+key for key in s['member_ids']]} for member,(model,_) in zip(records,packages) for s in model.get('systems',[])]
+    engineering_links = [{**deepcopy(link),'id':member['instance_id']+':'+link['id'],'from':member['instance_id']+':'+link['from'],'to':member['instance_id']+':'+link['to']} for member,(model,_) in zip(records,packages) for link in model.get('engineering_links',[])]
     physical = [r for r in rows if r['mesh'] and r['role'] == 'element']
     bounded = physical or [r for r in rows if r['mesh']]
     if not bounded:
@@ -119,7 +121,7 @@ def create_federation(cache, members):
             'note': 'Исходные координаты сохранены; совпадение общих координат и связей Revit автоматически не подтверждено.'},
         'phase_sources': phase_sources, 'coordinate_system': {'length_to_m': 1, 'render_origin_m': origin.tolist(),
             'up_axis': 'Z', 'bounds_min_m': lower.tolist(), 'bounds_max_m': upper.tolist()},
-        'storeys': storeys, 'elements': rows, 'relationships': relationships, 'diagnostics': diagnostics,
+        'storeys': storeys, 'elements': rows, 'relationships': relationships, 'systems':systems, 'engineering_links':engineering_links, 'diagnostics': diagnostics,
         'statistics': statistics, 'capabilities': {'read': True, 'geometry_ready': True, 'technology_resolved': False, 'schedule_ready': False}}
     write_json(target / 'manifest.json', result)
     return {'model_id': digest, 'members': records, 'statistics': statistics}

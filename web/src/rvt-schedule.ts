@@ -21,7 +21,7 @@ const builtinSlots:Record<string,{storage:string;unit?:string}>={
  '-1001405':{storage:'String'},'-1010103':{storage:'String'},'-1001206':{storage:'String'}
 };
 const missing=(reason:string):ValueCell=>({state:'missing',reason,evidence:[]});
-function parameter(owner:ParameterRecord|undefined,id:string):ValueCell {
+export function parameter(owner:ParameterRecord|undefined,id:string):ValueCell {
  if(!owner?.saved_metadata)return missing('Параметры владельца не прочитаны');
  const m=owner.saved_metadata,evidence:Evidence[]=[];
  const add=(value:unknown,storage:string,path:(string|number)[],rule?:string)=>evidence.push({owner_id:String(owner.identity.element_id),value,storage_type:storage,path:['saved_metadata',...path],location:owner.source,rule});

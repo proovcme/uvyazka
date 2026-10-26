@@ -1,5 +1,23 @@
 # Скриншоты Увязки
 
+## Новые функции — alpha.13
+
+Локальная браузерная проверка на открытых моделях, 26 октября 2026.
+
+![Таблица параметров RE1: группировка, Revit ElementId, описание типа и источники ячеек](assets/viewer-parameter-specification.jpg)
+
+RE1-Mechanical, Drshelden, MIT. Таблица создана конструктором Увязки;
+она не воспроизводит исходные формулы и оформление спецификаций Revit.
+
+![GateHouse: линии и треугольные фрагменты NWD в общем вьювере](assets/viewer-nwd.jpg)
+
+GateHouse.nwd, Autodesk-Forge/models.autodesk.io, MIT.
+[Открытый исходный образец](https://github.com/Autodesk-Forge/models.autodesk.io/blob/master/samples/GateHouse.nwd).
+Масштаб на снимке задан вручную как метры; единицы файла пока не расшифрованы.
+Фрагменты геометрии не считаются оборудованием. Полная поддержка NWD не заявлена.
+
+[Конструктор таблиц](PARAMETER_SPECIFICATIONS.md) · [Ограничения NWD](NWD.md).
+
 ## Веб-вьювер — 26 октября 2026
 
 Снимки работающего [публичного демо](https://locia.work/uvyazka/), версия

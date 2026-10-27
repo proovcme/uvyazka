@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="ru"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src &#x27;self&#x27;; script-src &#x27;self&#x27; &#x27;wasm-unsafe-eval&#x27;; worker-src &#x27;self&#x27;; style-src &#x27;self&#x27; &#x27;unsafe-inline&#x27;; img-src &#x27;self&#x27; data:; connect-src &#x27;self&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;self&#x27;; form-action &#x27;none&#x27;"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Увязка 0.3.0a13 — локальные инструменты</title>
+<title>Увязка 0.3.0a14 — локальные инструменты</title>
 <style>body{max-width:760px;margin:48px auto;padding:0 24px;font:17px/1.65 system-ui;color:#19323d;background:#f4f6f8}a{color:#23767b}li{margin:12px 0;overflow-wrap:anywhere}code{overflow-wrap:anywhere}h1{line-height:1.2}</style>
-<a href="../">← Вьювер и симуляция</a><h1>Увязка 0.3.0a13</h1>
+<a href="../">← Вьювер и симуляция</a><h1>Увязка 0.3.0a14</h1>
 <p>Локальные инструменты для Codex, Claude и других клиентов MCP.</p>
 <h2>RVT без Revit</h2><p>Чтение сохранённых данных, видов и определений спецификаций,
 конверсия в IFC. Улучшенный декодер читает кириллицу и явные связи инженерных систем
@@ -13,10 +13,15 @@
 Прежние пороги размера RVT/IFC сняты; большие модели зависят от памяти браузера.
 Технический предел RVT-читателя — 2 GiB. Есть журнал этапов и ошибок с выгрузкой.
 Стадии RVT пока не читаются в браузере.</p>
-<h2>NWD и таблицы</h2><p>Экспериментальный независимый NWD-читатель поддерживает проверенное подмножество формата. Единицы выбираются явно; BIM-дерево и свойства пока не прочитаны. Конструктор таблиц работает с прочитанными полями RVT/IFC/NWD: фильтры, группировка, итоги и источники ячеек, CSV/JSON. Это ведомость Увязки, без воспроизведения формул Revit и оформленного листа по ГОСТ.</p>
+<h2>NWD и таблицы</h2><p>Экспериментальный независимый NWD-читатель поддерживает проверенное подмножество формата. Единицы выбираются явно; BIM-дерево и свойства пока не прочитаны. Конструктор таблиц работает с прочитанными полями RVT/IFC/NWD: фильтры, группировка, итоги и источники ячеек, CSV/JSON. Произвольная таблица не воспроизводит формулы Revit.</p>
+<h2>Спецификация оборудования</h2><p>Готовая форма 1 по ГОСТ 21.110-2013: настройка источников
+через заголовки граф, предпросмотр А3 с основными надписями 3/6, PDF, XLSX и JSON с источниками.
+Первая версия считает физические экземпляры в штуках; незаданные и неподтверждённые значения
+сохраняют статус черновика. Подписи и даты автоматически не проставляются.</p>
+<p>Собственный код — Apache-2.0; сторонние компоненты сохраняют свои условия. <a href="../UVYAZKA-LICENSE.txt">Лицензия</a> · <a href="../UVYAZKA-NOTICE.txt">Уведомления</a>.</p>
 <h2>Установка</h2><p>Исходный архив содержит Python-инструменты и исходники Rust-декодера.
 Для сборки RVT нужны Rust и инструменты C/C++; готовые нативные программы в эти архивы
 не включены. Wheel содержит Python-пакет, а сборка RVT требует исходного архива.</p>
-<ul><li><a href="uvyazka-0.3.0a13.tar.gz" download>uvyazka-0.3.0a13.tar.gz</a></li><li><a href="uvyazka-0.3.0a13-py3-none-any.whl" download>uvyazka-0.3.0a13-py3-none-any.whl</a></li><li><a href="SHA256SUMS.txt">Контрольные суммы SHA-256</a></li><li><a href="https://github.com/proovcme/uvyazka/blob/b860f5037475a6017da665da525a8321e9056587/README.md">Инструкция по установке</a></li>
-<li><a href="https://github.com/proovcme/uvyazka/blob/b860f5037475a6017da665da525a8321e9056587/docs/RVT_DATA.md">Возможности и ограничения RVT</a></li></ul>
-<p>Версия исходников: <code>b860f5037475a6017da665da525a8321e9056587</code>.</p></html>
+<ul><li><a href="uvyazka-0.3.0a14.tar.gz" download>uvyazka-0.3.0a14.tar.gz</a></li><li><a href="uvyazka-0.3.0a14-py3-none-any.whl" download>uvyazka-0.3.0a14-py3-none-any.whl</a></li><li><a href="SHA256SUMS.txt">Контрольные суммы SHA-256</a></li><li><a href="https://github.com/proovcme/uvyazka/blob/30b3cb8c5c65ab0f0ecedd20948535f15aba9c72/README.md">Инструкция по установке</a></li>
+<li><a href="https://github.com/proovcme/uvyazka/blob/30b3cb8c5c65ab0f0ecedd20948535f15aba9c72/docs/RVT_DATA.md">Возможности и ограничения RVT</a></li></ul>
+<p>Версия исходников: <code>30b3cb8c5c65ab0f0ecedd20948535f15aba9c72</code>.</p></html>

@@ -145,7 +145,7 @@ export class Viewer {
     this.clearModel();
     this.model = pkg;
     this.currentElements = pkg.elements;
-    const quality=renderPolicy(pkg.statistics.physical_elements,window.devicePixelRatio);
+    const quality=renderPolicy(Math.max(pkg.statistics.physical_elements,pkg.statistics.meshes),window.devicePixelRatio);
     this.renderer.shadowMap.enabled=quality.shadows;
     this.renderer.setPixelRatio(quality.pixelRatio);
     // Bound edge extraction work on large imports; meshes beyond the budget retain solid geometry.
@@ -177,7 +177,7 @@ export class Viewer {
       mesh.visible = element.role === 'element';
       if(data.primitive==='lines'){
         const lineGeometry=geometry.clone();lineGeometry.clearGroups();lineGeometry.setIndex(new THREE.BufferAttribute(new Uint32Array(binary,data.index_byte_offset,data.index_count),1));
-        const lines=new THREE.LineSegments(lineGeometry,new THREE.LineBasicMaterial({color:materials[0]?.color??0x586877}));
+        const lines=new THREE.LineSegments(lineGeometry,new THREE.LineBasicMaterial({color:materials[0]?.color??0x586877,transparent:materials[0]?.transparent??false,opacity:materials[0]?.opacity??1,depthWrite:materials[0]?.depthWrite??true}));
         lines.userData={elementId:element.id,sourceLines:true};mesh.add(lines);this.edges.set(element.id,lines);
       }else if(element.role==='element' && data.index_count<=Math.min(edgeBudget,150_000)) {
         const edges=new THREE.LineSegments(new THREE.EdgesGeometry(geometry,25),new THREE.LineBasicMaterial({color:0x586877,transparent:true,opacity:.25,depthWrite:false}));

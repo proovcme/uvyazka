@@ -52,7 +52,7 @@ let sceneVersion=0,sceneCompositionOpen=false;
 let requestedModel = new URL(location.href).searchParams.get('model') || '';
 let requestedRun = new URL(location.href).searchParams.get('run') || '';
 let viewer: Viewer | null = null, model: ModelPackage | null = null, run: RunPackage | null = null, clock: PlaybackClock | null = null, frame = 0, last = 0, generation = 0, modelGeneration = 0;
-const visibility=new ModelVisibility();let visibilityModelId='',treeItems:BimElement[]=[];
+const visibility=new ModelVisibility();let visibilityModelId='',treeItems:BimElement[]=[],sceneFilterItems:BimElement[]=[],hiddenOnly=false;
 let parameterFilters:ParameterFilter[]=[];
 const catalogues=new Map<string,RvtDocument>();let catalogueProject=project;
 document.getElementById('app')!.innerHTML = workspaceShell;
@@ -147,11 +147,11 @@ async function restoreWorkspace(scene:SavedScene){
 el('canvas').addEventListener('viewer-error', ((e: CustomEvent<string>) => error(e.detail)) as EventListener);
 async function loadModel(id: string) {
   if(catalogueProject!==project){catalogues.clear();documentPanel.set(null);catalogueProject=project;}
-  const token = ++modelGeneration; spatial.reset();selection.clear();networkHighlights.clear();visibilityHistory.length=0;el<HTMLButtonElement>('undo-visibility').disabled=true;selectedId=null;el('selected-visibility-actions').hidden=true;viewer?.select(null); viewer?.setSite(null);clipped=false;el('cut-controls').hidden=true;el('cut').setAttribute('aria-pressed','false');el('xray').setAttribute('aria-pressed','false');
+  const token = ++modelGeneration; hiddenOnly=false;spatial.reset();selection.clear();networkHighlights.clear();visibilityHistory.length=0;el<HTMLButtonElement>('undo-visibility').disabled=true;selectedId=null;el('selected-visibility-actions').hidden=true;viewer?.select(null); viewer?.setSite(null);clipped=false;el('cut-controls').hidden=true;el('cut').setAttribute('aria-pressed','false');el('xray').setAttribute('aria-pressed','false');
   if (!id) { model = null;engineering.reset();updateSelection();loadedBinary=null;visibility.reset();visibilityModelId='';el('file-title').textContent='Модель не выбрана'; el('no-model').hidden = false; el('geometry-kind').textContent = 'Без геометрии'; viewer?.show(new Set<string>());renderModelTree();renderState();if(!DEMO){const target=project;void projectCatalogs(target).then(async page=>{const row=page.items.find(r=>['all','views','schedules','catalog'].includes(r.profile));if(!row)return;const data=await loadCatalogSnapshot(target,row.extraction_id);if(target===project&&token===modelGeneration&&!model)acceptDocument(data);}).catch(e=>error('Каталог базы недоступен: '+String(e)));}return; }
   const [pkg, binary] = browserModel?.model_id===id&&browserBinary ? [browserModel,browserBinary] : await Promise.all([api<ModelPackage>('model?model_id=' + encodeURIComponent(id)), fetch(path('geometry.bin?model_id=' + encodeURIComponent(id))).then(async r => {if(!r.ok) throw Error('Не удалось загрузить геометрию');return r.arrayBuffer();})]);
   if (token !== modelGeneration) return;
-  model = pkg;engineering.reset();updateSelection();loadedBinary=binary;if(visibilityModelId!==pkg.model_id){visibility.reset();visibilityModelId=pkg.model_id;visibility.set(pkg.elements.filter(e=>!sceneVisible(e.source_instance_id)).map(e=>e.id),false);} el("workspace-status").textContent=`${pkg.source.format==='nwd'?pkg.elements.length+' фрагментов NWD':pkg.statistics.physical_elements+' элементов'} · ${pkg.storeys.length} уровней${pkg.source.schema==='SyntheticDemo'?' · Учебная модель':''}`; el("file-title").textContent=pkg.source.filename; renderModelTree(); viewer?.load(pkg,binary); viewer?.setSourceColors(pkg.source.schema!=='SyntheticDemo'); document.dispatchEvent(new Event('model-data-changed')); applySceneVisibility(); el('no-model').hidden = true;void restoreCatalogues(pkg,token);
+  model = pkg;engineering.reset();updateSelection();loadedBinary=binary;if(visibilityModelId!==pkg.model_id){visibility.reset();visibilityModelId=pkg.model_id;visibility.set(pkg.elements.filter(e=>!sceneVisible(e.source_instance_id)).map(e=>e.id),false);} el("workspace-status").textContent=`${pkg.source.format==='nwd'?(pkg.nwd?.logical_nodes??0)+' узлов · '+(pkg.nwd?.fragments??0)+' фрагментов NWD':pkg.statistics.physical_elements+' элементов'} · ${pkg.storeys.length} уровней${pkg.source.schema==='SyntheticDemo'?' · Учебная модель':''}`; el("file-title").textContent=pkg.source.filename; renderModelTree(); viewer?.load(pkg,binary); viewer?.setSourceColors(pkg.source.schema!=='SyntheticDemo'); document.dispatchEvent(new Event('model-data-changed')); applySceneVisibility(); el('no-model').hidden = true;void restoreCatalogues(pkg,token);
   el('geometry-kind').textContent = pkg.source.schema === 'SyntheticDemo' ? 'Синтетическая сводная модель · АР + ОВ' : pkg.source.schema === 'DocumentSpatialModel' ? 'Условная геометрия по документам' : pkg.federation ? 'Сводная геометрия · совмещение требует проверки' : pkg.source.format==='rvt' ? 'RVT → IFC · экспериментальная геометрия' : pkg.source.format==='nwd'?'NWD · геометрические фрагменты · масштаб задан пользователем':'Геометрия IFC'; renderState();
 }
 async function loadRun(id: string) {
@@ -179,7 +179,7 @@ function renderState() {
     viewer?.setSite(null);viewer?.setConstruction(null);el('resources').innerHTML='';
     if(selectedId)return;
     el('inspector-title').textContent=cadFrame?'Чертёж':'Свойства модели';
-    el('inspector').innerHTML=cadFrame?'<p>DWG / DXF: просмотр чертежа, масштабирование и слои.</p><p>Для строительной симуляции нужна модель с элементами и объёмами. Чертёж сам по себе их не подтверждает.</p>':model?`<p><strong>${esc(model.source.filename)}</strong></p><dl><dt>${model.source.format==='nwd'?'Фрагментов / с геометрией':'Физических элементов / с геометрией'}</dt><dd>${model.source.format==='nwd'?model.elements.length:model.statistics.physical_elements} / ${model.statistics.meshes}</dd><dt>Уровней</dt><dd>${model.storeys.length}</dd><dt>Источник</dt><dd>${esc(model.source.format==='rvt'?'RVT → '+model.source.schema:model.source.schema)}</dd></dl><p>Выберите элемент на модели или в структуре, чтобы увидеть свойства и количества.</p>`:'<p>Откройте DWG, DXF, RVT, IFC или NWD.</p>';
+    el('inspector').innerHTML=cadFrame?'<p>DWG / DXF: просмотр чертежа, масштабирование и слои.</p><p>Для строительной симуляции нужна модель с элементами и объёмами. Чертёж сам по себе их не подтверждает.</p>':model?`<p><strong>${esc(model.source.filename)}</strong></p><dl><dt>${model.source.format==='nwd'?'Фрагментов / с геометрией':'Физических элементов / с геометрией'}</dt><dd>${model.source.format==='nwd'?(model.nwd?.fragments??0):model.statistics.physical_elements} / ${model.statistics.meshes}</dd><dt>Уровней</dt><dd>${model.storeys.length}</dd><dt>Источник</dt><dd>${esc(model.source.format==='rvt'?'RVT → '+model.source.schema:model.source.schema)}</dd></dl><p>Выберите элемент на модели или в структуре, чтобы увидеть свойства и количества.</p>`:'<p>Откройте DWG, DXF, RVT, IFC или NWD.</p>';
     return;
   }
   if(!selectedId)el('inspector-title').textContent = 'Ход строительства';
@@ -281,7 +281,7 @@ el('mode-view').onclick=()=>setMode('view');el('mode-simulate').onclick=()=>setM
 function sceneVisible(instance:string|undefined){return !instance?(sceneMembers.length!==1||sceneMembers[0].visible):sceneMembers.find(m=>m.instanceId===instance)?.visible!==false;}
 function applySceneVisibility(){
   if(cadFrame)return;
-  renderElements();const filtered=el<HTMLInputElement>('visibility-filter').checked?new Set(treeItems.map(e=>e.id)):null;
+  renderElements();const filtered=el<HTMLInputElement>('visibility-filter').checked?new Set(sceneFilterItems.map(e=>e.id)):null;
   viewer?.show(new Set((model?.elements??[]).filter(e=>e.role==='element'&&visibility.visible(e.id)&&(!filtered||filtered.has(e.id))).map(e=>e.id)));
   refreshHighlights();
 }
@@ -338,27 +338,38 @@ function renderElements() {
   const query=el<HTMLInputElement>('element-search').value.trim(),levels=levelFacet.selected(),categories=categoryFacet.selected();
   const system=el<HTMLSelectElement>('system-filter').value,members=systemMembers(model,system),filters=[...parameterFilters,parameterDraft()];
   const combine=el<HTMLSelectElement>('parameter-combine').value as 'all'|'any';
-  treeItems=(model?.elements??[]).filter(e=>e.role==='element'&&(!system||members.has(e.id))&&(!levels.size||levels.has(JSON.stringify(e.storey_id??null)))&&(!categories.size||categories.has(elementCategory(e,model!).key))&&elementLabelMatches(e,query)&&parametersMatch(e,filters,combine));
+  sceneFilterItems=(model?.elements??[]).filter(e=>(e.role==='element'||e.semantic_kind==='source_node')&&(!system||members.has(e.id))&&(!levels.size||levels.has(JSON.stringify(e.storey_id??null)))&&(!categories.size||categories.has(elementCategory(e,model!).key))&&elementLabelMatches(e,query)&&parametersMatch(e,filters,combine));
+  const hiddenItems=(model?.elements??[]).filter(e=>e.role==='element'&&!visibility.visible(e.id));
+  treeItems=hiddenOnly?hiddenItems:sceneFilterItems;
+  el('hidden-count').textContent=`Скрыто: ${hiddenItems.length}`;
+  el<HTMLButtonElement>('browse-hidden').disabled=!model||!hiddenItems.length&&!hiddenOnly;
+  el('browse-hidden').setAttribute('aria-pressed',String(hiddenOnly));
+  el('browse-hidden').textContent=hiddenOnly?'К дереву':'Список';
+  el<HTMLButtonElement>('restore-hidden').disabled=!hiddenItems.length;
+  el('hidden-list-note').hidden=!hiddenOnly;
   const searching=!!query||filters.some(f=>f.name.trim())||!!levels.size||!!categories.size||!!system;
-  document.querySelector<HTMLElement>('.tree-match-actions')!.hidden=!searching;
-  tree.render(model,treeItems,selectedId,searching,JSON.stringify([query,filters,combine,[...levels],[...categories],system]),el<HTMLSelectElement>('tree-grouping').value as 'categories'|'levels',[...catalogues.values()],query);
+  document.querySelector<HTMLElement>('.tree-match-actions')!.hidden=!searching||hiddenOnly;
+  tree.render(model,treeItems,selectedId,searching||hiddenOnly,JSON.stringify([query,filters,combine,[...levels],[...categories],system,hiddenOnly]),el<HTMLSelectElement>('tree-grouping').value as 'categories'|'levels',hiddenOnly?[]:[...catalogues.values()],query);
+  if(hiddenOnly&&!hiddenItems.length){const empty=el('element-tree').lastElementChild;if(empty?.tagName==='P')empty.textContent='Скрытых элементов нет. Вернитесь к дереву модели.';}
   for(const key of ['hide-matches','show-matches','isolate-matches'])el<HTMLButtonElement>(key).disabled=!treeItems.length;updateSelection();
 }
 function memberElementIds(instanceId:string){return (model?.elements??[]).filter(e=>e.role==='element'&&(!e.source_instance_id?sceneMembers.length===1:e.source_instance_id===instanceId)).map(e=>e.id);}
 function syncMemberVisibility(){for(const member of sceneMembers){const ids=memberElementIds(member.instanceId);member.visible=visibility.count(ids).shown>0;}}
 function setElementVisibility(ids:string[],shown:boolean){
   rememberVisibility();
-  if(shown){renderElements();const matches=new Set(treeItems.map(e=>e.id));if(ids.some(id=>!matches.has(id)))el<HTMLInputElement>('visibility-filter').checked=false;}
+  if(shown){renderElements();const matches=new Set(sceneFilterItems.map(e=>e.id));if(ids.some(id=>!matches.has(id)))el<HTMLInputElement>('visibility-filter').checked=false;}
   visibility.set(ids,shown);syncMemberVisibility();applySceneVisibility();renderMembers();
   if(selectedId){el<HTMLButtonElement>('show-selected').disabled=false;el<HTMLButtonElement>('hide-selected').disabled=[...selection].every(id=>!visibility.visible(id));}
 }
 function isolateElements(ids:string[]){
   if(!ids.length||!model)return;
   rememberVisibility();
-  const matches=new Set(treeItems.map(e=>e.id));if(ids.some(id=>!matches.has(id)))el<HTMLInputElement>('visibility-filter').checked=false;
+  const matches=new Set(sceneFilterItems.map(e=>e.id));if(ids.some(id=>!matches.has(id)))el<HTMLInputElement>('visibility-filter').checked=false;
   visibility.isolate(ids,model.elements.filter(e=>e.role==='element').map(e=>e.id));syncMemberVisibility();applySceneVisibility();renderMembers();viewer?.focusTargets(ids);
   if(selectedId){el<HTMLButtonElement>('show-selected').disabled=false;el<HTMLButtonElement>('hide-selected').disabled=[...selection].every(id=>!visibility.visible(id));}
 }
+el('browse-hidden').onclick=()=>{hiddenOnly=!hiddenOnly;renderElements();};
+el('restore-hidden').onclick=()=>{const ids=(model?.elements??[]).filter(e=>e.role==='element'&&!visibility.visible(e.id)).map(e=>e.id);hiddenOnly=false;if(ids.length)setElementVisibility(ids,true);else renderElements();};
 let searchTimer:ReturnType<typeof setTimeout>|undefined;
 const searchChanged=()=>{clearTimeout(searchTimer);for(const key of ['hide-matches','show-matches','isolate-matches'])el<HTMLButtonElement>(key).disabled=true;searchTimer=setTimeout(applySceneVisibility,180);};
 el('element-search').oninput=searchChanged;el('parameter-name').oninput=searchChanged;el('parameter-value').oninput=searchChanged;
@@ -376,7 +387,7 @@ el('isolate-selected').onclick=()=>{if(selection.size)isolateElements([...select
 el('tree-grouping').onchange=renderElements;
 el('system-filter').onchange=()=>{selectElement(null);renderSystemSummary();applySceneVisibility();};
 el('visibility-filter').onchange=applySceneVisibility;
-el('reset-visibility').onclick=()=>{rememberVisibility();visibility.reset();sceneMembers.forEach(m=>m.visible=true);levelFacet.reset();categoryFacet.reset();parameterFilters=[];renderParameterFilters();clipped=false;updateCut();el<HTMLSelectElement>('system-filter').value='';el<HTMLInputElement>('visibility-filter').checked=true;el<HTMLInputElement>('element-search').value='';el<HTMLInputElement>('parameter-name').value='';el<HTMLInputElement>('parameter-value').value='';el<HTMLSelectElement>('parameter-operator').value='contains';el<HTMLInputElement>('parameter-value').disabled=false;renderSystemSummary();applySceneVisibility();renderMembers();if(selectedId){el<HTMLButtonElement>('show-selected').disabled=false;el<HTMLButtonElement>('hide-selected').disabled=false;}viewer?.fit();};
+el('reset-visibility').onclick=()=>{rememberVisibility();hiddenOnly=false;visibility.reset();sceneMembers.forEach(m=>m.visible=true);levelFacet.reset();categoryFacet.reset();parameterFilters=[];renderParameterFilters();clipped=false;updateCut();el<HTMLSelectElement>('system-filter').value='';el<HTMLInputElement>('visibility-filter').checked=true;el<HTMLInputElement>('element-search').value='';el<HTMLInputElement>('parameter-name').value='';el<HTMLInputElement>('parameter-value').value='';el<HTMLSelectElement>('parameter-operator').value='contains';el<HTMLInputElement>('parameter-value').disabled=false;renderSystemSummary();applySceneVisibility();renderMembers();if(selectedId){el<HTMLButtonElement>('show-selected').disabled=false;el<HTMLButtonElement>('hide-selected').disabled=false;}viewer?.fit();};
 let cadPending:((reason?:string)=>void)|null=null;
 let cadCleanup:(()=>void)|null=null;
 function closeCad(){cadPending?.('Загрузка отменена');cadPending=null;cadCleanup?.();cadCleanup=null;cadFrame?.remove();cadFrame=null;el('cad-host').hidden=true;el('canvas').hidden=false;document.body.classList.remove('cad-open');el<HTMLButtonElement>('mode-simulate').disabled=false;el<HTMLButtonElement>('open-model-data').disabled=false;}

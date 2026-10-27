@@ -2,6 +2,8 @@
 mod fixtures;
 pub mod fragments;
 pub mod geometry;
+pub mod metadata;
+pub mod scene;
 #[cfg(test)]
 mod tests;
 // Independent experimental NWD reader. Layouts derived from public sample bytes.
@@ -93,6 +95,7 @@ pub struct Block {
 #[derive(Debug, Serialize)]
 pub struct Container {
     pub reader: &'static str,
+    pub serialization_version: u32,
     pub source_sha256: String,
     pub source_bytes: usize,
     pub directory_file_offset: usize,
@@ -187,7 +190,11 @@ pub fn read_container(data: &[u8]) -> Result<Container> {
     let header = std::str::from_utf8(&data[pointer..end])
         .map_err(|_| "Invalid directory header")?
         .to_owned();
-    if header != "#LcUStream-V1.1 binary double release utf8 navisworks:431 lizlib\n" {
+    let serialization_version = header
+        .strip_prefix("#LcUStream-V1.1 binary double release utf8 navisworks:")
+        .and_then(|s| s.strip_suffix(" lizlib\n"))
+        .and_then(|s| s.parse::<u32>().ok());
+    if !matches!(serialization_version, Some(431 | 441 | 448)) {
         return Err(format!(
             "Unsupported inner serialization: {}",
             header.trim()
@@ -331,6 +338,7 @@ pub fn read_container(data: &[u8]) -> Result<Container> {
     }
     Ok(Container {
         reader: "uvyazka-independent-nwd-0.1",
+        serialization_version: serialization_version.unwrap(),
         source_sha256: hash(data),
         source_bytes: data.len(),
         directory_file_offset: pointer,
@@ -356,6 +364,9 @@ pub fn geometry_definitions(container: &Container) -> Result<Vec<GeometryDefinit
         .iter()
         .find(|b| b.entry.name.ends_with("\\LcOpNwdGeometry"))
         .ok_or("Geometry stream absent")?;
+    geometry_definitions_in(block)
+}
+pub fn geometry_definitions_in(block: &Block) -> Result<Vec<GeometryDefinition>> {
     if let Some(error) = &block.diagnostic {
         return Err(format!("Geometry stream unavailable: {error}"));
     }
@@ -438,7 +449,6 @@ pub fn geometry_definitions(container: &Container) -> Result<Vec<GeometryDefinit
 }
 #[cfg(target_arch = "wasm32")]
 mod web {
-    use serde::Serialize;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen(js_name=inspectNwdBytes)]
     pub fn inspect(
@@ -450,12 +460,17 @@ mod web {
         };
         phase("Контейнер и распаковка потоков");
         let c = super::read_container(bytes).map_err(|e| JsValue::from_str(&e))?;
-        phase("Координаты, индексы и полосы примитивов");
-        let geometry = super::geometry::read_geometry(&c).map_err(|e| JsValue::from_str(&e))?;
-        phase("Экземпляры, размещения и сверка геометрии");
-        let fragments =
-            super::fragments::read_fragments(&c, &geometry).map_err(|e| JsValue::from_str(&e))?;
+        phase("Дерево, страницы свойств, геометрия и размещения");
+        let scene = super::scene::read_scene(&c);
         phase("Подготовка данных для сцены");
-        serde_json::json!({"container":c,"geometry":geometry,"fragments":fragments,"units":{"status":"not_decoded","scale_to_m":null}}).serialize(&serde_wasm_bindgen::Serializer::json_compatible()).map_err(|e|JsValue::from_str(&e.to_string()))
+        let report = super::scene::SceneReport {
+            container: &c,
+            scene,
+        };
+        // One JSON transfer avoids millions of individual WASM → JS property
+        // calls for a large coordination model. Precise source IDs are strings.
+        let json = serde_json::to_string(&report).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        phase("Передача дерева, свойств и геометрии в браузер");
+        js_sys::JSON::parse(&json)
     }
 }

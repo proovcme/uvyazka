@@ -1,30 +1,46 @@
 # Independent NWD reader
 
-Experimental Rust crate with native CLI and `inspectNwdBytes` WASM export. The
-same parser serves both. Does not require Navisworks, ODA, a model API or a server.
+Experimental Rust crate with a native CLI and `inspectNwdBytes` WASM export.
+Both use the same parser. No Navisworks, ODA, model API or server is required.
 
-This is a validated subset of `lichunk-008 / navisworks:431`, not general NWD/NWC
-support. It reads the container directory, bounded zlib members, geometry records,
-compressed indices, strip lengths and a typed fragment graph. Unsupported layouts
-remain explicit errors or partial results. Geometry counts and local bounds are
-cross-checked. Source hashes, byte ranges and unknown fields are retained.
+Recognized container: `lichunk-008`; observed serialization schemes: 431, 441,
+448. These are serialization identifiers, not a promise to read every file from
+any particular Navisworks release. Unknown layouts fail explicitly or retain a
+partial report. This is not general NWD/NWC/NWF support.
 
-Units, full object hierarchy, BIM properties, extended materials, arbitrary matrix
-placements, saved views, clash results and TimeLiner are not decoded. The browser
-adapter requires an explicit unit assumption and stores it separately from source
-observations. Geometric fragments are not labelled as physical equipment.
+The reader decodes bounded zlib members, compressed coordinates and topology,
+triangle strips, fragment placements, the source logical hierarchy and paged
+attribute graphs. IDs remain scoped to the model namespace, stream and property
+page. Typed properties, exact integer strings, source GUIDs, byte addresses and
+unresolved slots remain inspectable. Observed Revit IDs are not confused with
+NWD GUIDs or IFC GlobalIds. Source unit headers are read when supported; the
+browser requests a recorded assumption for unknown headers.
 
-Positive public reference: Autodesk-Forge/models.autodesk.io `samples/GateHouse.nwd`.
-Negative reference: `samples/Chair.nwd` uses additional geometry and material layouts
-and must not be reported as a complete scene. Samples are not bundled; their
-repository MIT license and provenance must be checked when obtaining them.
+Geometry indices, primitive counts and local bounds are cross-checked. The
+browser keeps source nodes separate from geometric fragments, preserves property
+provenance and never counts fragments as physical equipment. Rigid translation
+and quaternion placements are supported for the observed layouts. Source assets
+are data only: no remote resources, JSON code or schema XML is executed.
+
+Not yet imported: saved views, selection sets, clash results and TimeLiner.
+Textures/shaders, arbitrary affine transforms, all primitive types and all
+serialization variants remain unsupported. `complete_file_support` stays false;
+per-model geometry and property coverage must be inspected separately.
+
+Public references: Autodesk-Forge/models.autodesk.io `samples/GateHouse.nwd` and
+`samples/Chair.nwd`. Samples are not bundled. Check repository MIT licensing and
+source provenance when obtaining them. Private source models and their derived
+reports must remain outside version control.
 
 ```powershell
 cargo test --locked --manifest-path integrations/nwd-browser-bridge/Cargo.toml
 cargo build --locked --release --target wasm32-unknown-unknown --manifest-path integrations/nwd-browser-bridge/Cargo.toml
+cargo run --manifest-path integrations/nwd-browser-bridge/Cargo.toml -- input.nwd output-directory --scene
 ```
 
-`tools/build_browser_runtime.py` builds bindings into the ignored browser runtime
-directory. CLI: `cargo run --manifest-path integrations/nwd-browser-bridge/Cargo.toml -- input.nwd output-directory`.
-Use separate output directories for different input files. No engineering facts
-are accepted or saved to the project database by this low-level parser.
+`--scene` writes `scene.json` with the same per-source report as WASM. The default
+CLI mode writes legacy geometry diagnostics and extracted stream bodies;
+`--metadata-only` skips geometry decoding. Use a separate private output directory
+for each source. `tools/build_browser_runtime.py` builds the WASM bindings into
+an ignored runtime directory. The parser does not accept engineering facts or
+write to the project database.

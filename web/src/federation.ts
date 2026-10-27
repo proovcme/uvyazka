@@ -23,7 +23,10 @@ export async function federate(members:SceneMember[]):Promise<{model:ModelPackag
   for(const member of members){
     const source=member.model,prefix=(id:string)=>member.instanceId+':'+id;
     for(const original of source.elements){
-      const e=structuredClone(original);e.id=prefix(e.id);e.storey_id=e.storey_id===null?null:prefix(e.storey_id);
+      // Source properties are immutable and may be shared by thousands of NWD
+      // fragments. Copy only the placement fields that federation changes.
+      const e:BimElement={...original,mesh:original.mesh?{...original.mesh}:null,nwd:original.nwd?{...original.nwd}:undefined};e.id=prefix(e.id);e.storey_id=e.storey_id===null?null:prefix(e.storey_id);
+      if(e.nwd?.parent_id)e.nwd.parent_id=prefix(e.nwd.parent_id);if(e.nwd?.owner_id)e.nwd.owner_id=prefix(e.nwd.owner_id);
       e.source_model_id=source.model_id;e.source_instance_id=member.instanceId;e.source_element_id=original.id;e.source_step_id=original.step_id;
       if(e.mesh){
         const mesh=e.mesh;mesh.position_byte_offset=size;size+=mesh.vertex_count*12;mesh.index_byte_offset=size;size+=mesh.index_count*4;
@@ -44,7 +47,8 @@ export async function federate(members:SceneMember[]):Promise<{model:ModelPackag
     diagnostics.push(...source.diagnostics.map(d=>({...d,element_id:prefix(d.element_id)})));
     systems.push(...(source.systems??[]).map(s=>({...s,id:prefix(s.id),member_ids:s.member_ids.map(prefix)})));
   }
-  if(!low.every(Number.isFinite))throw Error('В сцене нет геометрии');
+  const geometryReady=low.every(Number.isFinite);
+  if(!geometryReady){if(!elements.some(e=>e.semantic_kind==='source_node'))throw Error('В сцене нет геометрии');low.splice(0,3,0,0,0);high.splice(0,3,0,0,0);}
   const origin:Vec3=[(low[0]+high[0])/2,(low[1]+high[1])/2,low[2]],binary=new ArrayBuffer(size);
   let row=0;
   for(const m of members)for(const original of m.model.elements){
@@ -58,8 +62,9 @@ export async function federate(members:SceneMember[]):Promise<{model:ModelPackag
     coordinate_system:{length_to_m:1,render_origin_m:origin,up_axis:'Z',bounds_min_m:low,bounds_max_m:high},elements,storeys,relationships,diagnostics,systems,
     engineering_links:members.flatMap(m=>(m.model.engineering_links??[]).map(link=>({...link,id:m.instanceId+':'+link.id,from:m.instanceId+':'+link.from,to:m.instanceId+':'+link.to}))),
     federation:{members:records,note:'Исходные координаты в метрах + заданные пользователем смещения и повороты. Совмещение не подтверждено.'},
+    ...(members.some(m=>m.model.nwd)?{nwd:{logical_nodes:members.reduce((n,m)=>n+(m.model.nwd?.logical_nodes??0),0),fragments:members.reduce((n,m)=>n+(m.model.nwd?.fragments??0),0),source_models:members.flatMap(m=>(m.model.nwd?.source_models??[]).map(s=>({...s,root_id:s.root_id?m.instanceId+':'+s.root_id:null}))),unread_features:[...new Set(members.flatMap(m=>m.model.nwd?.unread_features??[]))]}}:{}),
     phase_sources:Object.fromEntries(members.map(m=>[m.instanceId,m.model.revit??{status:'unavailable',phases:[]}])),
     statistics:{products:elements.length,physical_elements:elements.filter(e=>e.role==='element'&&e.semantic_kind!=='geometry_fragment').length,meshes:elements.filter(e=>e.mesh).length,triangles:members.reduce((n,m)=>n+m.model.statistics.triangles,0),geometry_errors:elements.filter(e=>e.geometry_error).length,binary_bytes:size},
-    capabilities:{read:true,geometry_ready:true,technology_resolved:false,schedule_ready:false}};
+    capabilities:{read:true,geometry_ready:geometryReady,technology_resolved:false,schedule_ready:false}};
   return {model,binary};
 }

@@ -19,7 +19,8 @@ export interface SpecReport {contract:'UvyazkaParameterSpecification';version:1;
 const key=(...parts:string[])=>JSON.stringify(parts);
 const missing=(reason='Значение не прочитано'):ValueCell=>({state:'missing',reason,evidence:[]});
 function valueCell(value:unknown,row:SpecInput,path:string[],unit?:string):ValueCell{
- const evidence=[{owner_id:row.key,path,value,storage_type:typeof value==='number'?'Double':'String',location:{file_sha256:row.source_sha256,scene_id:row.scene_id,native_source:row.native?.source}}];
+ const nwdSource=path[0]==='property_sets'?[...(row.element?.nwd?.property_sources??[])].reverse().find(s=>s.group===path[1]&&s.field===path[2]):undefined;
+ const evidence=[{owner_id:row.key,path,value,storage_type:typeof value==='number'?'Double':'String',location:{file_sha256:row.source_sha256,scene_id:row.scene_id,native_source:row.native?.source,nwd_source:nwdSource}}];
  if(value===undefined||value===null)return {...missing(),evidence};
  if(typeof value==='boolean')return {state:'value',value:value?'true':'false',storage_type:'String',evidence};
  if(typeof value!=='string'&&typeof value!=='number'||typeof value==='number'&&!Number.isFinite(value))return {state:'unsupported',reason:'Структурное или неподдержанное значение; исходник сохранён в доказательствах',evidence};

@@ -1,5 +1,5 @@
 import {attachNativeEngineering} from './native-engineering';
-import {importNwd} from './browser-nwd';
+import {importNwd,nwdNeedsUnits} from './browser-nwd';
 import {geometryCache} from './geometry-cache';
 import { importIfc } from './browser-ifc';
 import {documentCache} from './rvt-document-cache';
@@ -7,8 +7,10 @@ import {rvtImportFailure} from './rvt-import-result';
 import type {RvtDocument} from './rvt-document';
 
 const worker=self as unknown as {onmessage:((event:MessageEvent)=>void)|null;postMessage:(value:unknown,transfer?:Transferable[])=>void};
+let unitReply:{job:unknown;resolve:(unit:any)=>void}|null=null;
 worker.onmessage=async({data})=>{
   if(data.kind==='ping'){worker.postMessage({job:data.job,kind:'pong'});return;}
+  if(data.kind==='nwd-unit-choice'){if(unitReply&&unitReply.job===data.job){unitReply.resolve(data.unit);unitReply=null;}return;}
   const {job,buffer,filename,base,memoryMiB=1024}=data;
   let stage='Проверка файла',conversion:any=null,rvtDocument:RvtDocument|null=null;
   const progress=(text:string,nextStage=stage,details?:unknown)=>{stage=nextStage;worker.postMessage({job,kind:'progress',stage,text,details});};
@@ -24,8 +26,13 @@ worker.onmessage=async({data})=>{
       const module=await import(/* @vite-ignore */base+'runtime/nwd/uvyazka_nwd_experiment.js');
       await module.default({module_or_path:base+'runtime/nwd/uvyazka_nwd_experiment_bg.wasm'});
       const result=module.inspectNwdBytes(bytes,(text:string)=>progress(text,'Данные NWD'));
-      progress('Пересчёт координат по выбранным единицам','Геометрия');
-      const {model,binary}=await importNwd(result,filename,data.nwdUnit);
+      let unit=data.nwdUnit;
+      if(nwdNeedsUnits(result)&&!unit){
+        progress('Единицы некоторых источников не прочитаны; требуется уточнение','Ожидание единиц');
+        unit=await new Promise(resolve=>{unitReply={job,resolve};worker.postMessage({job,kind:'nwd-units-required'});});
+      }
+      progress('Подготовка дерева, свойств и геометрии в метрах','Геометрия');
+      const {model,binary}=await importNwd(result,filename,unit);
       worker.postMessage({job,kind:'imported',model,binary},[binary]);return;
     }
     if(/\.ifc$/i.test(filename)){

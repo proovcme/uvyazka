@@ -50,7 +50,6 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
   el('browser-demo').onclick=async()=>{stop('Переход к учебному примеру.');await journal.flush();location.href=base;};
   const openFile=async(file:File,appendMode?:boolean)=>{
     document.querySelector<HTMLDialogElement>('#file-dialog')!.close();
-    const nwdUnit=/\.nwd$/i.test(file.name)?await chooseNwdUnits(file.name):null;if(/\.nwd$/i.test(file.name)&&!nwdUnit)return;
     stop();const job=active;await log.ready;if(job!==active)return;
     run=journal.begin('import',file.name,file.size);const jobRun=run;log.select(run);processing.begin(file.name,file.size);
     fallback=current;
@@ -83,6 +82,11 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
           callbacks.document(null,'Каталог RVT не прочитан: '+data.message);
           journal.event(jobRun,'warning','Не удалось прочитать каталог RVT; геометрия обрабатывается отдельно',{message:data.message});
         }
+        else if(data.kind==='nwd-units-required'){
+          const unit=await chooseNwdUnits(file.name);if(job!==active)return;
+          if(!unit){current=fallback;stop('Открытие NWD отменено: единицы не выбраны.');status('Открытие NWD отменено.');return;}
+          importer?.postMessage({job,kind:'nwd-unit-choice',unit});
+        }
         else if(data.kind==='source')journal.source(jobRun,data.sha256);
         else if(data.kind==='progress'){if(data.details?.warning)journal.event(jobRun,'warning',data.text,data.details);reportProgress(jobRun,data.stage||'Импорт',data.text,data.details);status(data.text);}
         else if(data.kind==='error'){
@@ -108,11 +112,12 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
           reportProgress(jobRun,'Отображение','Создание 3D-сцены');status('Отображение модели');
           try{const displayed=await callbacks.model(data.model,data.binary,append);if(job!==active)return;current=displayed;fallback=null;}
           catch(e){if(job===active)fail('Не удалось отобразить модель: '+String(e));return;}
-          const result=`${file.name}: ${data.model.source.format==='nwd'?data.model.elements.length+' геометрических экземпляров':s.physical_elements+' физических элементов'}, ${s.meshes} сеток, ${s.geometry_errors} без геометрии.`;
-          finishRun(jobRun,'completed',result);status(result+(data.model.source.format==='nwd'?' Семантика BIM и исходные единицы не прочитаны.':' Можно рассчитать сценарий.'));busy(false);
+          const result=`${file.name}: ${data.model.source.format==='nwd'?(data.model.nwd?.logical_nodes??0)+' узлов дерева, '+(data.model.nwd?.fragments??0)+' геометрических фрагментов':s.physical_elements+' физических элементов'}, ${s.meshes} сеток, ${s.geometry_errors} без геометрии.`;
+          const partial=data.model.source.format==='nwd'&&(data.model.nwd?.unread_features.length>0||data.model.nwd?.source_models.some((s:any)=>!s.geometry_complete||s.metadata_status!=='decoded_logical_subset'));
+          finishRun(jobRun,partial?'partial':'completed',result);status(result+(data.model.source.format==='nwd'?' Ограничения чтения — в журнале.':' Можно рассчитать сценарий.'));busy(false);
         }
       };
-      importer.postMessage({job,buffer,filename:file.name,base,memoryMiB,nwdUnit},[buffer]);
+      importer.postMessage({job,buffer,filename:file.name,base,memoryMiB},[buffer]);
     }catch(e){if(job===active)fail(String(e),{stack:e instanceof Error?e.stack:undefined});}
   };
   el<HTMLInputElement>('browser-file').onchange=()=>{const input=el<HTMLInputElement>('browser-file'),file=input.files?.[0];input.value='';if(file)void openFile(file);};

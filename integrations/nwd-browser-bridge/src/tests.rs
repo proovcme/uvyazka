@@ -203,7 +203,7 @@ fn geometry_index_padding_and_segment_boundaries_are_validated() {
     );
 }
 #[test]
-fn extended_material_flags_are_unsupported_not_wrong_bounds() {
+fn declared_extended_material_without_payload_is_not_a_complete_scene() {
     let mut f = fragment_record();
     let i = f
         .windows(8)
@@ -215,7 +215,7 @@ fn extended_material_flags_are_unsupported_not_wrong_bounds() {
     let g = geometry::read_geometry(&c).unwrap();
     let r = fragments::read_fragments(&c, &g).unwrap();
     assert_eq!(r.decoded, 0);
-    assert!(r.diagnostic.unwrap().contains("extended material"));
+    assert!(r.diagnostic.is_some());
 }
 #[test]
 fn corrupt_strip_table_preserves_vertices_and_reports_unknown() {

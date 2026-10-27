@@ -15,7 +15,8 @@ export interface MeshData {
   source: { kind: 'derived'; method: string; version: string; representation_id: number };
 }
 export interface BimElement {
-  semantic_kind?: 'geometry_fragment';
+  semantic_kind?: 'geometry_fragment' | 'source_node';
+  nwd?: {kind:'node'|'fragment';namespace:string;node_index?:number;parent_id?:string|null;owner_id?:string;native_guid?:string|null;category_name?:string;property_sources?:Record<string,unknown>[]};
   long_name?:string|null;
   tag?:string|null;
   source_quantities?:Record<string,Record<string,unknown>>;
@@ -56,7 +57,8 @@ export interface ModelPackage {
   importer_version: string;
   model_id: string;
   source: { filename: string; sha256: string; size_bytes: number; schema: string; exported_at: string; exporter: string; format?: string;
-    calibration?: {unit:string;length_to_m:number;basis:'user_assumption';source_units_decoded:false};
+    calibration?: {unit:string;length_to_m:number;basis:'user_assumption'|'source';source_units_decoded:boolean};
+    calibrations?:{namespace:string;unit:string;length_to_m:number;basis:'user_assumption'|'source';source_units_decoded:boolean}[];
     conversion?: { engine: string; local_patches?: string[]; warnings: string[]; unsupported_features: string[]; ifc_sha256: string; confidence: { level?: string }; source_revision: string } };
   coordinate_system: { length_to_m: number; render_origin_m: Vec3; up_axis: 'Z'; bounds_min_m: Vec3; bounds_max_m: Vec3 };
   storeys: Storey[];
@@ -67,6 +69,7 @@ export interface ModelPackage {
   statistics: { products: number; physical_elements: number; meshes: number; triangles: number; geometry_errors: number; binary_bytes: number };
   capabilities: { read: boolean; geometry_ready: boolean; technology_resolved: boolean; schedule_ready: boolean };
   federation?: { members: ModelMember[]; note: string };
+  nwd?: {logical_nodes:number;fragments:number;source_models:{namespace:string;root_id:string|null;geometry_complete:boolean;metadata_status:string}[];unread_features:string[]};
   revit?: RevitPhases;
   phase_sources?: Record<string, RevitPhases>;
   systems?: {id:string;name:string;class:string;member_ids:string[];connectivity_verified:false;global_id?:string;description?:string|null;property_sets?:Record<string,Record<string,unknown>>}[];

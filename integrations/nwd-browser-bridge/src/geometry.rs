@@ -1,5 +1,7 @@
 //! Typed geometry subset observed in serialization 431; no guessed faces.
-use crate::{Container, Cursor, GeometryDefinition, Result, checked_slice, geometry_definitions};
+use crate::{
+    Block, Container, Cursor, GeometryDefinition, Result, checked_slice, geometry_definitions_in,
+};
 use serde::Serialize;
 #[derive(Debug, Serialize)]
 pub struct MeshDefinition {
@@ -40,8 +42,13 @@ fn indices(raw: &[u8], position: &mut usize, count: usize, vertices: usize) -> R
                 }
                 out.push(out[out.len() - distance]);
             }
-            128 => {
-                out.push(*out.last().ok_or("Repeat before first index")?);
+            128..=131 => {
+                let value = *out.last().ok_or("Repeat before first index")?;
+                let n = code as usize - 127;
+                if out.len() + n > count {
+                    return Err("Repeat run exceeds declared array".into());
+                }
+                out.extend(std::iter::repeat_n(value, n));
             }
             224..=239 => {
                 let next = *raw
@@ -98,7 +105,12 @@ fn packed_lengths(
     }
     Ok((values, start + words.len() * 4))
 }
-fn strips(raw: &[u8], start: usize, total: usize, minimum: u32) -> Result<(Vec<u32>, usize)> {
+fn strips(
+    raw: &[u8],
+    start: usize,
+    coordinate_slots: usize,
+    minimum: u32,
+) -> Result<(Vec<u32>, Vec<u32>, usize)> {
     let mut found = Vec::new();
     for offset in ((start + 3) / 4 * 4..raw.len().saturating_sub(12)).step_by(4) {
         let mut cursor = Cursor {
@@ -110,19 +122,36 @@ fn strips(raw: &[u8], start: usize, total: usize, minimum: u32) -> Result<(Vec<u
         let duplicate = cursor.u32()? as usize;
         if n != duplicate
             || n == 0
-            || n > total
+            || n > 1_000_000
             || !(1..=16).contains(&bits)
             || offset + 12 + (n * bits).div_ceil(32) * 4 > raw.len()
         {
             continue;
         }
         let (values, end) = packed_lengths(raw, offset + 12, n, bits)?;
-        if raw.len() - end <= 15
-            && values.iter().all(|n| *n >= minimum)
-            && values.iter().map(|n| *n as usize).sum::<usize>() == total
-            && raw[end..].iter().all(|b| *b == 0)
+        if !values.iter().all(|n| *n >= minimum) {
+            continue;
+        }
+        let total = values
+            .iter()
+            .try_fold(0usize, |sum, n| sum.checked_add(*n as usize))
+            .ok_or("Topology size overflow")?;
+        if total > 3_000_000 {
+            continue;
+        }
+        if raw.len() - end <= 15 && total == coordinate_slots && raw[end..].iter().all(|b| *b == 0)
         {
-            found.push((values, offset));
+            found.push((values, (0..total as u32).collect(), offset));
+        } else if let Some(count) = raw.get(end..end + 4) {
+            if u32::from_le_bytes(count.try_into().unwrap()) as usize != total {
+                continue;
+            }
+            let mut at = end + 4;
+            if let Ok(connectivity) = indices(raw, &mut at, total, coordinate_slots) {
+                if raw.len() - at <= 7 && raw[at..].iter().all(|b| *b == 0) {
+                    found.push((values, connectivity, offset));
+                }
+            }
         }
     }
     if found.len() != 1 {
@@ -134,12 +163,15 @@ fn strips(raw: &[u8], start: usize, total: usize, minimum: u32) -> Result<(Vec<u
     Ok(found.remove(0))
 }
 pub fn read_geometry(container: &Container) -> Result<Vec<MeshDefinition>> {
-    let definitions = geometry_definitions(container)?;
     let block = container
         .blocks
         .iter()
         .find(|b| b.entry.name.ends_with("\\LcOpNwdGeometry"))
         .ok_or("Geometry stream absent")?;
+    read_geometry_in(block)
+}
+pub fn read_geometry_in(block: &Block) -> Result<Vec<MeshDefinition>> {
+    let definitions = geometry_definitions_in(block)?;
     let mut output = Vec::new();
     for mut definition in definitions {
         let raw = checked_slice(
@@ -155,7 +187,7 @@ pub fn read_geometry(container: &Container) -> Result<Vec<MeshDefinition>> {
                 definition.index_count,
                 definition.positions.len(),
             )?;
-            let (lengths, strip_offset) = strips(
+            let (lengths, connectivity, strip_offset) = strips(
                 raw,
                 pos,
                 definition.index_count,
@@ -165,6 +197,10 @@ pub fn read_geometry(container: &Container) -> Result<Vec<MeshDefinition>> {
                     2
                 },
             )?;
+            let index: Vec<u32> = connectivity
+                .into_iter()
+                .map(|slot| index[slot as usize])
+                .collect();
             let mut triangles = Vec::new();
             let mut lines = Vec::new();
             let mut base = 0;

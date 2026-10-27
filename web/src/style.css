@@ -56,6 +56,12 @@ dialog{border:1px solid var(--strong-edge);border-radius:6px;box-shadow:0 20px 8
 .catalogue-import{font-size:11px;max-width:240px}.catalogue-import input{font-size:11px;max-width:100%}
 .tree-match-actions{display:flex;flex-wrap:wrap;gap:2px;padding:6px 10px;border-top:1px solid var(--edge);border-bottom:1px solid var(--edge);flex-shrink:0}
 .tree-match-actions button{font-size:10px;min-height:28px;padding:4px 6px}
+.visibility-recovery{display:grid;grid-template-columns:1fr 1fr;align-items:center;gap:0 4px;padding:4px 12px;border-block:1px solid var(--edge);flex-shrink:0}
+.visibility-recovery span{grid-column:1/-1;color:var(--secondary);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.visibility-recovery button{font-size:11px;min-height:40px;padding:4px 8px}
+.visibility-recovery button[aria-pressed=true]{color:var(--amber);background:var(--raised)}
+#hidden-list-note{margin:0;padding:8px 14px;font-size:11px;color:var(--secondary);line-height:1.5;flex-shrink:0}
+.cad-open .visibility-recovery,.cad-open #hidden-list-note{display:none}
 .model-branch{border:0;padding:0;margin:0;min-width:0}
 .model-branch>summary{list-style:none;display:flex;align-items:center;gap:6px;min-height:34px;padding:5px 2px;cursor:pointer;font-size:11px}
 .model-branch>summary::-webkit-details-marker{display:none}
@@ -63,6 +69,10 @@ dialog{border:1px solid var(--strong-edge);border-radius:6px;box-shadow:0 20px 8
 .model-branch[open]>summary:before{content:'▾'}
 .model-branch input[type=checkbox],.tree-element-row input[type=checkbox]{width:14px;height:14px;padding:0;margin:0;flex-shrink:0}
 .tree-node-name{min-width:0;overflow-wrap:anywhere;flex:1}
+.has-native-properties>summary{display:grid;grid-template-columns:8px 14px minmax(0,1fr) auto;gap:4px 6px}
+.has-native-properties>summary .tree-node-name{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;line-height:1.5}
+.tree-node-actions{grid-column:3/5;display:flex;gap:8px}
+.tree-node-actions button{min-height:32px}
 .model-branch>summary small{font-size:10px;font-variant-numeric:tabular-nums}
 .branch-model>summary{font-weight:500;border-bottom:1px solid var(--edge)}
 .branch-storey,.branch-class{margin-left:10px;padding-left:3px;border-left:1px solid var(--edge)}

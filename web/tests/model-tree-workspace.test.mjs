@@ -56,6 +56,24 @@ test('workspace wires simple/parameter search, hidden rows, selection, reset and
  node('reset-visibility').click();node('element-search').value='Насос';node('element-search').dispatchEvent(new win.Event('input'));await wait(220);node('visibility-filter').click();
  const pumps=[...document.querySelectorAll('.element-item')];pumps[0].click();pumps[1].dispatchEvent(new win.MouseEvent('click',{bubbles:true,ctrlKey:true}));
  assert.equal(node('selection-count').textContent,'Выбрано 2');node('hide-selected').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['3']);
+ assert.equal(node('hidden-count').textContent,'Скрыто: 2');
+ // Lose selection and use a query which cannot find the hidden pumps.
+ node('system-filter').dispatchEvent(new win.Event('change'));assert.equal(node('selection-count').textContent,'Выбрано 0');
+ node('element-search').value='Установка';node('element-search').dispatchEvent(new win.Event('input'));await wait(220);
+ const beforeBrowse=[...globalThis.__workspaceViewer.visible];node('browse-hidden').click();
+ assert.deepEqual(globalThis.__workspaceViewer.visible,beforeBrowse,'browsing hidden rows must not change 3D visibility');
+ assert.equal(document.querySelectorAll('.element-item').length,2);assert.equal(node('hidden-list-note').hidden,false);
+ assert.ok([...document.querySelectorAll('.tree-element-row input')].every(input=>!input.checked));
+ document.querySelector('.tree-element-row input').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','3']);
+ assert.equal(node('hidden-count').textContent,'Скрыто: 1');assert.equal(document.querySelectorAll('.element-item').length,1);
+ assert.equal(node('element-search').value,'Установка');assert.equal(node('visibility-filter').checked,false);
+ node('restore-hidden').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);
+ assert.equal(node('hidden-count').textContent,'Скрыто: 0');assert.equal(node('restore-hidden').disabled,true);
+ assert.equal(node('hidden-list-note').hidden,true);assert.equal(node('element-search').value,'Установка');
+ node('undo-visibility').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','3']);
+ node('undo-visibility').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['3']);
+ node('element-search').value='Насос';node('element-search').dispatchEvent(new win.Event('input'));await wait(220);
+
  node('undo-visibility').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);assert.equal(node('element-search').value,'Насос');
  node('reset-visibility').click();node('undo-visibility').click();assert.equal(node('element-search').value,'Насос');assert.equal(node('visibility-filter').checked,false);
 

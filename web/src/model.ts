@@ -49,6 +49,7 @@ export interface Storey {
   element_count: number;
 }
 export interface ModelPackage {
+  project_id?: string;
   attribution?: Record<string,unknown>;
   contract: 'ModelPackage';
   contract_version: '0.1.0';

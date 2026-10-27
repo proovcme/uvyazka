@@ -21,7 +21,7 @@ def verified_files(site:Path):
         raise ValueError('Only a public browser release can be published')
     revision=manifest['revision']
     if len(revision)!=40 or any(c not in '0123456789abcdef' for c in revision):raise ValueError('Invalid source revision')
-    allowed={'index.html','THREE-LICENSE.txt','FONT-LICENSES.txt','assets','cad','demo','downloads','runtime'}
+    allowed={'index.html','THREE-LICENSE.txt','FONT-LICENSES.txt','SPECIFICATION-LICENSES.txt','UVYAZKA-LICENSE.txt','UVYAZKA-NOTICE.txt','assets','cad','demo','downloads','runtime'}
     paths=[]
     for name,expected in manifest['files_sha256'].items():
         relative=PurePosixPath(name)

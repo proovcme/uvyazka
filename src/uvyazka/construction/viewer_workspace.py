@@ -71,7 +71,7 @@ def validate(state):
         raise ValueError('At most 30 specification definitions')
     for spec in specifications:
         fields = {'version','name','model_id','source_hashes','columns','group_by','filters','sort','scope'}
-        if not isinstance(spec,dict) or not fields <= set(spec) or set(spec)-fields-{'scope_ids'} or type(spec['version']) is not int or spec['version']!=1:
+        if not isinstance(spec,dict) or not fields <= set(spec) or set(spec)-fields-{'scope_ids','gost'} or type(spec['version']) is not int or spec['version']!=1:
             raise ValueError('Invalid specification definition')
         if not isinstance(spec['name'],str) or not 1<=len(spec['name'].strip())<=120:
             raise ValueError('Bounded specification name required')
@@ -79,6 +79,7 @@ def validate(state):
             raise ValueError('Specification model SHA-256 required')
         if not isinstance(spec['source_hashes'],list) or len(spec['source_hashes'])>1000 or any(not isinstance(h,str) or not re.fullmatch('[a-f0-9]{64}',h) for h in spec['source_hashes']):
             raise ValueError('Specification source SHA-256 required')
+        if 'gost' in spec:validate_gost(spec['gost'])
         columns=spec['columns']
         if not isinstance(columns,list) or not 1<=len(columns)<=40:
             raise ValueError('Specification needs 1-40 columns')
@@ -135,3 +136,28 @@ class ViewerWorkspace:
             revision=current+1
             db.execute('insert into viewer_workspaces values(?,?,?,?,?)',(revision,payload,now(),request_id,fingerprint))
             return {'revision':revision,'storage':'project_database'}
+
+
+def validate_gost(x):
+    fields={'version','template','bindings','categories','models','system','levels','unit','quantity_confirmed','group_identical','drawing'}
+    if not isinstance(x,dict) or set(x)!=fields or type(x['version']) is not int or x['version']!=1 or x['template']!='spds-equipment-1' or x['unit']!='шт.' or type(x['quantity_confirmed']) is not bool or type(x['group_identical']) is not bool:
+        raise ValueError('Invalid GOST specification settings')
+    for key in ['categories','models','levels']:
+        values=x[key]
+        if not isinstance(values,list) or len(values)>1000 or any(not isinstance(v,str) or not 1<=len(v)<=256 for v in values) or len(set(values))!=len(values):raise ValueError('Invalid GOST scope')
+    if not isinstance(x['system'],str) or len(x['system'])>256:raise ValueError('Invalid GOST system')
+    bindings=x['bindings']
+    if not isinstance(bindings,dict) or set(bindings)!={'position','name','type','code','supplier','mass','note'}:raise ValueError('Invalid GOST bindings')
+    for binding in bindings.values():
+        if not isinstance(binding,dict):raise ValueError('Invalid GOST binding')
+        kind=binding.get('kind')
+        if not isinstance(kind,str):raise ValueError('Invalid GOST binding kind')
+        key={'field':'field_id','constant':'value','blank':'reason'}.get(kind)
+        if kind=='unmapped':
+            if set(binding)!={'kind'}:raise ValueError('Invalid unmapped GOST binding')
+        elif key:
+            cap={'field':2048,'constant':2000,'blank':500}[kind]
+            if set(binding)!={'kind',key,'confirmed'} or type(binding['confirmed']) is not bool or not isinstance(binding[key],str) or len(binding[key])>cap or kind!='constant' and not binding[key].strip():raise ValueError('Invalid GOST binding value')
+        else:raise ValueError('Unknown GOST binding kind')
+    drawing=x['drawing']
+    if not isinstance(drawing,dict) or set(drawing)!={'designation','project','building','title','organization','developer','checker','normcontrol','approver','stage'} or any(not isinstance(v,str) or len(v)>300 for v in drawing.values()):raise ValueError('Invalid GOST drawing metadata')

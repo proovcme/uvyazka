@@ -30,3 +30,5 @@ prune web/test-results
 
 include integrations/nwd-browser-bridge/NOTICE.txt integrations/nwd-browser-bridge/THIRD_PARTY_LICENSES.txt
 prune integrations/nwd-browser-bridge/target
+
+recursive-include web/assets *.ttf *.txt *.json

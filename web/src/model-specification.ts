@@ -7,11 +7,13 @@ import {parameter} from './rvt-schedule.ts';
 import type {ParameterRecord,ValueCell} from './rvt-schedule.ts';
 import {evaluateFilter,compareCells,sumCells} from './rvt-schedule-rules.ts';
 import type {ReviewFilter,FilterDecision} from './rvt-schedule-rules.ts';
+import {validateGostSettings} from './gost-settings.ts';
+import type {GostSettings} from './gost-settings.ts';
 
 export interface SpecColumn {id:string;label:string;kind:'base'|'property'|'rvt';path?:string[];scope?:'instance'|'type';parameter_id?:string;source_sha256?:string}
 export interface SpecInput {key:string;scene_id:string|null;source_sha256:string;name:string;element?:BimElement;native?:ParameterRecord;type?:ParameterRecord;document?:RvtDocument}
 export interface SpecDataset {model:ModelPackage|null;columns:SpecColumn[];rows:SpecInput[];issues:string[];source_hashes:string[];source_metadata:Record<string,unknown>}
-export interface SpecDefinition {version:1;name:string;model_id:string|null;source_hashes:string[];columns:{id:string;label:string;aggregate:'none'|'sum'|'min'|'max'}[];group_by:string[];filters:ReviewFilter[];sort:{id:string;direction:1|-1}|null;scope:'all'|'matches'|'selection';scope_ids?:string[]}
+export interface SpecDefinition {version:1;name:string;model_id:string|null;source_hashes:string[];columns:{id:string;label:string;aggregate:'none'|'sum'|'min'|'max'}[];group_by:string[];filters:ReviewFilter[];sort:{id:string;direction:1|-1}|null;scope:'all'|'matches'|'selection';scope_ids?:string[];gost?:GostSettings}
 export interface SpecRow {keys:string[];scene_ids:string[];membership:'pass'|'unknown';cells:ValueCell[]}
 export interface SpecReport {contract:'UvyazkaParameterSpecification';version:1;source_metadata:Record<string,unknown>;definition:SpecDefinition;coverage:{observed:number;in_scope:number;passed:number;unknown:number;excluded:number;rows:number};selection:{key:string;state:'pass'|'fail'|'unknown';decisions:FilterDecision[]}[];rows:SpecRow[];totals:{id:string;cell:ValueCell}[];issues:string[]}
 const key=(...parts:string[])=>JSON.stringify(parts);
@@ -64,6 +66,7 @@ function aggregate(cells:ValueCell[],mode:'sum'|'min'|'max'):ValueCell{
 }
 export function defaultSpecification(dataset:SpecDataset):SpecDefinition{return {version:1,name:'Ведомость по параметрам',model_id:dataset.model?.model_id??null,source_hashes:dataset.source_hashes,columns:['name','category',dataset.model?.source.format==='nwd'?'id':dataset.model?.source.format==='rvt'||!dataset.model&&dataset.rows.some(r=>r.native)?'revit':'global','count'].map(id=>({id,label:dataset.columns.find(c=>c.id===id)!.label,aggregate:id==='count'?'sum':'none'})),group_by:[],filters:[],sort:null,scope:'all'};}
 export function validateSpecification(input:unknown):SpecDefinition{
+ if((input as SpecDefinition)?.gost!==undefined)validateGostSettings((input as SpecDefinition).gost);
  const x=input as SpecDefinition;if(!x||x.version!==1||typeof x.name!=='string'||!x.name.trim()||x.name.length>120||!Array.isArray(x.source_hashes)||x.source_hashes.length>1000||x.source_hashes.some(h=>!/^([a-f0-9]{64})$/.test(h))||x.model_id!==null&&!/^[a-f0-9]{64}$/.test(x.model_id))throw Error('Неверная версия или источники спецификации');
  if(!Array.isArray(x.columns)||!x.columns.length||x.columns.length>40||new Set(x.columns.map(c=>c.id)).size!==x.columns.length||x.columns.some(c=>typeof c.id!=='string'||c.id.length>2048||typeof c.label!=='string'||c.label.length>256||!['none','sum','min','max'].includes(c.aggregate)))throw Error('Нужны 1–40 уникальных полей');
  if(!Array.isArray(x.group_by)||x.group_by.some(id=>!x.columns.some(c=>c.id===id))||!['all','matches','selection'].includes(x.scope)||x.scope_ids&&(!Array.isArray(x.scope_ids)||x.scope_ids.length>500000||x.scope_ids.some(id=>typeof id!=='string')))throw Error('Неверная область или группировка');

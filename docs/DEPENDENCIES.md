@@ -93,3 +93,13 @@ web-ifc 0.0.78 и Pyodide 314.0.7 зафиксированы в web/package-lock
 WASM, Python-ядро и лицензии раздаются с того же сайта; CDN и API моделей
 не используются. [Происхождение runtime](../integrations/browser-runtime/README.md).
 Исходники собственных workers, IFC-адаптера и RVT-моста включены в sdist.
+
+## Выпуск спецификаций
+
+Браузерный PDF: jsPDF 4.2.1 (MIT), закреплён в web/package-lock.json.
+OOXML XLSX: собственный минимальный писатель без формул/макросов,
+ZIP — fflate 0.8.3 (MIT). Новые прямые и включённые опциональные зависимости
+и их upstream license notices: `web/public/SPECIFICATION-LICENSES.txt`.
+Noto Sans — SIL OFL, URL и SHA-256 в `web/assets/FONT-PROVENANCE.json`,
+условия — `web/assets/OFL.txt`. Шрифт встраивается в PDF и поставляется со сборкой;
+данные модели и экспорт не отправляются на внешний сервис.

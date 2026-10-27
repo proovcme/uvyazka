@@ -10,6 +10,7 @@ test('specification edits are read before building/saving; selected scope links 
  const hash='a'.repeat(64);const model={model_id:hash,source:{sha256:hash,filename:'synthetic.ifc'},storeys:[],elements:[1,2].map(id=>({id:String(id),step_id:id,name:'Насос',class:'IfcPump',role:'element',storey_id:null,materials:[],source:{file_sha256:hash},property_sets:{},quantity_sets:{}}))};
  let shown=[];const panel=specificationPanel({model:()=>model,documents:()=>[],project:()=>'synthetic',selection:()=>['2'],matches:()=>['1','2'],show:ids=>shown=ids,shared:false});
  document.getElementById('open-specifications').click();
+ [...document.querySelectorAll('.spec-template-cards button')].find(b=>b.textContent.includes('Произвольная таблица')).click();
  const name=document.querySelector('[data-name]');name.value='Синтетическая ведомость';
  const label=document.querySelector('input[aria-label="Заголовок поля 1"]');label.value='Новая подпись';
  const scope=document.querySelector('[data-scope]');scope.value='selection';scope.dispatchEvent(new win.Event('change'));
@@ -18,4 +19,31 @@ test('specification edits are read before building/saving; selected scope links 
  document.querySelector('[data-save]').click();assert.equal(panel.definitions()[0].name,'Синтетическая ведомость');assert.equal(panel.definitions()[0].columns[0].label,'Новая подпись');
  document.querySelector('[data-table] tbody tr td button').click();assert.deepEqual(shown,['2']);
  panel.restore([]);assert.equal(panel.definitions().length,0);
+});
+
+test('GOST form uses the selected equipment, confirms only clicked bindings and preserves its recipe',async t=>{
+ const win=new Window({url:'http://localhost/'});t.after(()=>win.happyDOM.close());
+ for(const k of ['document','localStorage','Option'])Object.defineProperty(globalThis,k,{value:win[k],writable:true,configurable:true});
+ globalThis.Option=function(text,value){const o=document.createElement('option');o.textContent=text;o.value=value;return o;};
+ document.body.innerHTML='<button id="theme-toggle"></button>';
+ const bundle=await build({entryPoints:[fileURLToPath(new URL('../src/specification-panel.ts',import.meta.url))],bundle:true,write:false,format:'esm'});
+ const {specificationPanel}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
+ const hash='a'.repeat(64),model={project_id:'synthetic',model_id:hash,source:{sha256:hash,filename:'synthetic.ifc'},storeys:[],elements:[{id:'1',step_id:1,global_id:'fan',name:'Вентилятор',class:'IfcFan',hierarchy:['IfcElement','IfcFan'],role:'element',storey_id:null,materials:[],source:{file_sha256:hash},property_sets:{},quantity_sets:{}}]};
+ const panel=specificationPanel({model:()=>model,documents:()=>[],project:()=>'synthetic',selection:()=>[],matches:()=>['1'],show:()=>{},shared:false});
+ const button=(parent,text)=>[...parent.querySelectorAll('button')].find(b=>b.textContent===text);
+ document.getElementById('open-specifications').click();
+ [...document.querySelectorAll('.spec-template-cards button')].find(b=>b.textContent.includes('Спецификация оборудования по ГОСТ')).click();
+ const host=document.querySelector('.gost-workspace');assert.equal(host.hidden,false);assert.equal(document.querySelector('.spec-legacy').hidden,true);
+ assert.match(host.querySelector('.gost-status').textContent,/1 экземпляр → 1 строка/);assert.match(host.querySelector('tbody').textContent,/1\. Вентилятор/);
+ host.querySelector('[aria-label="Настроить графу Наименование и техническая характеристика"]').click();
+ assert.match(host.querySelector('.gost-drawer').textContent,/Прочитано 1 из 1/);
+ button(host,'Подтвердить этот источник').click();
+ host.querySelector('[aria-label="Настроить графу Кол."]').click();
+ const quantity=host.querySelector('.gost-drawer input[type=checkbox]');quantity.checked=true;quantity.dispatchEvent(new win.Event('change'));
+ button(host,'Реквизиты листа').click();
+ const metadata=[...host.querySelectorAll('.gost-drawer label')].find(l=>l.textContent==='Обозначение документа').querySelector('input');metadata.value='ТЕСТ-ОВ.СО';metadata.dispatchEvent(new win.Event('input'));assert.equal(metadata.isConnected,true);
+ button(host,'Сохранить шаблон').click();
+ const saved=panel.definitions()[0];assert.equal(saved.gost.bindings.name.confirmed,true);assert.equal(saved.gost.bindings.position.kind,'unmapped');assert.equal(saved.gost.quantity_confirmed,true);
+ assert.equal(saved.gost.drawing.designation,'ТЕСТ-ОВ.СО');assert.equal(saved.gost.unit,'шт.');assert.equal(saved.gost.categories[0],'IfcFan');
+ button(host,'Сменить шаблон').click();assert.equal(host.hidden,true);assert.match(document.querySelector('.spec-chooser').textContent,/Продолжить сохранённую таблицу/);
 });

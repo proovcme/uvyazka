@@ -1,0 +1,30 @@
+Uvyazka / Увязка
+Copyright 2026 proovcme and Uvyazka contributors
+
+Original Uvyazka code, documentation and skills are licensed under the
+Apache License, Version 2.0, except where a file or component states otherwise.
+See LICENSE for the complete terms.
+
+Third-party code, fonts, runtimes and demonstration materials retain their
+own copyright and license notices. This notice does not relicense them.
+In particular:
+
+- integrations/rvt-rs: Apache-2.0; retain its LICENSE and NOTICE, including
+  upstream copyright and local modification notices.
+- src/uvyazka/_vendor/les_list: MIT; see LICENSE.txt and provenance.json there.
+- integrations/cad-viewer: separate GPL-3.0-or-later browser application;
+  see its LICENSE, README.md, package.json and sources.lock.json.
+- integrations/nwd-browser-bridge: retain NOTICE.txt and
+  THIRD_PARTY_LICENSES.txt for its dependencies.
+- Viewer fonts, JavaScript dependencies and browser runtimes retain the
+  notices supplied with their source and distributions.
+- Demonstration models and derived illustrations retain the permissions
+  and attribution recorded in docs/DEPENDENCIES.md and their source manifests.
+
+Optional dependencies also retain their own terms, including PyMuPDF
+(AGPL-3.0 or a commercial Artifex license) and IfcOpenShell (LGPL).
+Apache-2.0 for Uvyazka does not replace those terms.
+
+See docs/DEPENDENCIES.md and integrations/README.md for provenance and
+component boundaries. Project documents and user data are not licensed
+by this repository's LICENSE.

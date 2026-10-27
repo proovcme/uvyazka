@@ -1,7 +1,7 @@
 ![Увязка — каждое число со своим источником](docs/assets/cover.svg)
 
 [![Проверки](https://github.com/proovcme/uvyazka/actions/workflows/ci.yml/badge.svg)](https://github.com/proovcme/uvyazka/actions/workflows/ci.yml)
-![Версия: 0.3.0 alpha 13](https://img.shields.io/badge/version-0.3.0--alpha.13-337E86?style=flat-square)
+![Версия: 0.3.0 alpha 14](https://img.shields.io/badge/version-0.3.0--alpha.14-337E86?style=flat-square)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-536971?style=flat-square)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-19323D?style=flat-square)
 ![Локальный MCP, stdio](https://img.shields.io/badge/MCP-local%20stdio-536971?style=flat-square)
@@ -20,6 +20,21 @@
 
 [Быстрый старт](#быстрый-старт-на-windows) · [Подключение MCP](#подключение-mcp) ·
 [Панель](#панель) · [Веб-демо](https://locia.work/uvyazka/) · [Документация](#документация)
+
+## В alpha.14
+
+В конструкторе спецификаций появилась готовая форма оборудования по
+ГОСТ 21.110-2013: выберите состав, назначьте источники через заголовки граф
+и проверьте листы А3 перед выгрузкой PDF/XLSX. Ячейка показывает происхождение
+значения, а непроверенные привязки и пропуски сохраняют статус черновика.
+Существующие произвольные таблицы и сохранённые шаблоны продолжают работать.
+
+![Спецификация оборудования: таблица и настройка источника графы](docs/assets/viewer-gost-specification.jpg)
+
+[Попробовать на открытом RVT](https://proovcme.github.io/uvyazka/?project=demo-a&example=rvt-re1) →
+**Спецификации → Спецификация оборудования по ГОСТ**.
+[Порядок работы и ограничения](docs/GOST_SPECIFICATIONS.md) ·
+[Листы и галерея](docs/SCREENSHOTS.md#спецификации-по-гост--alpha14).
 
 ## Код, модель и человек
 
@@ -157,7 +172,7 @@ uv run uvyazka client-config codex
 ## Веб-демо: вьювер и симуляция
 
 **[Открыть демо](https://locia.work/uvyazka/)** ·
-[Резервный адрес](https://proovcme.github.io/uvyazka/)
+[GitHub Pages](https://proovcme.github.io/uvyazka/)
 
 Публичное демо — отдельное браузерное приложение. В нём есть клиника с АР,
 ОВ и ЭОМ, сводная модель, открытый RVT и учебный каркас со сценариями ресурсов.
@@ -170,6 +185,7 @@ uv run uvyazka client-config codex
 - DWG/DXF: отдельный CAD-вьювер со слоями.
 - [NWD](docs/NWD.md): экспериментальное прямое чтение геометрии и линий в общей сцене; исходные единицы пока задаются пользователем.
 - [Спецификации по параметрам](docs/PARAMETER_SPECIFICATIONS.md): поля, условия, группы, сортировка, итоги и CSV/JSON с источниками; RVT, IFC и прочитанные данные NWD.
+- [Шаблон оборудования по ГОСТ](docs/GOST_SPECIFICATIONS.md): форма 1, настройка источников по графам, листы А3 с основными надписями, PDF, XLSX и JSON с доказательствами. Первая версия считает оборудование в штуках; неизвестные значения остаются вопросами.
 - RVT: каталог прочитанных видов, листов и сохранённых данных спецификаций.
 - IFC/RVT: расчёт сценария и симуляция; линии DWG сами по себе не задают работы.
 
@@ -270,7 +286,7 @@ uv run python -m unittest discover -s tests -v
 uv run python tools/validate_package.py
 uv run python tools/check_public_content.py
 uv build
-uv run python tools/check_public_content.py --archive dist/uvyazka-0.3.0a13.tar.gz --archive dist/uvyazka-0.3.0a13-py3-none-any.whl
+uv run python tools/check_public_content.py --archive dist/uvyazka-0.3.0a14.tar.gz --archive dist/uvyazka-0.3.0a14-py3-none-any.whl
 ```
 
 Фронтенд — каталог `web`: `npm ci`, `npm test`, `npm run build`.

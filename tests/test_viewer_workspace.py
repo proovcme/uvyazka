@@ -51,6 +51,17 @@ class ViewerWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.service.get('demo-b')['revision'],0)
         with self.assertRaises(ValueError):self.service.get('does-not-exist')
 
+    def test_gost_recipe_is_shared_without_changing_old_workspace_schema(self):
+        s=state()
+        gost={'version':1,'template':'spds-equipment-1','bindings':{f:{'kind':'blank','reason':'Synthetic explicit decision','confirmed':True} for f in ['position','name','type','code','supplier','mass','note']},'categories':['IfcFan'],'models':[],'system':'','levels':[],'unit':'шт.','quantity_confirmed':True,'group_identical':False,'drawing':{k:'' for k in ['designation','project','building','title','organization','developer','checker','normcontrol','approver','stage']}}
+        definition={'version':1,'name':'Синтетическая форма 1','model_id':'a'*64,'source_hashes':['b'*64],'columns':[{'id':'name','label':'Наименование','aggregate':'none'}],'group_by':[],'filters':[],'sort':None,'scope':'all','gost':gost}
+        s['specifications']=[definition]
+        self.service.save('demo-a',s,0,'gost-recipe')
+        self.assertEqual(self.service.get('demo-a')['state']['specifications'][0]['gost'],gost)
+        for binding in [{'kind':'blank','reason':'','confirmed':True},{'kind':'field','field_id':'name','confirmed':'yes'},{'kind':'unmapped','hidden':'field'}]:
+            bad=copy.deepcopy(s);bad['specifications'][0]['gost']['bindings']['name']=binding
+            with self.assertRaises(ValueError):validate(bad)
+
     def test_concurrent_writers_cannot_overwrite_same_revision(self):
         def write(i):
             try:return self.service.save('demo-a',state(),0,str(i))['revision']

@@ -17,8 +17,8 @@ def validate():
     plugin = json.loads((ROOT / "plugin.json").read_text(encoding="utf-8"))
     mcp = json.loads((ROOT / "mcp.json").read_text(encoding="utf-8"))
     assert package["project"]["name"] == plugin["name"] == "uvyazka"
-    assert package["project"]["version"] == "0.3.0a13"
-    assert plugin["version"] == "0.3.0-alpha.13"
+    assert package["project"]["version"] == "0.3.0a14"
+    assert plugin["version"] == "0.3.0-alpha.14"
     assert '"' + package["project"]["version"] + '"' in (ROOT / "src/uvyazka/__init__.py").read_text(encoding="utf-8")
     assert plugin["extensions"]["com.openai"]["requires_local_executor"] is True
     assert len(plugin["extensions"]["com.openai"]["interface"]["shortDescription"]) <= 30
@@ -30,6 +30,8 @@ def validate():
     assert package["project"]["license-files"] == ["LICENSE", "NOTICE"]
     assert "Apache License" in (ROOT / "LICENSE").read_text(encoding="utf-8")
     assert "Third-party" in (ROOT / "NOTICE").read_text(encoding="utf-8")
+    for source, copy in (("LICENSE", "UVYAZKA-LICENSE.txt"), ("NOTICE", "UVYAZKA-NOTICE.txt")):
+        assert (ROOT / source).read_bytes() == (ROOT / "web/public" / copy).read_bytes()
     assert not package["project"]["dependencies"], "Core must not require a model API or SDK"
     for file in ROOT.joinpath("clients").iterdir():
         if file.suffix == ".json":

@@ -2,7 +2,7 @@
   "name": "uvyazka-construction-viewer",
   "private": true,
   "license": "Apache-2.0",
-  "version": "0.3.0-alpha.13",
+  "version": "0.3.0-alpha.14",
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && vite build",
@@ -11,6 +11,8 @@
   "dependencies": {
     "@fontsource/ibm-plex-sans": "5.3.0",
     "@fontsource/roboto-condensed": "5.3.0",
+    "fflate": "0.8.3",
+    "jspdf": "4.2.1",
     "pyodide": "314.0.7",
     "three": "0.186.1",
     "web-ifc": "0.0.78"

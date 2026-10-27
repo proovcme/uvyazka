@@ -4,6 +4,8 @@ from .production import PROFILE, RATE_UNITS
 
 
 def register_tools(mcp, workspace):
+    from .clash_tools import register_tools as register_clashes
+    register_clashes(mcp,workspace)
     read = {"readOnlyHint": True, "idempotentHint": True}
     write = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
 

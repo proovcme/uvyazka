@@ -26,7 +26,7 @@ PRIVATE_NAMES = {
 PRIVATE_PARTS = {'.ssh', '.aws', '.azure', 'secrets', 'node_modules', '__pycache__', '.venv'}
 ALLOWED_DATA = {'tests/fixtures/structure-synthetic.xls'}
 EXAMPLE_USERS = {'alice', 'bob', 'testuser', 'user', 'username', 'example', 'runner', 'pyodide', '...'}
-HOME_PATH = re.compile(r'''(?i)(?:[a-z]:[\\/]+Users[\\/]+|/Users[/]|/home[/])([^\\/\s"'<>]+)''')
+HOME_PATH = re.compile(r'''(?i)(?:[a-z]:[\\/]+Users[\\/]+|/Users[/]|/home[/])([^\\/\s"'`<>]+)''')
 SDIST_METADATA = {
     'PKG-INFO', 'setup.cfg',
     *('src/uvyazka.egg-info/' + name for name in (

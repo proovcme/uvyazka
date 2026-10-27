@@ -1,4 +1,5 @@
 import {specificationPanel} from './specification-panel';
+import {reviewPanel} from './review-panel';
 import {engineeringPanel} from './engineering-panel';
 import {workspacePanel} from './workspace-panel';
 import {measurementKey} from './spatial-measurements';
@@ -62,6 +63,9 @@ initTheme();
 installPropertyCopy();
 modelDataPanel(()=>model,id=>{selectElement(id);viewer?.focusTargets([id]);});
 const specifications=specificationPanel({shared:!DEMO,model:()=>model,documents:()=>[...catalogues.values()],project:()=>measurementProject,matches:()=>treeItems.map(e=>e.id),selection:()=>[...selection],show:ids=>{selection.clear();for(const id of ids)selection.add(id);selectedId=ids[0]??null;updateSelection();selectElement(selectedId);selection.clear();for(const id of ids)selection.add(id);updateSelection();viewer?.focusTargets(ids);}});
+reviewPanel({shared:!DEMO,project:()=>measurementProject,capture:captureWorkspace,apply:applyWorkspaceState,selection:()=>[...selection],matches:()=>treeItems.map(e=>e.id),
+ focus:ids=>{isolateElements(ids);const state=captureWorkspace().state;state.selection=ids;state.view.planes=[];state.view.xray=false;applyWorkspaceState(state);viewer?.focusTargets(ids);},
+ projection:()=>({aspect:viewer?.camera.aspect??1,vertical_fov:viewer?.camera.fov??40}),snapshot:()=>{if(!viewer)throw Error('Модель не открыта');viewer.renderer.render(viewer.scene,viewer.camera);return viewer.renderer.domElement.toDataURL('image/png').split(',')[1];}});
 const documentPanel=rvtDocumentPanel(record=>{
   const orientation=viewOrientation(record);if(!orientation||!viewer||!model)return;
   setMode('view');el('reset-visibility').click();viewer.orient(orientation.direction,orientation.up);
@@ -121,6 +125,7 @@ el('undo-visibility').onclick=()=>{const previous=visibilityHistory.pop();if(!pr
 const savedWorkspace=workspacePanel({project:()=>measurementProject,capture:captureWorkspace,restore:restoreWorkspace,apply:applyWorkspaceState,matches:()=>treeItems.map(e=>e.id),selection:()=>[...selection],show:isolateElements,highlight:ids=>{networkHighlights=new Set(ids);refreshHighlights();},error,shared:!DEMO});
 el('workspace-settings').onclick=()=>{el<HTMLDialogElement>('file-dialog').close();el('open-workspace').click();};
 function captureWorkspace():Omit<SavedScene,'id'|'name'|'created_at'|'project_id'>{
+ if(cadFrame)throw Error('Сейчас открыт DWG / DXF. Сохранённые виды и проверки сеток доступны для RVT / IFC / NWD.');
  if(!model||!viewer||!loadedBinary)throw Error('Сначала откройте модель');
  const measurements=JSON.parse(localStorage.getItem(measurementKey(measurementProject))??'[]');
  const state:ViewerState={version:1,model_id:model.model_id,source_sha256:model.source.sha256,hidden:visibility.snapshot(),selection:[...selection],filters:{query:el<HTMLInputElement>('element-search').value,levels:[...levelFacet.selected()],categories:[...categoryFacet.selected()],system:el<HTMLSelectElement>('system-filter').value,parameters:[...parameterFilters,parameterDraft()].filter(f=>f.name.trim()),combine:el<HTMLSelectElement>('parameter-combine').value as 'all'|'any',apply3d:el<HTMLInputElement>('visibility-filter').checked,grouping:el<HTMLSelectElement>('tree-grouping').value as 'categories'|'levels'},view:viewer.captureView(),measurements,sets:savedWorkspace.sets(),specifications:specifications.definitions()};

@@ -1,0 +1,26 @@
+[
+  {
+    "name": "pymupdf-1.28.2.tar.gz",
+    "url": "https://files.pythonhosted.org/packages/a3/fb/b6761fa2d5266f2cdb24c3b91f4023070ab7848381417678e7a289a1d52a/pymupdf-1.28.2.tar.gz",
+    "sha256": "5e0be7908a715aa20333caddd73f1d6f01e4cd0c26e869fa2dd0b7f344da2249",
+    "size": 87903557
+  },
+  {
+    "name": "mupdf-1.28.2-source.tar.gz",
+    "url": "https://mupdf.com/downloads/archive/mupdf-1.28.2-source.tar.gz",
+    "sha256": "44075a84e329db55b9bef5f342a70fd26d69e48ad1d33cb89d9664581c641156",
+    "size": 68898646
+  },
+  {
+    "name": "ifcopenshell-b5e509b.tar.gz",
+    "url": "https://codeload.github.com/IfcOpenShell/IfcOpenShell/tar.gz/b5e509b223e1ab2c7eb4641211ea05209a2dfa3e",
+    "sha256": "9cd664dfe790be1aec2ef59c95004692a0774e2217e0ee3e96a173ae2f0d08c1",
+    "size": 136968032
+  },
+  {
+    "name": "occt-7.8.1.tar.gz",
+    "url": "https://codeload.github.com/Open-Cascade-SAS/OCCT/tar.gz/refs/tags/V7_8_1",
+    "sha256": "7321af48c34dc253bf8aae3f0430e8cb10976961d534d8509e72516978aa82f5",
+    "size": 48432051
+  }
+]

@@ -1,7 +1,7 @@
 ![Увязка — каждое число со своим источником](docs/assets/cover.svg)
 
 [![Проверки](https://github.com/proovcme/uvyazka/actions/workflows/ci.yml/badge.svg)](https://github.com/proovcme/uvyazka/actions/workflows/ci.yml)
-![Версия: 0.3.0 alpha 14](https://img.shields.io/badge/version-0.3.0--alpha.14-337E86?style=flat-square)
+![Версия: 0.4.0 alpha 1](https://img.shields.io/badge/version-0.4.0--alpha.1-337E86?style=flat-square)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-536971?style=flat-square)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-19323D?style=flat-square)
 ![Локальный MCP, stdio](https://img.shields.io/badge/MCP-local%20stdio-536971?style=flat-square)
@@ -21,7 +21,27 @@
 [Быстрый старт](#быстрый-старт-на-windows) · [Подключение MCP](#подключение-mcp) ·
 [Панель](#панель) · [Веб-демо](https://locia.work/uvyazka/) · [Документация](#документация)
 
-## В alpha.14
+## В 0.4.0-alpha.1
+
+**Проверки геометрии и настольная Увязка.** Составы A ↔ B, пересечения,
+зазоры и заданные зоны обслуживания; история прогонов и решений, сохранённые
+виды и шаблоны, экспорт BCF 2.1/3.0 и XLSX. Приближённая и непрочитанная
+геометрия остаётся в охвате проверки и вопросах.
+
+[Проверки и ограничения](docs/CLASHES.md) ·
+[Установка Windows, MCP и обновления](docs/DESKTOP.md) ·
+[Предварительный выпуск](https://github.com/proovcme/uvyazka/releases/tag/v0.4.0-alpha.1).
+
+Настольная версия включает остальные инструменты Увязки и использует ту же
+базу проекта. Публичное демо считает геометрию на устройстве и хранит результаты
+в этом браузере; общей настольной SQLite у него нет.
+
+![Проверка пересечения на синтетическом стенде: пара элементов, решение и BCF/XLSX](docs/assets/viewer-clashes.png)
+
+[Стенд с известными пересечениями и зазором](https://proovcme.github.io/uvyazka/?project=demo-a&example=803288beba6d19f07096f4f85896930e751ad963e9a7bbc767951848142f11f1)
+→ **Проверки**. Размеры и решения этого примера вымышлены.
+
+## Спецификации по ГОСТ
 
 В конструкторе спецификаций появилась готовая форма оборудования по
 ГОСТ 21.110-2013: выберите состав, назначьте источники через заголовки граф
@@ -50,10 +70,12 @@
 
 ## Что уже работает
 
-**Alpha: 86 MCP-инструментов и шесть навыков.**
+**Alpha: 96 MCP-инструментов и шесть навыков.**
 
 | Возможность | Результат |
 |---|---|
+| [Проверки геометрии](docs/CLASHES.md) | Составы A/B, пересечения сеток, зазоры, зоны обслуживания, охват, отмена, история, BCF/XLSX |
+| [Настольная Увязка](docs/DESKTOP.md) | Windows x64, комплектное ядро и MCP, единая проектная память, подписанные обновления из GitHub |
 | [Единый приём проекта](docs/PROJECT_INTAKE.md) | Папка через MCP или локальную панель, ZIP через панель; общие project_id, база и журнал. Существующая папка читается на месте |
 | [Листы и таблицы](docs/SOURCE_STRUCTURE.md) | PDF, XLSX/XLSM, XLS, DOCX, CSV/TSV: исходные ячейки, адреса, объединения, формулы и сохранённые результаты, где они доступны |
 | [Сводка проекта](docs/PROJECT_SUMMARY.md) | Числовые кандидаты, контекст и источники из сохранённого текста; проверенные наблюдения хранятся отдельно |
@@ -286,7 +308,7 @@ uv run python -m unittest discover -s tests -v
 uv run python tools/validate_package.py
 uv run python tools/check_public_content.py
 uv build
-uv run python tools/check_public_content.py --archive dist/uvyazka-0.3.0a14.tar.gz --archive dist/uvyazka-0.3.0a14-py3-none-any.whl
+uv run python tools/check_public_content.py --archive dist/uvyazka-0.4.0a1.tar.gz --archive dist/uvyazka-0.4.0a1-py3-none-any.whl
 ```
 
 Фронтенд — каталог `web`: `npm ci`, `npm test`, `npm run build`.

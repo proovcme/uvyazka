@@ -2,6 +2,12 @@ include plugin.json mcp.json server_entry.py
 include AGENTS.md
 include LICENSE NOTICE
 include uv.lock
+recursive-include desktop *.py *.rs *.toml *.lock *.json *.md *.html *.js *.css *.mjs *.ico
+prune desktop/node_modules
+prune desktop/ui-dist
+prune desktop/src-tauri/target
+prune desktop/src-tauri/binaries
+prune desktop/src-tauri/gen
 include tests/fixtures/structure-synthetic.xls tests/fixtures/structure-synthetic.md
 include tests/fixtures/embedding_worker.py
 recursive-include src/uvyazka/_vendor *.txt *.json

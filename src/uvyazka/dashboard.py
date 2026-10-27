@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 import json
 import hmac
+import threading
 
 from .core import Workspace
 
@@ -15,6 +16,9 @@ def make_handler(workspace: Workspace):
     uploads=RvtUploads(workspace)
     from .intake import ProjectIntake
     intake = ProjectIntake(workspace)
+    update_lock = threading.RLock()
+    active_writes = 0
+    maintenance = False
     class Handler(BaseHTTPRequestHandler):
         def send(self, data, content_type="application/json; charset=utf-8", status=200):
             if isinstance(data, (dict, list)):
@@ -22,15 +26,29 @@ def make_handler(workspace: Workspace):
             elif isinstance(data, str):
                 data = data.encode("utf-8")
             self.send_response(status)
-            for key, value in {"Content-Type": content_type, "Content-Length": str(len(data)), "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'self'; frame-ancestors 'none'"}.items():
+            frame="'self' http://tauri.localhost https://tauri.localhost tauri://localhost" if getattr(self.server,'desktop_embed',False) else "'self'" if self.path.startswith('/simulation/cad/') else "'none'"
+            for key, value in {"Content-Type": content_type, "Content-Length": str(len(data)), "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'self'; frame-ancestors "+frame}.items():
                 self.send_header(key, value)
+            from .desktop_http import ORIGINS
+            origin=self.headers.get('Origin')
+            if getattr(self.server,'desktop_embed',False) and self.path.startswith('/api/desktop/') and origin in ORIGINS:
+                self.send_header('Access-Control-Allow-Origin',origin);self.send_header('Vary','Origin')
             self.end_headers(); self.wfile.write(data)
+
+        def do_OPTIONS(self):
+            from .desktop_http import ORIGINS
+            if not getattr(self.server,'desktop_embed',False) or self.headers.get('Host') not in {f'127.0.0.1:{self.server.server_port}',f'localhost:{self.server.server_port}'} or self.headers.get('Origin') not in ORIGINS or self.path!='/api/desktop/backup':return self.send({'error':'Preflight rejected'},status=403)
+            self.send_response(204);self.send_header('Access-Control-Allow-Origin',self.headers['Origin']);self.send_header('Access-Control-Allow-Methods','POST');self.send_header('Access-Control-Allow-Headers','X-Uvyazka-Token');self.end_headers()
 
         def do_GET(self):
             if self.headers.get("Host") not in {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}:
                 return self.send({"error": "Loopback host required"}, status=403)
             request = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(request.query).items()}
             try:
+                from .desktop_http import serve_get as desktop_get
+                if desktop_get(self,workspace,uploads.token,request.path):return
+                from .construction.clash_http import serve_get as clash_get
+                if clash_get(self,workspace,uploads.token,request.path,q):return
                 from .semantic_http import serve_get as semantic_get
                 if semantic_get(self,workspace,request.path,q):return
                 from .intake_http import serve_get as intake_get
@@ -105,6 +123,20 @@ def make_handler(workspace: Workspace):
                 self.send({"error": "Unable to read project: " + str(exc)}, status=500)
 
         def do_POST(self):
+            nonlocal active_writes, maintenance
+            desktop_backup = urlparse(self.path).path == '/api/desktop/backup'
+            with update_lock:
+                if maintenance:
+                    return self.send({'error':'Установка обновления: запись временно остановлена'},status=503)
+                if not desktop_backup: active_writes += 1
+            try:
+                return self._do_POST()
+            finally:
+                if not desktop_backup:
+                    with update_lock: active_writes -= 1
+
+        def _do_POST(self):
+            nonlocal maintenance
             if self.headers.get('Host') not in {f'127.0.0.1:{self.server.server_port}',f'localhost:{self.server.server_port}'}:
                 return self.send({'error':'Loopback host required'},status=403)
             request=urlparse(self.path)
@@ -114,12 +146,31 @@ def make_handler(workspace: Workspace):
             catalogue = request.path == '/api/rvt/catalog'
             structure = request.path.startswith('/api/structure/')
             semantic = request.path=='/api/semantic/build'
-            if request.path!='/api/rvt/upload' and not measurement and not intake_request and not catalogue and not structure and not semantic and not viewer_workspace:
+            review3d = request.path.startswith('/api/review3d/')
+            desktop = request.path=='/api/desktop/backup' and getattr(self.server,'desktop_embed',False)
+            if request.path!='/api/rvt/upload' and not measurement and not intake_request and not catalogue and not structure and not semantic and not viewer_workspace and not review3d and not desktop:
                 return self.send({"error": "Use explicit MCP tools for observations"}, status=405)
             origin=self.headers.get('Origin')
-            if (origin and origin!='http://'+self.headers['Host']) or not hmac.compare_digest(self.headers.get('X-Uvyazka-Token',''),uploads.token):
+            from .desktop_http import ORIGINS
+            if (origin and origin!='http://'+self.headers['Host'] and not (desktop and origin in ORIGINS)) or not hmac.compare_digest(self.headers.get('X-Uvyazka-Token',''),uploads.token):
                 return self.send({'error':'Open the local dashboard before writing'},status=403)
             try:
+                if desktop:
+                    from .desktop_http import backup
+                    with update_lock:
+                        if active_writes:
+                            return self.send({'error':'Дождитесь завершения записи в проект'},status=409)
+                        maintenance = True
+                    try: result = backup(workspace)
+                    except Exception:
+                        with update_lock: maintenance = False
+                        raise
+                    return self.send(result)
+                if review3d:
+                    from .construction.clash_http import serve_post as clash_post
+                    query={k:v[0] for k,v in parse_qs(request.query).items()}
+                    self.connection.settimeout(60)
+                    return clash_post(self,workspace,request.path,query.get('project_id',''),query)
                 if viewer_workspace:
                     from .construction.viewer_workspace_http import serve_post as viewer_post
                     query={k:v[0] for k,v in parse_qs(request.query).items()}

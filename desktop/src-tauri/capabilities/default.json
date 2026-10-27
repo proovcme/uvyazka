@@ -1,0 +1,7 @@
+{
+  "$schema":"../gen/schemas/desktop-schema.json",
+  "identifier":"main-window",
+  "description":"Only the bundled application shell may start its core and update this app. Project iframe receives no native capabilities.",
+  "windows":["main"],
+  "permissions":["core:default","updater:default","process:allow-restart"]
+}

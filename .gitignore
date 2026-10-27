@@ -88,6 +88,9 @@ Thumbs.db
 .uvyazka*/
 *.egg-info/
 **/target/
+desktop/ui-dist/
+desktop/src-tauri/binaries/
+desktop/src-tauri/gen/
 *.exe
 *.dll
 *.pdb

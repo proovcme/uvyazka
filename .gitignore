@@ -81,6 +81,7 @@ __pycache__/
 .pytest_cache/
 node_modules/
 web/public/runtime/
+src/uvyazka/viewer/updates/
 dist/
 build/
 .DS_Store

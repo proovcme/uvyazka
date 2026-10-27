@@ -1,0 +1,11 @@
+{
+  "version": "0.4.0-alpha.1",
+  "notes": "Проверки геометрии, виды и шаблоны, BCF/XLSX и полный локальный комплекс Увязки. Предварительный выпуск.",
+  "pub_date": "2026-10-27T10:54:14.808911+00:00",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUSmJOQjNtZU9ocjdXSVliMTNUcStMU3dESmRnWnVWUmZpWWVRNUYzNFhLdUtiNHNYY0pOdVMzNW8vQU8zWklJZFBvZnArcGovOTBsZ2xxMHJYTGlYMjBoeUR5NUM4eHdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMDk4MTA1CWZpbGU60KPQstGP0LfQutCwXzAuNC4wLWFscGhhLjFfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuNC4wLWFscGhhLjEKUUg2QTFQcGlHazRKS1FMYThISXV4cERaUlF3bVRCT0RXazQvYmdKbVNqVVRuVzhWbjRacGhnRVRTem01R0YrcXorZUVXbWxmd2d4YUpSb0ZTa3ArREE9PQo=",
+      "url": "https://github.com/proovcme/uvyazka/releases/download/v0.4.0-alpha.1/uvyazka_0.4.0-alpha.1_x64-setup.exe"
+    }
+  }
+}

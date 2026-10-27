@@ -26,6 +26,10 @@ def validate():
     server = mcp["mcpServers"]["uvyazka"]
     assert server["type"] == "stdio" and server["command"] == "uv"
     assert "${PLUGIN_ROOT}" in server["args"]
+    assert package["project"]["license"] == "Apache-2.0"
+    assert package["project"]["license-files"] == ["LICENSE", "NOTICE"]
+    assert "Apache License" in (ROOT / "LICENSE").read_text(encoding="utf-8")
+    assert "Third-party" in (ROOT / "NOTICE").read_text(encoding="utf-8")
     assert not package["project"]["dependencies"], "Core must not require a model API or SDK"
     for file in ROOT.joinpath("clients").iterdir():
         if file.suffix == ".json":

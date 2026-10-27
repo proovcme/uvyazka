@@ -2,6 +2,7 @@
 
 [![Проверки](https://github.com/proovcme/uvyazka/actions/workflows/ci.yml/badge.svg)](https://github.com/proovcme/uvyazka/actions/workflows/ci.yml)
 ![Версия: 0.3.0 alpha 13](https://img.shields.io/badge/version-0.3.0--alpha.13-337E86?style=flat-square)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-536971?style=flat-square)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-19323D?style=flat-square)
 ![Локальный MCP, stdio](https://img.shields.io/badge/MCP-local%20stdio-536971?style=flat-square)
 
@@ -246,6 +247,20 @@ GIF показывает демонстрацию IFCCS 0.4; в код Увяз�
 чтения структуры и таблиц: [состав и границы переноса](docs/LES_LIST_REVIEW.md).
 ЛЕС остаётся самостоятельным MCP; варианты его интеграции и RAG-Legion
 описаны в экосистеме и не являются обязательными зависимостями Увязки.
+
+## Лицензия
+
+Собственный код, документация и навыки Увязки распространяются под
+[Apache License 2.0](LICENSE), кроме компонентов с отдельно указанными условиями.
+Лицензия разрешает коммерческое использование и модификацию, содержит явное
+предоставление патентных прав участников и требует сохранять необходимые
+уведомления и отмечать изменения.
+
+Сторонние компоненты, шрифты и демонстрационные материалы сохраняют свои лицензии.
+В частности, отдельное DWG-приложение `integrations/cad-viewer` — GPL-3.0-or-later;
+Apache 2.0 Увязки не меняет его условия или условия опционального PyMuPDF.
+[Уведомления](NOTICE) · [Зависимости и происхождение](docs/DEPENDENCIES.md).
+Лицензия репозитория не распространяется на загружаемые пользователем проекты.
 
 ## Разработка
 

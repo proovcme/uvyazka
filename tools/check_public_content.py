@@ -95,6 +95,8 @@ def check_archive(archive: Path, tracked: set[str]) -> list[str]:
             parts = PurePosixPath(name).parts
             if len(parts) == 2 and parts[0].startswith('uvyazka-') and parts[0].endswith('.dist-info'):
                 generated = parts[1] in WHEEL_METADATA
+            elif len(parts) >= 3 and parts[0].startswith('uvyazka-') and parts[0].endswith('.dist-info') and parts[1] == 'licenses':
+                canonical = '/'.join(parts[2:])
             elif name.startswith('uvyazka/'):
                 canonical = 'src/' + name
             elif '/data/share/uvyazka/' in name:

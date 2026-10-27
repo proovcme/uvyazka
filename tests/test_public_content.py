@@ -45,6 +45,17 @@ class PublicContentTests(unittest.TestCase):
             self.assertEqual(len(issues), 1)
             self.assertIn('private.json', issues[0])
 
+    def test_wheel_license_directory_requires_tracked_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / 'example.whl'
+            with zipfile.ZipFile(archive, 'w') as output:
+                output.writestr('uvyazka-0.dist-info/licenses/LICENSE', 'Apache License')
+                output.writestr('uvyazka-0.dist-info/licenses/NOTICE', 'Uvyazka')
+                output.writestr('uvyazka-0.dist-info/licenses/private.json', '{}')
+            issues = policy.check_archive(archive, {'LICENSE', 'NOTICE'})
+            self.assertEqual(len(issues), 1)
+            self.assertIn('private.json', issues[0])
+
     def test_sdist_cannot_hide_traversal_by_stripping_its_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive = Path(tmp) / 'example.tar.gz'

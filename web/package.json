@@ -1,6 +1,7 @@
 {
   "name": "uvyazka-construction-viewer",
   "private": true,
+  "license": "Apache-2.0",
   "version": "0.3.0-alpha.13",
   "type": "module",
   "scripts": {

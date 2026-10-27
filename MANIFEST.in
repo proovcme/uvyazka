@@ -1,5 +1,6 @@
 include plugin.json mcp.json server_entry.py
 include AGENTS.md
+include LICENSE NOTICE
 include uv.lock
 include tests/fixtures/structure-synthetic.xls tests/fixtures/structure-synthetic.md
 include tests/fixtures/embedding_worker.py

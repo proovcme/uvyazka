@@ -23,6 +23,16 @@ class IntakeHTTPTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.ws=Workspace(self.root/'state')
+        # A released DB lease is visible just before the worker closes its final
+        # connection. Join this fixture's workers before deleting files on Windows.
+        self.workers=[]
+        original_start=ProjectIntake.start
+        def start_and_track(service,*args,**kwargs):
+            worker=original_start(service,*args,**kwargs)
+            self.workers.append(worker)
+            return worker
+        worker_patch=patch.object(ProjectIntake,'start',start_and_track)
+        worker_patch.start();self.addCleanup(worker_patch.stop)
         self.server=ThreadingHTTPServer(('127.0.0.1',0),make_handler(self.ws))
         self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
         self.base='http://127.0.0.1:'+str(self.server.server_port)
@@ -30,6 +40,9 @@ class IntakeHTTPTests(unittest.TestCase):
 
     def tearDown(self):
         self.server.shutdown();self.server.server_close();self.thread.join()
+        for worker in self.workers:
+            worker.join(timeout=15)
+            self.assertFalse(worker.is_alive(),'Intake worker did not terminate before fixture cleanup')
 
     def get(self,path):
         with urlopen(self.base+path,timeout=15) as response:return json.load(response)

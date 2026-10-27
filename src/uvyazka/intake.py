@@ -313,7 +313,9 @@ class ProjectIntake:
     def start(self, intake_id, retry_failed=False):
         if self.get(intake_id)["status"] == "receiving":
             raise ValueError("Finish uploading before processing")
-        threading.Thread(target=self.run, args=(intake_id, retry_failed), daemon=True, name="uvyazka-intake").start()
+        worker = threading.Thread(target=self.run, args=(intake_id, retry_failed), daemon=True, name="uvyazka-intake")
+        worker.start()
+        return worker
 
     def run(self, intake_id, retry_failed=False):
         owner = uuid4().hex

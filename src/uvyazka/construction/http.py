@@ -2,6 +2,7 @@
 import csv
 import io
 import mimetypes
+import os
 from pathlib import Path
 
 from .planning import Planning
@@ -12,6 +13,11 @@ def serve_route(handler, workspace, path, query):
         root = (Path(__file__).resolve().parents[1] / "viewer").resolve()
         relative = path[len("/simulation/"):] or "index.html"
         target = (root / relative).resolve()
+        if relative.startswith('runtime/') and not target.is_file():
+            runtime=Path(os.environ.get('UVYAZKA_BROWSER_RUNTIME') or Path(__file__).resolve().parents[3]/'.uvyazka-build/browser-runtime').resolve()
+            candidate=(runtime/relative[len('runtime/'):]).resolve()
+            if candidate.is_relative_to(runtime) and candidate.is_file() and candidate.suffix.lower() in {'.js','.wasm','.json','.txt','.zip','.whl'}:
+                handler.send(candidate.read_bytes(),mimetypes.guess_type(candidate.name)[0] or 'application/octet-stream');return True
         if not target.is_relative_to(root) or not target.is_file():
             handler.send({"error": "Viewer resource not found"}, status=404)
         else:

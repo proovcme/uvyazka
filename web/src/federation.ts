@@ -2,13 +2,20 @@ import type {ModelPackage, Vec3, BimElement} from './model.ts';
 import {validatePackage} from './model.ts';
 
 export interface SceneMember {instanceId:string; model:ModelPackage; binary:ArrayBuffer; offset:Vec3; rotation:number; visible:boolean}
+export const MAX_SCENE_BYTES=512*1024**2;
+export function federationBudget(members:SceneMember[],maximum=MAX_SCENE_BYTES){
+ let bytes=0,inputs=0,elements=0;
+ for(const member of members){inputs+=member.binary.byteLength;elements+=member.model.elements.length;for(const element of member.model.elements)if(element.mesh){const mesh=element.mesh;bytes+=mesh.vertex_count*12+mesh.index_count*4;if(!Number.isSafeInteger(bytes)||bytes>maximum)throw Error('Сводная геометрия превышает безопасный бюджет памяти. Откройте меньший состав моделей.');}}
+ if(inputs>maximum||elements>2_000_000)throw Error('Состав сцены превышает безопасный бюджет обработки.');return bytes;
+}
 export function placedPoint(p:Vec3, offset:Vec3, rotation:number):Vec3 {
   const a=rotation*Math.PI/180,c=Math.cos(a),s=Math.sin(a);
   return [p[0]*c-p[1]*s+offset[0],p[0]*s+p[1]*c+offset[1],p[2]+offset[2]];
 }
 /** Federate in source world metres, never align the centres of separate files. */
-export async function federate(members:SceneMember[]):Promise<{model:ModelPackage;binary:ArrayBuffer}> {
+export async function federate(members:SceneMember[],progress:(text:string)=>void=()=>{}):Promise<{model:ModelPackage;binary:ArrayBuffer}> {
   if(!members.length)throw Error('Добавьте хотя бы одну модель');
+  federationBudget(members);let prepared=0,copied=0;
   const ids=new Set<string>();
   for(const m of members){
     if(ids.has(m.instanceId)||!m.instanceId||m.model.federation)throw Error('Повторный ID или вложенная сводная модель');
@@ -34,6 +41,7 @@ export async function federate(members:SceneMember[]):Promise<{model:ModelPackag
         // Transform every vertex: rotated AABB corners overestimate the real bounds.
         const vertices=new Float32Array(member.binary,original.mesh!.position_byte_offset,mesh.vertex_count*3);
         for(let i=0;i<vertices.length;i+=3){
+          if(++prepared%65536===0)progress('Проверка размещения: обработано '+prepared+' вершин');
           const point=placedPoint([vertices[i]+source.coordinate_system.render_origin_m[0],vertices[i+1]+source.coordinate_system.render_origin_m[1],vertices[i+2]+source.coordinate_system.render_origin_m[2]],member.offset,member.rotation);
           for(let k=0;k<3;k++){if(!Number.isFinite(point[k]))throw Error('Некорректные координаты геометрии');min[k]=Math.min(min[k],point[k]);max[k]=Math.max(max[k],point[k]);}
         }
@@ -54,7 +62,7 @@ export async function federate(members:SceneMember[]):Promise<{model:ModelPackag
   for(const m of members)for(const original of m.model.elements){
     const e=elements[row++];if(!e.mesh||!original.mesh)continue;
     const input=new Float32Array(m.binary,original.mesh.position_byte_offset,e.mesh.vertex_count*3),output=new Float32Array(binary,e.mesh.position_byte_offset,input.length);
-    for(let i=0;i<input.length;i+=3){const world=placedPoint([input[i]+m.model.coordinate_system.render_origin_m[0],input[i+1]+m.model.coordinate_system.render_origin_m[1],input[i+2]+m.model.coordinate_system.render_origin_m[2]],m.offset,m.rotation);for(let k=0;k<3;k++)output[i+k]=world[k]-origin[k];}
+    for(let i=0;i<input.length;i+=3){if(++copied%65536===0)progress('Сборка сцены: обработано '+copied+' вершин');const world=placedPoint([input[i]+m.model.coordinate_system.render_origin_m[0],input[i+1]+m.model.coordinate_system.render_origin_m[1],input[i+2]+m.model.coordinate_system.render_origin_m[2]],m.offset,m.rotation);for(let k=0;k<3;k++)output[i+k]=world[k]-origin[k];}
     new Uint32Array(binary,e.mesh.index_byte_offset,e.mesh.index_count).set(new Uint32Array(m.binary,original.mesh.index_byte_offset,e.mesh.index_count));
   }
   const model:ModelPackage={contract:'ModelPackage',contract_version:'0.1.0',importer_version:'browser-federation-1',model_id:hash,

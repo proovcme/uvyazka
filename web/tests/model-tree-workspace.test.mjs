@@ -6,9 +6,9 @@ import {fileURLToPath} from 'node:url';
 
 test('workspace wires simple/parameter search, hidden rows, selection, reset and reload to the renderer',async t=>{
  const win=new Window({url:'http://localhost/simulation/?project=test'});
- t.after(()=>win.happyDOM.close());
+ t.after(()=>{win.dispatchEvent(new win.Event('pagehide'));win.happyDOM.close();});
  for(const name of ['document','location','history','Option','CustomEvent','Event','localStorage'])Object.defineProperty(globalThis,name,{value:win[name],writable:true,configurable:true});
- globalThis.window=win;globalThis.matchMedia=win.matchMedia.bind(win);globalThis.requestAnimationFrame=win.requestAnimationFrame.bind(win);globalThis.cancelAnimationFrame=win.cancelAnimationFrame.bind(win);
+ globalThis.window=win;globalThis.addEventListener=win.addEventListener.bind(win);globalThis.matchMedia=win.matchMedia.bind(win);globalThis.requestAnimationFrame=win.requestAnimationFrame.bind(win);globalThis.cancelAnimationFrame=win.cancelAnimationFrame.bind(win);
  document.body.innerHTML='<div id="app"></div>';
  globalThis.Option=function(text,value){const option=document.createElement('option');option.textContent=text;option.value=value;return option;};
  const make=(id,name,power,storey)=>({id,step_id:Number(id),name,role:'element',storey_id:storey,class:'IfcPump',materials:[],global_id:'gid-'+id,property_sets:{Technical:{Power:power}},quantity_sets:{},mesh:{},source:{}});

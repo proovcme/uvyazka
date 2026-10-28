@@ -2,6 +2,8 @@ import type {SpecDefinition} from './model-specification';
 import type {ModelPackage} from './model';
 import type {SceneMember} from './federation';
 import type {ParameterFilter} from './parameter-search';
+import type {RvtDocument} from './rvt-document';
+import type {ReviewObject} from './review-model';
 export interface ViewerState {
  specifications?:SpecDefinition[];
  version:1;model_id:string;source_sha256:string;hidden:string[];selection:string[];
@@ -10,7 +12,7 @@ export interface ViewerState {
  measurements:unknown[];sets:SelectionSet[];
 }
 export interface SelectionSet {id:string;name:string;model_id:string;source_sha256:string;kind:'explicit'|'rule';ids:string[];filters?:ViewerState['filters'];created_at:string}
-export interface SavedScene {id:string;project_id:string;name:string;created_at:string;state:ViewerState;model:ModelPackage;binary:ArrayBuffer;members:SceneMember[]}
+export interface SavedScene {id:string;project_id:string;name:string;created_at:string;state:ViewerState;model:ModelPackage;binary:ArrayBuffer;members:SceneMember[];documents?:RvtDocument[];review?:ReviewObject[];source_changes?:unknown[]}
 function db():Promise<IDBDatabase>{return new Promise((resolve,reject)=>{const r=indexedDB.open('uvyazka-viewer-workspaces',1);r.onupgradeneeded=()=>r.result.createObjectStore('scenes',{keyPath:'id'});r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
 export async function sceneStore(action:'get'|'put'|'delete'|'list',value:SavedScene|string):Promise<SavedScene|SavedScene[]|undefined>{const database=await db();try{return await new Promise((resolve,reject)=>{const tx=database.transaction('scenes',action==='put'||action==='delete'?'readwrite':'readonly'),store=tx.objectStore('scenes');const request=action==='put'?store.put(value):action==='delete'?store.delete(value as string):action==='get'?store.get(value as string):store.getAll();let result:unknown;request.onsuccess=()=>{result=request.result;};tx.oncomplete=()=>resolve(result as SavedScene|SavedScene[]|undefined);tx.onabort=()=>reject(tx.error??request.error);tx.onerror=()=>reject(tx.error??request.error);});}finally{database.close();}}
 export async function sharedWorkspace(project:string,operation:'get'|'save',state?:ViewerState,expectedRevision?:number){

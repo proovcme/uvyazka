@@ -142,7 +142,8 @@ class Planning:
 
     @staticmethod
     def model_summary(m):
-        return {"project_id": m["project_id"], "model_id": m["model_id"], "name": m["source"]["filename"], "schema": m["source"]["schema"], "statistics": m["statistics"], "geometry_kind": "approximate_boxes" if m["source"].get("kind") == "derived" else "ifc_geometry"}
+        kind="approximate_boxes" if m["source"].get("kind") == "derived" else {"nwd":"navis_geometry_subset","nwc":"navis_geometry_subset","rvt":"revit_geometry_subset","federation":"federated_geometry"}.get(m['source'].get('format'),'ifc_geometry')
+        return {"project_id": m["project_id"], "model_id": m["model_id"], "name": m["source"]["filename"], "schema": m["source"]["schema"], "statistics": m["statistics"], "geometry_kind":kind}
 
     @staticmethod
     def run_summary(r):

@@ -1,0 +1,2 @@
+import {packWorkspace,unpackWorkspace} from './workspace-archive';
+self.onmessage=async({data})=>{try{if(data.kind==='pack'){const bytes=await packWorkspace(data.scene);self.postMessage({bytes},{transfer:[bytes.buffer]});}else{const scene=await unpackWorkspace(new Uint8Array(data.bytes));self.postMessage({scene});}}catch(error){self.postMessage({error:error instanceof Error?error.message:String(error)});}};

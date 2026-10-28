@@ -41,6 +41,9 @@ def serve_post(handler,workspace,path,project,q):
     try:
         if key=='save':handler.send(store.save(project,body['kind'],body['id'],body['payload'],body['expected_revision'],body['request_id']))
         elif key=='scene-start':handler.send(store.begin_scene(project,body['model'],body['binary_sha256']))
+        elif key=='register-model':
+            from .viewer_models import register_viewer_model
+            handler.send(register_viewer_model(workspace,project,body['scene_id'],body['request_id']))
         elif key=='run':handler.send(ClashJobs(workspace).start(project,body['scene_id'],body['rule'],body['request_id']))
         elif key=='cancel':handler.send(ClashJobs(workspace).cancel(project,body['job_id']))
         elif key=='compare':handler.send(compare_runs(store.get(project,'clash_run',body['before_id'])['payload'],store.get(project,'clash_run',body['after_id'])['payload'],body.get('lineage_confirmed',False)))

@@ -31,3 +31,6 @@ test('one thrown parser error does not cancel the rest; CAD cannot silently repl
 test('NWC policy and observed stages use the Navis decoder, never IFC',()=>{
  assert.equal(filePolicy('source.NWC',128).error,undefined);assert.match(filePolicy('source.nwc',513*1024**2).error!,/512 MiB/);assert.deepEqual(stagesFor('source.NWC'),stagesFor('source.nwd'));assert.ok(!stagesFor('source.nwc').includes('IFC-движок'));
 });
+test('skipped current files and duplicates do not stop the queue or count as newly displayed sources',async()=>{
+ let calls=0;const final=await importBatch(files,async()=>++calls===1?result(false,'skipped'):result(true),{append:false,signal:new AbortController().signal,update:()=>{}});assert.equal(calls,3);assert.equal(final.cancelled,false);assert.match(batchSummary(final),/Добавлено в сцену: 2 из 3/);assert.match(batchSummary(final),/Пропущено: 1/);
+});

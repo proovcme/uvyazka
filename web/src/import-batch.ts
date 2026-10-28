@@ -1,7 +1,8 @@
 import type {RunState} from './import-journal';
-export type FileImportResult={state:Exclude<RunState,'running'>;included:boolean;message:string};
+import type {CoverageItem} from './model-coverage';
+export type FileImportResult={state:Exclude<RunState,'running'>|'skipped';included:boolean;message:string;coverage?:CoverageItem[]};
 export type BatchItem={name:string;size:number};
-export type BatchRow=BatchItem & {state:'waiting'|'running'|FileImportResult['state'];included:boolean;message:string};
+export type BatchRow=BatchItem & {state:'waiting'|'running'|FileImportResult['state'];included:boolean;message:string;coverage?:CoverageItem[]};
 export type BatchSnapshot={rows:BatchRow[];finished:boolean;cancelled:boolean;started_at_ms:number;ended_at_ms:number|null};
 /** One decoder at a time; only a displayed model advances replacement to append. */
 export async function importBatch<T extends BatchItem>(files:readonly T[],open:(file:T,append:boolean)=>Promise<FileImportResult>,options:{append:boolean;signal:AbortSignal;update:(snapshot:BatchSnapshot)=>void}):Promise<BatchSnapshot>{
@@ -14,7 +15,7 @@ export async function importBatch<T extends BatchItem>(files:readonly T[],open:(
   const row=rows[i];row.state='running';notify();
   try{
    if(!/\.(nwc|nwd|ifc|rvt)$/i.test(row.name))throw Error('В одну 3D-сцену можно добавить NWC, NWD, IFC и RVT. Чертежи открываются отдельно.');
-   const result=await open(files[i],options.append||added);row.state=result.state;row.included=result.included;row.message=result.message;added ||= result.included;
+   const result=await open(files[i],options.append||added);row.state=result.state;row.included=result.included;row.message=result.message;row.coverage=result.coverage;added ||= result.included;
   }catch(error){row.state='failed';row.message=error instanceof Error?error.message:String(error);}
   // A cancelled current file stops the queue; ordinary errors do not.
   if(row.state==='cancelled'||row.state==='interrupted')break;
@@ -25,5 +26,5 @@ export async function importBatch<T extends BatchItem>(files:readonly T[],open:(
 }
 export function batchSummary(batch:BatchSnapshot):string{
  const count=(state:BatchRow['state'])=>batch.rows.filter(row=>row.state===state).length;
- return `Добавлено в сцену: ${batch.rows.filter(row=>row.included).length} из ${batch.rows.length}. Частично прочитано: ${count('partial')}. Ошибок: ${count('failed')}. Отменено: ${count('cancelled')+count('interrupted')}.`;
+    return `Добавлено в сцену: ${batch.rows.filter(row=>row.included).length} из ${batch.rows.length}. Частично прочитано: ${count('partial')}. Ошибок: ${count('failed')}. Пропущено: ${count('skipped')}. Отменено: ${count('cancelled')+count('interrupted')}.`;
 }

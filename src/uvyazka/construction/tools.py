@@ -102,6 +102,12 @@ def register_tools(mcp, workspace):
         return ViewerWorkspace(workspace).get(project_id,revision)
 
     @mcp.tool(annotations=write)
+    def register_viewer_model(project_id: str, scene_id: str, request_id: str) -> dict:
+        """Register an uploaded, checksum-verified viewer scene in the same project model registry used by get_model_elements and get_model_network. Source files are not reopened, submitted metadata remains unreviewed, and existing packages cannot be overwritten."""
+        from .viewer_models import register_viewer_model as register
+        return register(workspace,project_id,scene_id,request_id)
+
+    @mcp.tool(annotations=write)
     def save_viewer_workspace(project_id: str, state: dict, expected_revision: int, request_id: str) -> dict:
         """Save presentation state read with get_viewer_workspace. Preserve all fields; schema version 1. Requires matching expected_revision; retries with the same request_id are idempotent. This never approves observations or changes engineering facts."""
         from .viewer_workspace import ViewerWorkspace

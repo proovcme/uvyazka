@@ -48,7 +48,7 @@ def validate_rule(rule):
 def selected(e, selector, model):
     member=next((m for m in model.get('federation',{}).get('members',[]) if m.get('instance_id')==e.get('source_instance_id')), {})
     fmt=member.get('source_format') or model['source'].get('format')
-    if fmt=='nwd':category=['nwd',e.get('class','')]
+    if fmt in {'nwd','nwc'}:category=['nwd',(e.get('nwd') or {}).get('category_name') or e.get('class','')]
     elif fmt=='rvt' or e.get('revit',{}).get('id_basis')=='rvt_converter_tag':
         raw=e.get('property_sets',{}).get('Other',{}).get('Category');category=['rvt',raw.strip() if isinstance(raw,str) and raw.strip() else 'Категория Revit не прочитана']
     else:category=['ifc',e.get('class','')]

@@ -8,7 +8,16 @@ import {workspacePanel} from './workspace-panel';
 import {measurementKey} from './spatial-measurements';
 import type {ViewerState,SavedScene} from './viewer-workspace';
 import {initTheme} from './theme';
-import {federate} from './federation';
+import {prepareScene} from './federation-client';
+import {validatePackage} from './model';
+import {levelSummary,renderCoverage} from './model-coverage';
+import {autoRecovery,listRecovery,readRecovery} from './workspace-autosave';
+import {ReviewRepository} from './review-client';
+import {SourceAlreadyPresent} from './import-errors';
+import {validateViewerState} from './viewer-state-validation';
+import {sceneStore} from './viewer-workspace';
+import {inspectRevision} from './source-revision-client';
+import {remapRevisionState} from './source-revision';
 import {systemMembers,systemCoverage,elementSystems} from './systems';
 import type {SceneMember} from './federation';
 import {spatialPanel} from './spatial-panel';
@@ -51,7 +60,8 @@ let workspaceMode: "view"|"simulate" = "view", cadFrame:HTMLIFrameElement|null=n
 let project = new URL(location.href).searchParams.get('project') || '';
 let measurementProject=project||'browser-local';
 let sceneMembers:SceneMember[]=[],loadedBinary:ArrayBuffer|null=null;
-let sceneVersion=0,sceneCompositionOpen=false;
+let sceneVersion=0,sceneCompositionOpen=false,scenePreparation:AbortController|null=null,revisionPreparation:AbortController|null=null;
+let sourceChanges:unknown[]=[];
 let requestedModel = new URL(location.href).searchParams.get('model') || '';
 let requestedRun = new URL(location.href).searchParams.get('run') || '';
 let viewer: Viewer | null = null, model: ModelPackage | null = null, run: RunPackage | null = null, clock: PlaybackClock | null = null, frame = 0, last = 0, generation = 0, modelGeneration = 0;
@@ -119,10 +129,10 @@ function selectElement(id: string | null,additive=false) {
   if (!e) { renderState(); return; }
   el('inspector-title').textContent = e.name;
   const identity=elementIdentity(e),systems=elementSystems(model,e.id);
-  const renderSets=(sets:Record<string,Record<string,unknown>>)=>Object.entries(sets).map(([name,values])=>`<details class="property-set" open><summary>${esc(name)}</summary><dl>${Object.entries(values).map(([key,value])=>`<dt>${esc(key)}</dt><dd>${copyValue(value)}</dd>`).join('')}</dl></details>`).join('');
+  const renderSets=(sets:Record<string,Record<string,unknown>>)=>Object.entries(sets).map(([name,values])=>`<details class="property-set" ${e.nwd&&name==='NWD fragment'?'':'open'}><summary>${esc(e.nwd&&name==='NWD fragment'?'Служебные данные чтения Navisworks':name)}</summary><dl>${Object.entries(values).map(([key,value])=>`<dt>${esc(key)}</dt><dd>${copyValue(value)}</dd>`).join('')}</dl></details>`).join('');
   const card={...e,revit_identity:identity,systems,model_source:model?.source};
   el('inspector').innerHTML = `<span class="eyebrow">${esc(e.class)}</span><button class="copy-card" data-copy="${esc(JSON.stringify(card,null,2))}">Копировать все свойства</button><dl><dt>Revit ElementId</dt><dd>${identity.element_id?copyValue(identity.element_id):'Не прочитан'}</dd><dt>Revit UniqueId</dt><dd>${identity.unique_id?copyValue(identity.unique_id):'Не прочитан'}</dd><dt>IFC / ID сцены</dt><dd>${copyValue(e.id)}</dd><dt>Этаж</dt><dd>${copyValue(model?.storeys.find(s=>s.id===e.storey_id)?.name||'Не прочитан')}</dd><dt>Материалы</dt><dd>${copyValue(e.materials.join(', ')||'Не прочитаны')}</dd></dl><p class="identity-basis">${esc(identity.basis)}</p>${renderSets(e.quantity_sets)}${renderSets(e.property_sets)}<details><summary>Идентификаторы и источник</summary><dl><dt>IFC GlobalId</dt><dd>${e.global_id?copyValue(e.global_id):'Не прочитан'}</dd><dt>Исходный Tag</dt><dd>${e.tag?copyValue(e.tag):'Не прочитан'}</dd></dl><pre>${esc(JSON.stringify(e.source,null,2))}</pre></details>`;
-  el('inspector').innerHTML+=`<details open><summary>Системы: ${systems.length}</summary>${systems.map(s=>`<p>${esc(s.name||s.class)} · #${esc(s.id)}</p>`).join('')||'<p>Принадлежность к системе не прочитана.</p>'}<p>Членство не подтверждает физическое подключение.</p></details>`;
+  el('inspector').innerHTML+=`<details ${systems.length?'open':''}><summary>${systems.length?'Прочитанных систем: '+systems.length:'Системы не прочитаны'}</summary>${systems.map(s=>`<p>${esc(s.name||s.class)} · #${esc(s.id)}</p>`).join('')||'<p>Принадлежность к системе не прочитана.</p>'}<p>Членство не подтверждает физическое подключение.</p></details>`;
 }
 try { viewer = new Viewer(el('canvas'), selectElement); } catch(e) { error('3D недоступно; график и расчёты остаются доступны. ' + String(e)); }
 const spatial=spatialPanel(viewer,()=>model,()=>measurementProject,error,()=>[...selection],()=>loadedBinary);
@@ -134,15 +144,24 @@ function updateSelection(){el('selection-count').textContent='Выбрано '+s
 function rememberVisibility(){visibilityHistory.push({hidden:visibility.snapshot(),apply3d:el<HTMLInputElement>('visibility-filter').checked,filters:model&&loadedBinary?captureWorkspace().state.filters:undefined});if(visibilityHistory.length>30)visibilityHistory.shift();el<HTMLButtonElement>('undo-visibility').disabled=false;}
 el('undo-visibility').onclick=()=>{const previous=visibilityHistory.pop();if(!previous)return;visibility.restore(previous.hidden);if(previous.filters)restoreFilters(previous.filters);el<HTMLInputElement>('visibility-filter').checked=previous.apply3d;syncMemberVisibility();applySceneVisibility();renderMembers();el<HTMLButtonElement>('undo-visibility').disabled=!visibilityHistory.length;};
 const savedWorkspace=workspacePanel({project:()=>measurementProject,capture:captureWorkspace,restore:restoreWorkspace,apply:applyWorkspaceState,matches:()=>treeItems.map(e=>e.id),selection:()=>[...selection],show:isolateElements,highlight:ids=>{networkHighlights=new Set(ids);refreshHighlights();},error,shared:!DEMO});
+const saveStatus=document.createElement('button');saveStatus.className='workspace-save-status';saveStatus.textContent='Работа в браузере';saveStatus.onclick=()=>el('open-workspace').click();document.querySelector('.status-bar')!.append(saveStatus);
+const recovery=autoRecovery({project:()=>measurementProject,capture:captureWorkspace,status:(text,dirty)=>{saveStatus.textContent=dirty?'Не сохранено':'Сохранено';saveStatus.title=text;saveStatus.dataset.dirty=String(dirty);}});
+let initialLoad:Promise<void>=Promise.resolve();
+const recoveryBanner=document.createElement('section');recoveryBanner.className='recovery-banner';recoveryBanner.hidden=true;document.querySelector('.app-header')!.after(recoveryBanner);
+void listRecovery(measurementProject).then(rows=>{const row=rows[0];if(!row)return;const text=document.createElement('span');text.textContent='Сохранилась работа: '+row.filename;const resume=document.createElement('button');resume.textContent='Восстановить последнюю работу';resume.onclick=async()=>{resume.disabled=true;try{await initialLoad;const target=measurementProject,scene=await readRecovery(target,row.id);if(!scene||target!==measurementProject)throw Error('Автосохранение выбранного проекта недоступно');await restoreWorkspace(scene);recoveryBanner.hidden=true;}catch(reason){error(reason);}finally{resume.disabled=false;}};const close=document.createElement('button');close.textContent='Позже';close.onclick=()=>recoveryBanner.hidden=true;recoveryBanner.replaceChildren(text,resume,close);recoveryBanner.hidden=false;}).catch(()=>{});
+for(const name of ['input','change','click','pointerup','keyup','wheel'])document.addEventListener(name,event=>{const target=event.target as HTMLElement;if(target?.closest?.('#conversion-dialog,.import-journal'))return;recovery.dirty();},{passive:true});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')void recovery.flush();});
+window.addEventListener('beforeunload',event=>{if(recovery.hasPending()){event.preventDefault();event.returnValue=true;}});window.addEventListener('pagehide',()=>recovery.dispose());
 el('workspace-settings').onclick=()=>{el<HTMLDialogElement>('file-dialog').close();el('open-workspace').click();};
 function captureWorkspace():Omit<SavedScene,'id'|'name'|'created_at'|'project_id'>{
  if(cadFrame)throw Error('Сейчас открыт DWG / DXF. Сохранённые виды и проверки сеток доступны для RVT / IFC / NWD.');
  if(!model||!viewer||!loadedBinary)throw Error('Сначала откройте модель');
  const measurements=JSON.parse(localStorage.getItem(measurementKey(measurementProject))??'[]');
  const state:ViewerState={version:1,model_id:model.model_id,source_sha256:model.source.sha256,hidden:visibility.snapshot(),selection:[...selection],filters:{query:el<HTMLInputElement>('element-search').value,levels:[...levelFacet.selected()],categories:[...categoryFacet.selected()],system:el<HTMLSelectElement>('system-filter').value,parameters:[...parameterFilters,parameterDraft()].filter(f=>f.name.trim()),combine:el<HTMLSelectElement>('parameter-combine').value as 'all'|'any',apply3d:el<HTMLInputElement>('visibility-filter').checked,grouping:el<HTMLSelectElement>('tree-grouping').value as 'categories'|'levels'},view:viewer.captureView(),measurements,sets:savedWorkspace.sets(),specifications:specifications.definitions()};
- return {state,model,binary:loadedBinary,members:sceneMembers};
+ return {state,model,binary:loadedBinary,members:sceneMembers,documents:[...catalogues.values()],source_changes:sourceChanges};
 }
 function applyWorkspaceState(state:ViewerState){
+ if(model)validateViewerState(state,model);
  if(state.version!==1||!model||state.model_id!==model.model_id||state.source_sha256!==model.source.sha256)throw Error('Рабочее место относится к другому пакету модели. Сначала откройте соответствующий снимок / модель.');
  const ids=new Set(model.elements.map(e=>e.id));if([...state.hidden,...state.selection].some(id=>!ids.has(id)))throw Error('В рабочем месте есть элементы, не найденные в этой модели');
  viewer?.restoreView(state.view);visibility.restore(state.hidden);selection.clear();for(const id of state.selection)selection.add(id);
@@ -152,7 +171,11 @@ function applyWorkspaceState(state:ViewerState){
 }
 function restoreFilters(f:ViewerState['filters']){el<HTMLInputElement>('element-search').value=f.query;levelFacet.restore(f.levels);categoryFacet.restore(f.categories);el<HTMLSelectElement>('system-filter').value=f.system;parameterFilters=f.parameters;el<HTMLInputElement>('parameter-name').value='';el<HTMLInputElement>('parameter-value').value='';el<HTMLSelectElement>('parameter-combine').value=f.combine;el<HTMLInputElement>('visibility-filter').checked=f.apply3d;el<HTMLSelectElement>('tree-grouping').value=f.grouping;renderParameterFilters();}
 async function restoreWorkspace(scene:SavedScene){
- if(scene.project_id!==measurementProject)throw Error('Снимок принадлежит другому проекту');browser?.stop('Открыто сохранённое рабочее место.');await loadRun('');setMode('view');closeCad();sceneMembers=scene.members;browserModel=scene.model;browserBinary=scene.binary;browserRun=null;el<HTMLSelectElement>('models').replaceChildren(new Option(scene.model.source.filename,scene.model.model_id));await loadModel(scene.model.model_id);applyWorkspaceState(scene.state);
+ validateViewerState(scene.state,scene.model);
+ if(scene.project_id!==measurementProject)throw Error('Снимок принадлежит другому проекту');browser?.stop('Открыто сохранённое рабочее место.');
+ const members=scene.members.length?scene.members:[{instanceId:scene.model.model_id,model:scene.model,binary:scene.binary,offset:[0,0,0] as [number,number,number],rotation:0,visible:true}];
+ await presentMembers(members,()=>commitBrowserContext(false),scene);sourceChanges=scene.source_changes??[];for(const document of scene.documents??[])if(document.source?.sha256)acceptDocument(document);applyWorkspaceState(scene.state);recovery.dirty();
+ if(!DEMO){const target=project,repo=new ReviewRepository(true,()=>target);for(const item of [...members,{model:scene.model,binary:scene.binary}])await repo.registerModel(item.model,item.binary,text=>saveStatus.title=text,()=>target!==project);for(const document of scene.documents??[])await saveProjectCatalog(target,document);}
 }
 
 el('canvas').addEventListener('viewer-error', ((e: CustomEvent<string>) => error(e.detail)) as EventListener);
@@ -162,7 +185,7 @@ async function loadModel(id: string) {
   if (!id) { model = null;engineering.reset();updateSelection();loadedBinary=null;visibility.reset();visibilityModelId='';el('file-title').textContent='Модель не выбрана'; el('no-model').hidden = false; el('geometry-kind').textContent = 'Без геометрии'; viewer?.show(new Set<string>());renderModelTree();renderState();if(!DEMO){const target=project;void projectCatalogs(target).then(async page=>{const row=page.items.find(r=>['all','views','schedules','catalog'].includes(r.profile));if(!row)return;const data=await loadCatalogSnapshot(target,row.extraction_id);if(target===project&&token===modelGeneration&&!model)acceptDocument(data);}).catch(e=>error('Каталог базы недоступен: '+String(e)));}return; }
   const [pkg, binary] = browserModel?.model_id===id&&browserBinary ? [browserModel,browserBinary] : await Promise.all([api<ModelPackage>('model?model_id=' + encodeURIComponent(id)), fetch(path('geometry.bin?model_id=' + encodeURIComponent(id))).then(async r => {if(!r.ok) throw Error('Не удалось загрузить геометрию');return r.arrayBuffer();})]);
   if (token !== modelGeneration) return;
-  model = pkg;engineering.reset();updateSelection();loadedBinary=binary;if(visibilityModelId!==pkg.model_id){visibility.reset();visibilityModelId=pkg.model_id;visibility.set(pkg.elements.filter(e=>!sceneVisible(e.source_instance_id)).map(e=>e.id),false);} el("workspace-status").textContent=`${onlyNavisSources(pkg)?(pkg.nwd?.logical_nodes??0)+' узлов · '+(pkg.nwd?.fragments??0)+' фрагментов '+(isNavisFormat(pkg.source.format)?pkg.source.format!.toUpperCase():'Navisworks'):pkg.statistics.physical_elements+' элементов'} · ${pkg.storeys.length} уровней${pkg.source.schema==='SyntheticDemo'?' · Учебная модель':''}`; el("file-title").textContent=pkg.source.filename; renderModelTree(); viewer?.load(pkg,binary); viewer?.setSourceColors(pkg.source.schema!=='SyntheticDemo'); document.dispatchEvent(new Event('model-data-changed')); applySceneVisibility(); el('no-model').hidden = true;void restoreCatalogues(pkg,token);
+  model = pkg;engineering.reset();updateSelection();loadedBinary=binary;if(visibilityModelId!==pkg.model_id){visibility.reset();visibilityModelId=pkg.model_id;visibility.set(pkg.elements.filter(e=>!sceneVisible(e.source_instance_id)).map(e=>e.id),false);} el("workspace-status").textContent=`${onlyNavisSources(pkg)?(pkg.nwd?.logical_nodes??0)+' узлов · '+(pkg.nwd?.fragments??0)+' фрагментов '+(isNavisFormat(pkg.source.format)?pkg.source.format!.toUpperCase():'Navisworks'):pkg.statistics.physical_elements+' элементов'} · ${pkg.storeys.length?pkg.storeys.length+' уровней':'Уровни не прочитаны'}${pkg.source.schema==='SyntheticDemo'?' · Учебная модель':''}`; el("file-title").textContent=pkg.source.filename; renderModelTree(); viewer?.load(pkg,binary); viewer?.setSourceColors(pkg.source.schema!=='SyntheticDemo'); document.dispatchEvent(new Event('model-data-changed')); applySceneVisibility(); el('no-model').hidden = true;void restoreCatalogues(pkg,token);
   el('geometry-kind').textContent = pkg.source.schema === 'SyntheticDemo' ? 'Синтетическая сводная модель · АР + ОВ' : pkg.source.schema === 'DocumentSpatialModel' ? 'Условная геометрия по документам' : pkg.federation ? 'Сводная геометрия · совмещение требует проверки' : pkg.source.format==='rvt' ? 'RVT → IFC · экспериментальная геометрия' : isNavisFormat(pkg.source.format)?pkg.source.format!.toUpperCase()+' · дерево, свойства и геометрия · '+(pkg.source.calibrations?.every(c=>c.source_units_decoded)?'единицы из файла':'единицы с допущениями'):'Геометрия IFC'; renderState();
 }
 async function loadRun(id: string) {
@@ -190,7 +213,8 @@ function renderState() {
     viewer?.setSite(null);viewer?.setConstruction(null);el('resources').innerHTML='';
     if(selectedId)return;
     el('inspector-title').textContent=cadFrame?'Чертёж':'Свойства модели';
-    el('inspector').innerHTML=cadFrame?'<p>DWG / DXF: просмотр чертежа, масштабирование и слои.</p><p>Для строительной симуляции нужна модель с элементами и объёмами. Чертёж сам по себе их не подтверждает.</p>':model?`<p><strong>${esc(model.source.filename)}</strong></p><dl><dt>${onlyNavisSources(model)?'Фрагментов / с геометрией':'Физических элементов / с геометрией'}</dt><dd>${onlyNavisSources(model)?(model.nwd?.fragments??0):model.statistics.physical_elements} / ${model.statistics.meshes}</dd><dt>Уровней</dt><dd>${model.storeys.length}</dd><dt>Источник</dt><dd>${esc(model.source.format==='rvt'?'RVT → '+model.source.schema:model.source.schema)}</dd></dl><p>Выберите элемент на модели или в структуре, чтобы увидеть свойства и количества.</p>`:'<p>Откройте DWG, DXF, RVT, IFC, NWD или NWC.</p>';
+    el('inspector').innerHTML=cadFrame?'<p>DWG / DXF: просмотр чертежа, масштабирование и слои.</p><p>Для строительной симуляции нужна модель с элементами и объёмами. Чертёж сам по себе их не подтверждает.</p>':model?`<p><strong>${esc(model.source.filename)}</strong></p><dl><dt>${onlyNavisSources(model)?'Фрагментов / с геометрией':'Физических элементов / с геометрией'}</dt><dd>${onlyNavisSources(model)?(model.nwd?.fragments??0):model.statistics.physical_elements} / ${model.statistics.meshes}</dd><dt>Уровней</dt><dd>${levelSummary(model)}</dd><dt>Источник</dt><dd>${esc(model.source.format==='rvt'?'RVT → '+model.source.schema:model.source.schema)}</dd></dl><p>Выберите элемент на модели или в структуре, чтобы увидеть свойства и количества.</p>`:'<p>Откройте DWG, DXF, RVT, IFC, NWD или NWC.</p>';
+    if(model){const coverage=document.createElement('details');const title=document.createElement('summary');title.textContent='Что удалось прочитать';coverage.append(title);const body=document.createElement('div');coverage.append(body);renderCoverage(body,model);el('inspector').append(coverage);}
     return;
   }
   if(!selectedId)el('inspector-title').textContent = 'Ход строительства';
@@ -296,20 +320,34 @@ function applySceneVisibility(){
   viewer?.show(new Set((model?.elements??[]).filter(e=>e.role==='element'&&visibility.visible(e.id)&&(!filtered||filtered.has(e.id))).map(e=>e.id)));
   refreshHighlights();
 }
-async function presentMembers(members:SceneMember[]){
+async function presentMembers(members:SceneMember[],commitContext?:()=>void,expected?:SavedScene){
+  scenePreparation?.abort();const controller=new AbortController();scenePreparation=controller;
   const version=++sceneVersion;
   if(!members.length){sceneMembers=[];browserModel=null;browserBinary=null;browserRun=null;await loadRun('');await loadModel('');renderMembers();document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:null}));return;}
   // A single untransformed member keeps its original IDs for existing schedules.
   const only=members[0],single=members.length===1&&only.offset.every(n=>n===0)&&only.rotation===0;
-  const result=single?{model:only.model,binary:only.binary}:await federate(members);if(version!==sceneVersion)return;
-  sceneMembers=members;browserModel=result.model;browserBinary=result.binary;browserRun=null;
-  await loadRun('');el<HTMLSelectElement>('runs').innerHTML='<option>Сценарий не рассчитан</option>';
-  el<HTMLSelectElement>('models').innerHTML=`<option value="${esc(result.model.model_id)}">${esc(result.model.source.filename)}</option>`;
-  await loadModel(result.model.model_id);viewer?.setSourceColors(members.length>1);applySceneVisibility();
+  let result:{model:ModelPackage;binary:ArrayBuffer};
+  try{result=single?{model:only.model,binary:only.binary}:await prepareScene(members,{signal:controller.signal,progress:text=>browser?.sceneProgress(text)});validatePackage(result.model,result.binary);}finally{if(scenePreparation===controller)scenePreparation=null;}
+  if(version!==sceneVersion||controller.signal.aborted)throw Error('Подготовка сцены отменена.');
+  if(expected){
+    if(result.model.model_id!==expected.model.model_id||result.model.source.sha256!==expected.model.source.sha256)throw Error('Состав проекта не соответствует сохранённой сцене. Текущая сцена сохранена.');
+    const hash=async(value:ArrayBuffer)=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',value))].join(',');if(await hash(result.binary)!==await hash(expected.binary))throw Error('Геометрия проекта не соответствует его составу. Текущая сцена сохранена.');validateViewerState(expected.state,result.model);
+  }
+  const previous=model&&loadedBinary&&viewer&&!cadFrame?captureWorkspace():null,oldProject=project,oldCatalogues=new Map(catalogues);
+  try{
+    commitContext?.();sceneMembers=members;browserModel=result.model;browserBinary=result.binary;browserRun=null;
+    await loadRun('');el<HTMLSelectElement>('runs').innerHTML='<option>Сценарий не рассчитан</option>';
+    el<HTMLSelectElement>('models').replaceChildren(new Option(result.model.source.filename,result.model.model_id));
+    await loadModel(result.model.model_id);viewer?.setSourceColors(members.length>1);applySceneVisibility();recoveryBanner.hidden=true;recovery.dirty();
+  }catch(error){
+    if(previous){project=oldProject;catalogueProject=oldProject;catalogues.clear();for(const [key,value]of oldCatalogues)catalogues.set(key,value);sourceChanges=previous.source_changes??[];sceneMembers=previous.members;browserModel=previous.model;browserBinary=previous.binary;await loadModel(previous.model.model_id);applyWorkspaceState(previous.state);}
+    throw error;
+  }
 }
 function renderMembers(){
-  const host=el('scene-members');host.replaceChildren();if(!DEMO)return;
+  const host=el('scene-members');host.replaceChildren();
   const add=document.createElement('button');add.textContent='+ Добавить модель';add.className='add-scene-model';add.onclick=()=>{el<HTMLInputElement>('browser-append').checked=true;el<HTMLInputElement>('browser-file').click();};host.append(add);
+  const folder=document.createElement('button');folder.textContent='Папка моделей';folder.className='add-scene-folder';folder.onclick=()=>{el<HTMLInputElement>('browser-append').checked=true;el<HTMLInputElement>('browser-folder').click();};host.append(folder);
   if(!sceneMembers.length)return;
   const composition=document.createElement('details');composition.className='scene-composition';composition.open=sceneCompositionOpen;const heading=document.createElement('summary');heading.textContent='Состав сцены · '+sceneMembers.length;composition.append(heading);composition.ontoggle=()=>{if(composition.isConnected)sceneCompositionOpen=composition.open;};host.append(composition);
   const note=document.createElement('p');note.textContent=sceneMembers.length>1?'Общие координаты · совмещение не подтверждено':'Исходные координаты модели';composition.append(note);
@@ -323,7 +361,8 @@ function renderMembers(){
     for(const [i,name] of ['X, м','Y, м','Z, м','Угол Z, °'].entries()){const field=document.createElement('label');field.textContent=name;const input=document.createElement('input');input.type='number';input.step='any';input.value=String(i<3?member.offset[i]:member.rotation);input.setAttribute('aria-label',name+' · '+member.model.source.filename);inputs.push(input);field.append(input);coords.append(field);}row.append(coords);
     const apply=document.createElement('button');apply.textContent='Применить размещение';apply.onclick=()=>{const values=inputs.map(i=>i.value.trim()===''?NaN:Number(i.value));if(!values.every(Number.isFinite)){error('Заполните X, Y, Z и угол конечными числами');return;}void presentMembers(sceneMembers.map(m=>m===member?{...m,offset:[values[0],values[1],values[2]],rotation:values[3]}:m)).then(()=>document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:browserModel}))).catch(error);};row.append(apply);
     const remove=document.createElement('button');remove.textContent='Убрать из сцены';remove.onclick=()=>{void presentMembers(sceneMembers.filter(m=>m!==member)).then(()=>document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:browserModel}))).catch(error);};row.append(remove);
-    const metadata=document.createElement('small');metadata.textContent=`${member.model.statistics.physical_elements} элементов · SHA-256 ${member.model.source.sha256.slice(0,12)}…`;row.append(metadata);composition.append(row);
+    const update=document.createElement('button');update.textContent='Обновить источник';update.onclick=()=>{const input=document.createElement('input');input.type='file';input.accept='.rvt,.ifc,.nwd,.nwc';input.hidden=true;document.body.append(input);input.addEventListener('cancel',()=>input.remove());input.onchange=()=>{const file=input.files?.[0];input.remove();if(file)void browser.openFile(file,true,{replaceInstanceId:member.instanceId});};input.click();};row.append(update);
+    const metadata=document.createElement('small');metadata.textContent=`${onlyNavisSources(member.model)?(member.model.nwd?.fragments??0)+' геометрических фрагментов':member.model.statistics.physical_elements+' элементов'} · SHA-256 ${member.model.source.sha256.slice(0,12)}…`;row.append(metadata);composition.append(row);
   }
 }
 function renderModelTree() {
@@ -434,23 +473,45 @@ function browserDownload(kind:string,data:RunPackage) {
   }
   const url=URL.createObjectURL(new Blob([text],{type:mime}));browserUrls.push(url);el<HTMLAnchorElement>(kind).download=kind==='csv'?'uvyazka-schedule.csv':'uvyazka-run.json';return url;
 }
-const browser=DEMO?browserPanel({
+function commitBrowserContext(append:boolean){if(!append){catalogues.clear();sourceChanges=[];document.querySelector('.source-update-banner')?.remove();}documentPanel.set(null);renderElements();
+
+
+    closeCad();setMode('view');el('error').hidden=true;el('element-tree').innerHTML='';++generation;++modelGeneration;if(DEMO)project='browser-local';catalogueProject=project;el<HTMLSelectElement>('projects').innerHTML='<option>Локальный файл в браузере</option>';el<HTMLSelectElement>('runs').innerHTML='<option>Сценарий не рассчитан</option>';el<HTMLSelectElement>('models').innerHTML='<option>Чтение модели</option>';el<HTMLSelectElement>('scenes').innerHTML='<option value="">Выберите сцену</option>';document.querySelector('.notice')!.textContent=(DEMO?'Свой файл обрабатывается в браузере и не отправляется на сервер.':'Производная модель сохраняется в локальной базе проекта и доступна MCP.')+' Сценарий предварительный: технология, выработка и связи требуют проверки.';browserRun=null;for(const url of browserUrls)URL.revokeObjectURL(url);browserUrls.length=0;for(const key of ['projects','models','runs'])el<HTMLSelectElement>(key).disabled=true;}
+const browser=browserPanel({publicDemo:DEMO,
+  persistDocument:DEMO?undefined:async document=>{const target=project,restored=await saveProjectCatalog(target,document);if(target!==project)throw Error('Проект изменился');acceptDocument(restored);},
+  containsSource:sha=>sceneMembers.some(member=>member.model.source.sha256===sha)||model?.source.sha256===sha,
+  persist:DEMO?undefined:async(pkg,binary,progress,cancelled)=>{const target=project,repo=new ReviewRepository(true,()=>target);await repo.registerModel(pkg,binary,progress,()=>cancelled()||target!==project);},
   openDocument:()=>documentPanel?.open(),
   noGeometry:(filename,message)=>{el('file-title').textContent=filename;el('geometry-kind').textContent='RVT · 3D недоступна';el<HTMLButtonElement>('mode-simulate').disabled=true;el<HTMLSelectElement>('models').innerHTML='<option>Геометрия не прочитана</option>';el('inspector-title').textContent='Результат чтения RVT';el('inspector').innerHTML=`<p><strong>${esc(filename)}</strong></p><p>${esc(message)}</p>`;},
   document:(data,message)=>{if(data)acceptDocument(data);else documentPanel.set(null,message);},
   drawing:openCad, cancelDrawing:closeCad,
-  reset:(append)=>{++sceneVersion;if(!append)catalogues.clear();documentPanel.set(null);renderElements();
-    if(append&&model&&loadedBinary&&!model.federation&&!sceneMembers.length)sceneMembers=[{instanceId:model.model_id,model,binary:loadedBinary,offset:[0,0,0],rotation:0,visible:true}];
-    if(!append){sceneMembers=[];renderMembers();}
-    closeCad();setMode('view');el('error').hidden=true;el('element-tree').innerHTML='';++generation;++modelGeneration;project='browser-local';catalogueProject=project;el<HTMLSelectElement>('projects').innerHTML='<option>Локальный файл в браузере</option>';el<HTMLSelectElement>('runs').innerHTML='<option>Сценарий не рассчитан</option>';el<HTMLSelectElement>('models').innerHTML='<option>Чтение модели</option>';el<HTMLSelectElement>('scenes').innerHTML='<option value="">Выберите сцену</option>';document.querySelector('.notice')!.textContent='Свой файл обрабатывается в браузере и не отправляется на сервер. Сценарий предварительный: технология, выработка и связи требуют проверки.';if(!append){browserModel=null;browserBinary=null;}browserRun=null;for(const url of browserUrls)URL.revokeObjectURL(url);browserUrls.length=0;for(const key of ['projects','models','runs'])el<HTMLSelectElement>(key).disabled=true;void loadRun('');if(!append)void loadModel('');else renderModelTree();},
-  model:async(pkg,binary,append)=>{
+  reset:()=>{},cancelPreparation:()=>{scenePreparation?.abort();revisionPreparation?.abort();},
+  model:async(pkg,binary,append,intent)=>{
     const candidate:SceneMember={instanceId:pkg.model_id,model:pkg,binary,offset:[0,0,0],rotation:0,visible:true};
-    const existing=append?sceneMembers:[];
-    if(existing.some(m=>m.model.source.sha256===pkg.source.sha256))throw Error('Этот файл уже есть в сцене. Для повторного размещения нужен отдельный экземпляр.');
-    await presentMembers([...existing,candidate]);documentPanel.geometryReady(!!viewer&&!!model&&!model.federation&&pkg.statistics.meshes>0);el<HTMLDialogElement>('file-dialog').close();return browserModel!;
+    const existing=append?(sceneMembers.length?sceneMembers:model&&loadedBinary?[{instanceId:model.model_id,model,binary:loadedBinary,offset:[0,0,0] as [number,number,number],rotation:0,visible:true}]:[]):[];
+    if(existing.some(m=>m.model.source.sha256===pkg.source.sha256))throw new SourceAlreadyPresent();
+    if(intent?.replaceInstanceId){
+      const old=existing.find(member=>member.instanceId===intent.replaceInstanceId);if(!old||!model)throw Error('Исходная модель больше не найдена в сцене.');
+      const previous=captureWorkspace(),before=model,controller=new AbortController();revisionPreparation?.abort();revisionPreparation=controller;
+      try{
+        await sceneStore('put',{...previous,id:crypto.randomUUID(),project_id:measurementProject,name:'До обновления · '+old.model.source.filename,created_at:new Date().toISOString()});
+        browser.sceneProgress('Сравнение прочитанных идентификаторов и параметров ревизий');
+        const comparison=await inspectRevision(old.model,pkg,controller.signal);
+        if(controller.signal.aborted)throw Error('Обновление источника отменено.');
+        const next=existing.map(member=>member===old?{...member,model:pkg,binary}:member);
+        await presentMembers(next,()=>commitBrowserContext(true));
+        if(!model)throw Error('Новая сцена не получена.');
+        const remapped=remapRevisionState(previous.state,before,model,old.instanceId,new Map(comparison.mapping));applyWorkspaceState(remapped.state);
+        const change={before_sha256:old.model.source.sha256,after_sha256:pkg.source.sha256,created_at:new Date().toISOString(),report:comparison.report,unresolved_presentation_ids:remapped.unresolved};sourceChanges=[...sourceChanges,change];
+        const note=document.querySelector('.notice')!;note.textContent='Источник обновлён. Предыдущая сцена сохранена. Замеры, виды, таблицы и проверки прежней ревизии требуют перепроверки. Не перенесено неоднозначных настроек элементов: '+remapped.unresolved+'.';
+        const counts=document.createElement('span');counts.textContent=' Новых в прочитанном наборе: '+comparison.report.rows.filter(row=>row.kind==='added').length+'; не найдено в новом наборе: '+comparison.report.rows.filter(row=>row.kind==='removed').length+'; изменено: '+comparison.report.rows.filter(row=>row.kind==='changed').length+'; вопросов: '+comparison.report.rows.filter(row=>row.kind==='question').length+'.';note.append(counts);
+        document.querySelector('.source-update-banner')?.remove();const banner=document.createElement('section');banner.className='source-update-banner';const message=document.createElement('span');message.textContent='Источник обновлён. Прежняя сцена сохранена. Замеры, виды, таблицы и проверки требуют перепроверки.';const details=document.createElement('details'),summary=document.createElement('summary'),body=document.createElement('p');summary.textContent='Изменения прочитанного набора';body.textContent=counts.textContent+' Не перенесено неоднозначных настроек: '+remapped.unresolved+'.';details.append(summary,body);const dismiss=document.createElement('button');dismiss.textContent='Скрыть сообщение';dismiss.onclick=()=>banner.remove();banner.append(message,details,dismiss);document.querySelector('.app-header')!.after(banner);recovery.dirty();return browserModel!;
+      }finally{if(revisionPreparation===controller)revisionPreparation=null;}
+    }
+    await presentMembers([...existing,candidate],()=>commitBrowserContext(append));documentPanel.geometryReady(!!viewer&&!!model&&!model.federation&&pkg.statistics.meshes>0);el<HTMLDialogElement>('file-dialog').close();return browserModel!;
   },
   run:async(data)=>{setMode('simulate');browserRun=data;for(const url of browserUrls)URL.revokeObjectURL(url);browserUrls.length=0;el<HTMLSelectElement>('runs').innerHTML=`<option value="${esc(data.run_id)}">${esc(data.scenario.name||'Браузерный расчёт')}</option>`;await loadRun(data.run_id);el<HTMLDialogElement>('file-dialog').close();}
-}):null;
+});
 if(DEMO){el('calculate-current').hidden=false;el('calculate-current').onclick=()=>el<HTMLDialogElement>('file-dialog').showModal();}
 type DemoExample={id:string;kind:'model'|'rvt';name:string;url?:string;sha256?:string;size?:number};
 const initialExample=new URL(location.href).searchParams.get('example');
@@ -486,7 +547,7 @@ async function demoExamples(){
   if(initialExample&&examples.some(e=>e.id===initialExample))await openExample(initialExample);
   else {if(!model&&examples[0]?.kind==='model')await loadModel(examples[0].id);picker.value=model?.model_id||examples[0]?.id||'';document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:model}));}
 }
-void (async()=>{try{const r=await fetch(DEMO?'./demo/projects.json':'/api/projects');const d=await r.json();if(project==='browser-local')return;el<HTMLSelectElement>('projects').innerHTML=d.projects.map((p:{id:string;name:string})=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');project=project||d.default_project;if(project){el<HTMLSelectElement>('projects').value=project;await loadProject(project,DEMO&&!!initialExample);await demoExamples();}else error('Сначала зарегистрируйте проект или запустите uvyazka demo.');}catch(e){error(e);}})();
+initialLoad=(async()=>{try{const r=await fetch(DEMO?'./demo/projects.json':'/api/projects');const d=await r.json();if(project==='browser-local')return;el<HTMLSelectElement>('projects').innerHTML=d.projects.map((p:{id:string;name:string})=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');project=project||d.default_project;if(project){el<HTMLSelectElement>('projects').value=project;await loadProject(project,DEMO&&!!initialExample);await demoExamples();}else error('Сначала зарегистрируйте проект или запустите uvyazka demo.');}catch(e){error(e);}})();
 
 function setPanel(panel:'tree'|'inspector',open:boolean) {
   if(open&&matchMedia('(max-width: 650px)').matches){
@@ -503,7 +564,7 @@ el('close-tree').onclick=()=>{setPanel('tree',false);el('toggle-tree').focus();}
 el('close-inspector').onclick=()=>{setPanel('inspector',false);el('toggle-inspector').focus();};
 el('file-settings').onclick=()=>el<HTMLDialogElement>('file-dialog').showModal();
 el('close-file').onclick=()=>el<HTMLDialogElement>('file-dialog').close();
-function chooseModel(append:boolean){if(!DEMO){el<HTMLDialogElement>('file-dialog').showModal();return;}el<HTMLInputElement>('browser-append').checked=append;el<HTMLInputElement>('browser-file').click();}
+function chooseModel(append:boolean){el<HTMLInputElement>('browser-append').checked=append;el<HTMLInputElement>('browser-file').click();}
 el('open-file').onclick=()=>chooseModel(true);
 el('empty-add-model').onclick=()=>chooseModel(true);
 el('replace-model').onclick=()=>chooseModel(false);

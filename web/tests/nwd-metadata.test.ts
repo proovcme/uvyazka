@@ -3,9 +3,13 @@ import assert from 'node:assert/strict';
 import {importNwd,nwdNeedsUnits} from '../src/browser-nwd.ts';
 import {modelTreeNodes} from '../src/model-tree-panel.ts';
 import {federate} from '../src/federation.ts';
-import {specificationDataset,specificationCell} from '../src/model-specification.ts';
+import {specificationDataset,specificationCell,defaultSpecification} from '../src/model-specification.ts';
 import {physicalRow} from '../src/gost-specification.ts';
 const hash='a'.repeat(64),guid='12345678-1234-5678-90ab-000000000001';
+test('NWC retains its source format while using Navis geometry, tree and provenance',async()=>{
+ const {model,binary}=await importNwd(result(),'synthetic.NWC');assert.equal(model.source.format,'nwc');assert.equal(model.source.filename,'synthetic.NWC');assert.ok(model.nwd!.logical_nodes>0);assert.ok(model.statistics.meshes>0);assert.ok(binary.byteLength>0);assert.ok(model.elements.every(element=>element.source.file_sha256===hash));
+ const composed=await federate([{instanceId:'nwc-a',model,binary,offset:[0,0,0],rotation:0,visible:true},{instanceId:'nwc-b',model,binary,offset:[1,0,0],rotation:0,visible:true}]);assert.ok(composed.model.federation!.members.every(member=>member.source_format==='nwc'));assert.equal(defaultSpecification(specificationDataset(composed.model)).columns[2].id,'id');
+});
 function fixture(namespace='synthetic'){
  const label=(id:number,display:string,internal:string)=>({serialized_id:id,serialized_class:52,page_index:0,values:{display,internal}});
  const logical={namespace,status:'decoded_logical_subset',stream:namespace+'\\LcOpNwdLogicalHierarchy',declared_property_slots:2,decoded_property_slots:2,property_diagnostics:[],objects:[],

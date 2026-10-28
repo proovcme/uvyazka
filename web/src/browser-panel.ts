@@ -1,3 +1,6 @@
+import {isNavisFormat} from './navis-format.ts';
+import {importBatch,batchSummary} from './import-batch.ts';
+import type {FileImportResult} from './import-batch.ts';
 import {chooseNwdUnits} from './nwd-unit-dialog';
 import {processingPanel} from './processing-panel';
 import {geometryCache} from './geometry-cache';
@@ -14,7 +17,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
   const section=document.createElement('section');section.className='panel browser-import';section.innerHTML=`
 <h2>Открыть файл</h2>
 <p>Файл остаётся на вашем устройстве. Для RVT и IFC прежний порог размера снят; большие модели требуют больше памяти. DWG/DXF до 64 MiB. Чтение RVT экспериментальное; Revit и агент не нужны.</p>
-<div class="browser-actions"><label>DWG / RVT / IFC / NWD<input id="browser-file" type="file" accept=".dwg,.dxf,.rvt,.ifc,.nwd"></label><button id="browser-cancel" disabled>Отменить</button><button id="browser-demo">Учебный пример</button><button id="browser-log">Журнал обработки</button><button id="browser-document">Виды и таблицы</button></div>
+<div class="browser-actions"><label>DWG / RVT / IFC / NWD / NWC<input id="browser-file" type="file" accept=".dwg,.dxf,.rvt,.ifc,.nwd,.nwc" multiple></label><button id="browser-cancel" disabled>Отменить</button><button id="browser-demo">Учебный пример</button><button id="browser-log">Журнал обработки</button><button id="browser-document">Виды и таблицы</button></div>
 <label class="check"><input id="browser-append" type="checkbox">Добавить IFC / RVT / NWD к открытой сцене</label><button id="browser-clear-cache">Очистить кеш IFC</button>
 <p id="browser-status" role="status" aria-live="polite">Выберите файл или изучите готовый пример ниже.</p>
 <details><summary>Память и большие модели</summary><label>Бюджет IFC-декодера<select id="browser-memory"><option value="512">512 MiB</option><option value="1024" selected>1 GiB</option><option value="2048">2 GiB</option></select></label><p>Это бюджет IFC-движка, а не всей вкладки. RVT, промежуточный IFC и 3D требуют дополнительной памяти. Технический предел RVT-читателя — 2 GiB входного файла; успешное чтение такого размера не гарантируется.</p></details>
@@ -32,13 +35,16 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
   let active=0,importer:Worker|null=null,planner:Worker|null=null,current:ModelPackage|null=null,fallback:ModelPackage|null=null,run:ImportRun|null=null;
   const urls=new Map<string,string>();
   const processing=processingPanel(()=>el<HTMLButtonElement>('browser-cancel').click(),log.open);
-  const finishRun=(target:ImportRun,state:Exclude<RunState,'running'>,message:string,details?:unknown)=>{journal.finish(target,state,message,details);if(target===run)processing.finish(state,message);};
+  const includedRuns=new WeakSet<ImportRun>();
+  let batchController:AbortController|null=null;
+  let pendingFile:{run:ImportRun;resolve:(result:FileImportResult)=>void}|null=null;
+  const finishRun=(target:ImportRun,state:Exclude<RunState,'running'>,message:string,details?:unknown)=>{journal.finish(target,state,message,details);if(target===run)processing.finish(state,message);if(pendingFile?.run===target){const pending=pendingFile;pendingFile=null;pending.resolve({state,included:includedRuns.has(target),message});}};
   const reportProgress=(target:ImportRun,stage:string,message:string,details?:unknown)=>{journal.progress(target,stage,message,details);if(target===run)processing.update(stage,message);};
   const probe=setInterval(()=>{if(run?.state==='running'){importer?.postMessage({kind:'ping',job:active});planner?.postMessage({kind:'ping',job:active});}},2000);
   addEventListener('pagehide',()=>clearInterval(probe));
 
   const status=(text:string)=>{el('browser-status').textContent=text;const footer=document.getElementById('workspace-status')!;footer.textContent=text;footer.title=text;};
-  const busy=(yes:boolean)=>{document.body.classList.toggle('is-busy',yes);el<HTMLButtonElement>('browser-cancel').disabled=!yes;el<HTMLButtonElement>('browser-plan').disabled=yes||!current||current.source.format==='nwd';for(const id of ['open-file','empty-add-model','replace-model']){const button=document.getElementById(id) as HTMLButtonElement|null;if(button)button.disabled=yes;}};
+  const busy=(yes:boolean)=>{document.body.classList.toggle('is-busy',yes);el<HTMLButtonElement>('browser-cancel').disabled=!yes;el<HTMLButtonElement>('browser-plan').disabled=yes||!current||isNavisFormat(current.source.format);for(const id of ['open-file','empty-add-model','replace-model']){const button=document.getElementById(id) as HTMLButtonElement|null;if(button)button.disabled=yes;}};
   const stop=(reason='Обработка отменена: выбран другой файл или режим.',keepPlanner=false)=>{
     if(run?.state==='running')finishRun(run,'cancelled',reason);
     active++;importer?.terminate();importer=null;if(!keepPlanner){planner?.terminate();planner=null;}busy(false);
@@ -46,12 +52,13 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
   const fail=(message:string,details?:unknown)=>{current=fallback;if(run)finishRun(run,'failed',message,details);stop();status(message+' · подробности в журнале');};
   const download=(id:string,data:Blob,name:string)=>{const old=urls.get(id);if(old)URL.revokeObjectURL(old);const url=URL.createObjectURL(data);urls.set(id,url);const a=el<HTMLAnchorElement>(id);a.href=url;a.download=name;a.hidden=false;};
   const diagnosticReport=(report:unknown)=>{el('browser-diagnostics').hidden=false;section.querySelector('pre')!.textContent=JSON.stringify(report,null,2);download('browser-report',new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),'uvyazka-diagnostics.json');};
-  el('browser-cancel').onclick=()=>{current=fallback;callbacks.cancelDrawing();stop('Отменено пользователем.');status('Обработка отменена. События сохранены в журнале.');};
-  el('browser-demo').onclick=async()=>{stop('Переход к учебному примеру.');await journal.flush();location.href=base;};
-  const openFile=async(file:File,appendMode?:boolean)=>{
+  el('browser-cancel').onclick=()=>{batchController?.abort();current=fallback;callbacks.cancelDrawing();stop('Отменено пользователем.');status('Обработка отменена. События сохранены в журнале.');};
+  el('browser-demo').onclick=async()=>{batchController?.abort();stop('Переход к учебному примеру.');await journal.flush();location.href=base;};
+  const startFile=async(file:File,appendMode:boolean|undefined,done:(result:FileImportResult)=>void)=>{
     document.querySelector<HTMLDialogElement>('#file-dialog')!.close();
-    stop();const job=active;await log.ready;if(job!==active)return;
+    stop();const job=active;await log.ready;if(job!==active){done({state:'cancelled',included:false,message:'Открытие отменено до запуска.'});return;}
     run=journal.begin('import',file.name,file.size);const jobRun=run;log.select(run);processing.begin(file.name,file.size);
+    pendingFile={run:jobRun,resolve:done};
     fallback=current;
     const policy=filePolicy(file.name,file.size);
     if(policy.error){fail(policy.error);return;}
@@ -112,15 +119,27 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
           reportProgress(jobRun,'Отображение','Создание 3D-сцены');status('Отображение модели');
           try{const displayed=await callbacks.model(data.model,data.binary,append);if(job!==active)return;current=displayed;fallback=null;}
           catch(e){if(job===active)fail('Не удалось отобразить модель: '+String(e),{stage:'Отображение',stack:e instanceof Error?e.stack:undefined});return;}
-          const result=`${file.name}: ${data.model.source.format==='nwd'?(data.model.nwd?.logical_nodes??0)+' узлов дерева, '+(data.model.nwd?.fragments??0)+' геометрических фрагментов':s.physical_elements+' физических элементов'}, ${s.meshes} сеток, ${s.geometry_errors} без геометрии.`;
-          const partial=data.model.source.format==='nwd'&&(data.model.nwd?.unread_features.length>0||data.model.nwd?.source_models.some((s:any)=>!s.geometry_complete||s.metadata_status!=='decoded_logical_subset'));
-          finishRun(jobRun,partial?'partial':'completed',result);status(result+(data.model.source.format==='nwd'?' Ограничения чтения — в журнале.':' Можно рассчитать сценарий.'));busy(false);
+          const result=`${file.name}: ${isNavisFormat(data.model.source.format)?(data.model.nwd?.logical_nodes??0)+' узлов дерева, '+(data.model.nwd?.fragments??0)+' геометрических фрагментов':s.physical_elements+' физических элементов'}, ${s.meshes} сеток, ${s.geometry_errors} без геометрии.`;
+          const partial=isNavisFormat(data.model.source.format)&&(data.model.nwd?.unread_features.length>0||data.model.nwd?.source_models.some((s:any)=>!s.geometry_complete||s.metadata_status!=='decoded_logical_subset'));
+          includedRuns.add(jobRun);finishRun(jobRun,partial?'partial':'completed',result);status(result+(isNavisFormat(data.model.source.format)?' Ограничения чтения — в журнале.':' Можно рассчитать сценарий.'));busy(false);
         }
       };
       importer.postMessage({job,buffer,filename:file.name,base,memoryMiB},[buffer]);
     }catch(e){if(job===active)fail(String(e),{stack:e instanceof Error?e.stack:undefined});}
   };
-  el<HTMLInputElement>('browser-file').onchange=()=>{const input=el<HTMLInputElement>('browser-file'),file=input.files?.[0];input.value='';if(file)void openFile(file);};
+  const openSingle=(file:File,appendMode?:boolean)=>new Promise<FileImportResult>(resolve=>{void startFile(file,appendMode,resolve).catch(error=>{const message=String(error);fail(message);resolve({state:'failed',included:false,message});});});
+  const openFile=(file:File,appendMode?:boolean)=>{batchController?.abort();batchController=null;processing.batch(null);return openSingle(file,appendMode);};
+  const openFiles=async(files:File[],appendMode?:boolean)=>{
+    if(!files.length)return;
+    if(files.length===1){await openFile(files[0],appendMode);return;}
+    batchController?.abort();stop('Запущена новая очередь.');
+    const controller=new AbortController();batchController=controller;
+    const result=await importBatch(files,openSingle,{append:appendMode??el<HTMLInputElement>('browser-append').checked,signal:controller.signal,update:snapshot=>{if(batchController===controller)processing.batch(snapshot);}});
+    const batchRun=journal.begin('import','Пакет файлов',files.reduce((n,file)=>n+file.size,0));
+    journal.finish(batchRun,result.cancelled?'cancelled':result.rows.every(row=>row.included&&row.state==='completed')?'completed':result.rows.some(row=>row.included)?'partial':'failed',batchSummary(result),result);
+    if(batchController===controller){status(batchSummary(result));batchController=null;busy(false);}
+  };
+  el<HTMLInputElement>('browser-file').onchange=()=>{const input=el<HTMLInputElement>('browser-file'),files=Array.from(input.files??[]);input.value='';void openFiles(files);};
   el('browser-plan').onclick=async()=>{
     if(!current)return;
     if(current.elements.some(e=>e.semantic_kind==='geometry_fragment')){status('Сценарий для геометрических фрагментов NWD не рассчитывается: семантика объектов не прочитана.');return;}
@@ -144,7 +163,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
     const settings={variant:el<HTMLSelectElement>('browser-variant').value,curingDays,capacityFactor:Number(el<HTMLSelectElement>('browser-capacity').value)};
     journal.event(run,'info','Параметры расчёта',settings);planner.postMessage({job,base,model:current,...settings});
   };
-  document.addEventListener('scene-model-changed',((event:CustomEvent<ModelPackage|null>)=>{stop('Изменён состав или размещение сцены.');current=event.detail;busy(false);}) as EventListener);
+  document.addEventListener('scene-model-changed',((event:CustomEvent<ModelPackage|null>)=>{batchController?.abort();stop('Изменён состав или размещение сцены.');current=event.detail;busy(false);}) as EventListener);
   addEventListener('pagehide',()=>{if(run?.state==='running')finishRun(run,'interrupted','Вкладка закрыта или перезагружена до завершения.');stop();for(const url of urls.values())URL.revokeObjectURL(url);});
-  return {openFile,stop};
+  return {openFile,openFiles,stop:(reason?:string)=>{batchController?.abort();stop(reason);}};
 }

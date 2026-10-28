@@ -49,15 +49,17 @@ def fragments():
     return result
 
 
-def build():
+def build(namespace="synthetic"):
+    if not namespace or len(namespace)>64 or not all(c.isascii() and (c.isalnum() or c in "-_") for c in namespace):
+        raise ValueError("Synthetic namespace must contain 1–64 ASCII letters, digits, hyphens or underscores")
     records = [geometry(), geometry(True), geometry()]
     encoded = zlib.compress(b"".join(records))
     appendix = bytearray()
     words(appendix, len(records), 1, len(encoded), *(len(record) for record in records))
     align(appendix, 8)
     tail = zlib.compress(appendix)
-    streams = [("synthetic\\LcOpNwdGeometry", b"\0" * 4 + encoded + tail, 4, len(tail)),
-               ("synthetic\\LcOpNwdFragments", zlib.compress(fragments()), 0, 0)]
+    streams = [(namespace+"\\LcOpNwdGeometry", b"\0" * 4 + encoded + tail, 4, len(tail)),
+               (namespace+"\\LcOpNwdFragments", zlib.compress(fragments()), 0, 0)]
     file, directory = bytearray(OUTER), bytearray()
     words(directory, 0xFFFFFFFF, len(streams))
     for name, data, prefix, suffix in streams:
@@ -80,8 +82,9 @@ def build():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--namespace",default="synthetic",help="Distinct synthetic source for multi-file tests")
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("xb") as stream:
-        stream.write(build())
+        stream.write(build(args.namespace))
     print("Synthetic NWD created. Choose metres; expected: two meshes, one unavailable fragment, appearance and consistency warnings.")

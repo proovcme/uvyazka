@@ -1,3 +1,4 @@
+import {onlyNavisSources} from './navis-format.ts';
 import type {BimElement,ModelPackage} from './model';
 import type {RvtDocument} from './rvt-document.ts';
 import {identifier} from './rvt-document.ts';
@@ -68,7 +69,7 @@ function aggregate(cells:ValueCell[],mode:'sum'|'min'|'max'):ValueCell{
  const total=sumCells(cells);if(total.state!=='value'||mode==='sum')return total;
  const chosen=cells.reduce((best,c)=>mode==='min'?(Number(c.value)<Number(best.value)?c:best):(Number(c.value)>Number(best.value)?c:best));return {...chosen,evidence:cells.flatMap(c=>c.evidence)};
 }
-export function defaultSpecification(dataset:SpecDataset):SpecDefinition{return {version:1,name:'Ведомость по параметрам',model_id:dataset.model?.model_id??null,source_hashes:dataset.source_hashes,columns:['name','category',dataset.model?.source.format==='nwd'?'id':dataset.model?.source.format==='rvt'||!dataset.model&&dataset.rows.some(r=>r.native)?'revit':'global','count'].map(id=>({id,label:dataset.columns.find(c=>c.id===id)!.label,aggregate:id==='count'?'sum':'none'})),group_by:[],filters:[],sort:null,scope:'all'};}
+export function defaultSpecification(dataset:SpecDataset):SpecDefinition{return {version:1,name:'Ведомость по параметрам',model_id:dataset.model?.model_id??null,source_hashes:dataset.source_hashes,columns:['name','category',(dataset.model&&onlyNavisSources(dataset.model))?'id':dataset.model?.source.format==='rvt'||!dataset.model&&dataset.rows.some(r=>r.native)?'revit':'global','count'].map(id=>({id,label:dataset.columns.find(c=>c.id===id)!.label,aggregate:id==='count'?'sum':'none'})),group_by:[],filters:[],sort:null,scope:'all'};}
 export function validateSpecification(input:unknown):SpecDefinition{
  if((input as SpecDefinition)?.gost!==undefined)validateGostSettings((input as SpecDefinition).gost);
  const x=input as SpecDefinition;if(!x||x.version!==1||typeof x.name!=='string'||!x.name.trim()||x.name.length>120||!Array.isArray(x.source_hashes)||x.source_hashes.length>1000||x.source_hashes.some(h=>!/^([a-f0-9]{64})$/.test(h))||x.model_id!==null&&!/^[a-f0-9]{64}$/.test(x.model_id))throw Error('Неверная версия или источники спецификации');

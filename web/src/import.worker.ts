@@ -23,7 +23,7 @@ worker.onmessage=async({data})=>{
     progress('Вычисление SHA-256 исходного файла','Хеширование');
     const sourceHash=await digest(bytes),sourceSize=bytes.byteLength;
     worker.postMessage({job,kind:'source',sha256:sourceHash});
-    if(/\.nwd$/i.test(filename)){
+    if(/\.(nwd|nwc)$/i.test(filename)){
       progress('Загрузка независимого NWD-декодера','NWD-движок');
       const module=await import(/* @vite-ignore */base+'runtime/nwd/uvyazka_nwd_experiment.js?reader='+nwdReaderRevision);
       await module.default({module_or_path:base+'runtime/nwd/uvyazka_nwd_experiment_bg.wasm?reader='+nwdReaderRevision});

@@ -1,0 +1,23 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {build} from 'esbuild';import {Window} from 'happy-dom';
+const bundle=await build({entryPoints:['src/browser-panel.ts'],bundle:true,format:'esm',write:false,define:{'import.meta.url':'"https://example.test/import.js"'},logLevel:'silent'});
+const {browserPanel}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
+test('actual browser controller waits for worker completion, survives a failed file, and cancels remaining batch files',async t=>{
+ const w=new Window({url:'https://example.test/uvyazka/'});
+ const old={};for(const name of ['document','location','HTMLElement','HTMLInputElement','addEventListener','Worker'])old[name]=globalThis[name];
+ globalThis.document=w.document;globalThis.location=w.location;globalThis.HTMLElement=w.HTMLElement;globalThis.HTMLInputElement=w.HTMLInputElement;globalThis.addEventListener=w.addEventListener.bind(w);
+ t.after(()=>{w.dispatchEvent(new w.Event('pagehide'));for(const [name,value]of Object.entries(old))globalThis[name]=value;w.happyDOM.close();});
+ w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;};
+ document.body.innerHTML='<dialog id="file-dialog"></dialog><div id="import-host"></div><button id="status-details"></button><span id="workspace-status"></span><button id="open-file"></button><button id="empty-add-model"></button><button id="replace-model"></button>';
+ const workers=[];globalThis.Worker=class{constructor(){workers.push(this);}postMessage(data){if(data.kind==='ping')return;this.job=data.job;this.file=data.filename;}terminate(){this.terminated=true;}emit(data){return this.onmessage({data:{job:this.job,...data}});}};
+ const resets=[],models=[];
+ const panel=browserPanel({reset:append=>resets.push(append),openDocument:()=>{},noGeometry:()=>{},document:()=>{},drawing:async()=>{},cancelDrawing:()=>{},model:async model=>{models.push(model);return model;},run:()=>{}});
+ const wait=async predicate=>{for(let i=0;i<200;i++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,5));}assert.fail('Expected controller state was not reached');};
+ const files=['broken.nwc','a.nwc','b.nwc'].map(name=>new File(['synthetic'],name));
+ const pending=panel.openFiles(files,false);await wait(()=>workers[0]?.file);assert.equal(workers.length,1);
+ await workers[0].emit({kind:'error',message:'Unsupported container'});await wait(()=>workers[1]?.file);assert.equal(workers.length,2);
+ const imported=filename=>({kind:'imported',model:{source:{filename,format:'nwc',sha256:filename},statistics:{meshes:1,physical_elements:0,geometry_errors:0},diagnostics:[],nwd:{logical_nodes:1,fragments:1,unread_features:['saved views'],source_models:[{geometry_complete:true,metadata_status:'decoded_logical_subset'}]}},binary:new ArrayBuffer(0)});
+ await workers[1].emit(imported('a.nwc'));await wait(()=>workers[2]?.file);await workers[2].emit(imported('b.nwc'));await pending;
+ assert.deepEqual(resets,[false,false,true]);assert.equal(models.length,2);assert.match(document.querySelector('.conversion-batch').textContent,/Добавлено в сцену: 2 из 3/);assert.match(document.querySelector('#conversion-title').textContent,/Пакет открыт частично/);
+ const next=panel.openFiles(files,true);await wait(()=>workers[3]?.file);panel.stop('Остановлено тестом');await next;assert.equal(workers.length,4);assert.equal(workers[3].terminated,true);assert.match(document.querySelector('.conversion-batch').textContent,/Отменено: 3/);
+});

@@ -15,7 +15,7 @@ export function specificationPanel(actions:{model:()=>ModelPackage|null;document
  const legacy=node('section');legacy.className='spec-legacy';while(dialog.firstChild)legacy.append(dialog.firstChild);dialog.append(legacy);
  const chooser=node('section');chooser.className='spec-chooser';const gostHost=node('section');gostHost.hidden=true;dialog.append(chooser,gostHost);
  const $=<T extends HTMLElement=HTMLElement>(s:string)=>dialog.querySelector<T>(s)!;
- const button=node('button','Спецификации');button.id='open-specifications';button.title='Создать таблицу по параметрам RVT, IFC или NWD';document.getElementById('theme-toggle')!.before(button);
+ const button=node('button','Спецификации');button.id='open-specifications';button.title='Создать таблицу по параметрам RVT, IFC, NWD или NWC';document.getElementById('theme-toggle')!.before(button);
  let dataset:SpecDataset=specificationDataset(null),definition=defaultSpecification(dataset),report:SpecReport|null=null,page=0,presets:SpecDefinition[]=[],questionsOnly=false;
  const reviewLabel=node('label'),reviewToggle=node('input');reviewLabel.className='table-review-filter';reviewToggle.type='checkbox';reviewLabel.append(reviewToggle,document.createTextNode(' Только строки с вопросами'));$('[data-table]').before(reviewLabel);
  const reviewNote=node('p');reviewNote.hidden=true;reviewNote.textContent='Фильтр меняет только показ строк. Экспорт и итоги сохраняют весь состав таблицы.';reviewLabel.after(reviewNote);reviewToggle.onchange=()=>{questionsOnly=reviewToggle.checked;reviewNote.hidden=!questionsOnly;page=0;renderTable();};

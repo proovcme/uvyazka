@@ -3,9 +3,11 @@ import {category,fields,recordName,schedule,scheduleCsv,sheetPlacements,identifi
 import type {RvtDocument,NativeRecord} from './rvt-document';
 import {hasReadableDocument,documentErrorMessage} from './rvt-import-result';
 import type {CatalogSummary} from './rvt-catalog-client';
+import {scheduleSceneSelection} from './schedule-scene';
+import type {ModelPackage} from './model';
 const labels:Record<string,string>={all:'Всё содержимое',views:'Планы и разрезы','3d':'3D-виды',sheets:'Листы',schedules:'Спецификации',templates:'Шаблоны',placements:'Размещения',other:'Другие виды'};
 const node=<K extends keyof HTMLElementTagNameMap>(tag:K,text?:string)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
-export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>void,options:{context?:()=>string;importCatalog?:(data:RvtDocument)=>Promise<void>;listCatalogs?:(offset:number)=>Promise<{items:CatalogSummary[];next_offset:number|null}>;loadCatalog?:(id:string)=>Promise<void>}={}){
+export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>void,options:{model?:()=>ModelPackage|null;showElements?:(ids:string[])=>void;context?:()=>string;importCatalog?:(data:RvtDocument)=>Promise<void>;listCatalogs?:(offset:number)=>Promise<{items:CatalogSummary[];next_offset:number|null}>;loadCatalog?:(id:string)=>Promise<void>}={}){
  const dialog=node('dialog');dialog.id='rvt-document';dialog.className='rvt-document';dialog.setAttribute('aria-labelledby','rvt-document-title');
  dialog.innerHTML=`<div class="panel-head"><div><small>СОДЕРЖИМОЕ RVT</small><h2 id="rvt-document-title">Таблицы RVT</h2></div><button id="rvt-document-close" aria-label="Закрыть виды и таблицы">✕</button></div><p id="rvt-document-status" role="status"></p><div class="rvt-document-tools"><button id="rvt-whole">Вся прочитанная модель</button><button id="rvt-export">Скачать каталог JSON</button></div><div class="rvt-document-layout"><nav aria-label="Каталог RVT"><label>Раздел<select id="rvt-kind"></select></label><label>Поиск<input id="rvt-search" type="search" placeholder="Имя или ElementId"></label><div id="rvt-records"></div><button id="rvt-more" hidden>Показать ещё 100</button></nav><article id="rvt-record-detail"></article></div>`;
  document.body.append(dialog);const get=<T extends HTMLElement=HTMLElement>(id:string)=>dialog.querySelector<T>('#'+id)!;
@@ -38,7 +40,7 @@ export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>vo
   const exportButton=node('button','Запись JSON');exportButton.onclick=()=>download(JSON.stringify({source:data?.source,record},null,2),'application/json',`rvt-${record.identity.element_id}.json`);sources.append(exportButton);
   const copy=node('button','Копировать запись');copy.dataset.copy=JSON.stringify({source:data?.source,record},null,2);sources.append(copy);
   if(record.kind==='schedule'){
-   if(data)schedulePreviewPanel(host,record,data,download);
+   if(data)schedulePreviewPanel(host,record,data,download,{resolve:(hash,ids)=>scheduleSceneSelection(options.model?.()??null,hash,ids),show:options.showElements?(hash,ids)=>{const found=scheduleSceneSelection(options.model?.()??null,hash,ids);if(found.scene_ids.length){dialog.close();options.showElements!(found.scene_ids);}}:undefined});
    const s=schedule(record),saved=node('details');saved.append(node('summary',`Сохранённые ячейки из файла · ${s.cells.length}`));host.append(saved);
    const note=node('p','Исходные сохранённые ячейки, без пересчёта. Они могут содержать только часть таблицы; пустая ячейка со ссылкой на параметр не означает нулевое значение.');note.className='rvt-notice';saved.append(note);
    const csv=node('button','Ячейки CSV');csv.disabled=!s.cells.length;csv.onclick=()=>download(scheduleCsv(record),'text/csv',`rvt-schedule-${record.identity.element_id}.csv`);saved.append(csv);

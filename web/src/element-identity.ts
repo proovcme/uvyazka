@@ -1,12 +1,13 @@
 import type {BimElement,ModelPackage} from './model';
+const explicitId=(value:unknown)=>typeof value==='string'&&/^\d+$/.test(value)?value:typeof value==='number'&&Number.isSafeInteger(value)&&value>=0?String(value):null;
 
 export function elementIdentity(element:BimElement){
-  const direct=element.revit?.element_id;
-  if(direct&&/^\d+$/.test(String(direct)))return {element_id:String(direct),unique_id:element.revit?.unique_id||null,
+  const direct=explicitId(element.revit?.element_id);
+  if(direct!==null)return {element_id:direct,unique_id:element.revit?.unique_id||null,
     basis:({'ifc_tag_revit_export':'Tag в IFC, экспортированном из Revit','rvt_converter_tag':'RVT ElementId, сохранённый конвертером'} as Record<string,string>)[element.revit?.id_basis||'']||element.revit?.id_basis||'Прочитанный Revit ElementId',status:'read'};
   const candidates=new Set<string>();let unique:string|null=null;
   for(const [set,fields] of Object.entries(element.property_sets??{}))for(const [key,value] of Object.entries(fields)){
-    if((/^(Revit ?Element ?I[dD]|Revit ?I[dD])$/.test(key)||/revit/i.test(set)&&/^Element ?I[dD]$/.test(key))&&/^\d+$/.test(String(value)))candidates.add(String(value));
+    const id=explicitId(value);if((/^(Revit ?Element ?I[dD]|Revit ?I[dD])$/.test(key)||/revit/i.test(set)&&/^Element ?I[dD]$/.test(key))&&id!==null)candidates.add(id);
     if(/revit/i.test(set)&&/^(UniqueId|Unique ID)$/i.test(key)&&typeof value==='string')unique=value;
   }
   return {element_id:candidates.size===1?[...candidates][0]:null,unique_id:unique,

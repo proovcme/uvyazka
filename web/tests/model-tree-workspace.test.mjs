@@ -12,13 +12,13 @@ test('workspace wires simple/parameter search, hidden rows, selection, reset and
  document.body.innerHTML='<div id="app"></div>';
  globalThis.Option=function(text,value){const option=document.createElement('option');option.textContent=text;option.value=value;return option;};
  const make=(id,name,power,storey)=>({id,step_id:Number(id),name,role:'element',storey_id:storey,class:'IfcPump',materials:[],global_id:'gid-'+id,property_sets:{Technical:{Power:power}},quantity_sets:{},mesh:{},source:{}});
- const model={model_id:'sample',contract:'ModelPackage',source:{filename:'sample.rvt',format:'rvt',schema:'IFC2X3',sha256:'a'.repeat(64)},statistics:{physical_elements:3,meshes:3},storeys:[{id:'L1',name:'Первый'},{id:'L2',name:'Второй'}],systems:[],elements:[make('1','Насос A',15,'L1'),make('2','Насос B',5,'L1'),make('3','Установка',812345,'L2')]};
+ const model={model_id:'a'.repeat(64),contract:'ModelPackage',source:{filename:'sample.rvt',format:'rvt',schema:'IFC2X3',sha256:'a'.repeat(64)},statistics:{physical_elements:3,meshes:3},storeys:[{id:'L1',name:'Первый'},{id:'L2',name:'Второй'}],systems:[],elements:[make('1','Насос A',15,'L1'),make('2','Насос B',5,'L1'),make('3','Установка',812345,'L2')]};
  globalThis.fetch=async input=>{
   const url=new URL(String(input),'http://localhost');
   if(url.pathname==='/api/rvt/catalog')return new Response(JSON.stringify({document:{schema_version:1,schema_sha256:'b'.repeat(64),status:'partial',clipped_records:0,source:{filename:'sample.rvt',sha256:'a'.repeat(64),size_bytes:42},summary:{},evaluated_schedule_body_available:false,shared_store:{project_id:'test',extraction_id:'f'.repeat(64),origin:'native_extraction'},records:[{identity:{element_id:'9007199254740993'},class_name:'DBViewDrafting',kind:'view',status:'partial',source:{stream:'Partitions/1'},graph:{objects:[{class_name:'DBViewDrafting',fields:{m_viewName:'Первый лист',m_sheetNumber:'АР-1'}}],edges:[]}}]}}));
   if(url.pathname.endsWith('/geometry.bin'))return new Response(new ArrayBuffer(4));
   let body;if(url.pathname==='/api/projects')body={projects:[{id:'test',name:'Test'}],default_project:'test'};
-  else if(url.pathname.endsWith('/models'))body={items:[{model_id:'sample',name:'sample'}]};
+  else if(url.pathname.endsWith('/models'))body={items:[{model_id:'a'.repeat(64),name:'sample'}]};
   else if(url.pathname.endsWith('/runs'))body={items:[]};
   else if(url.pathname.endsWith('/model'))body=model;
   else throw Error('Unexpected fixture URL '+url);
@@ -77,5 +77,10 @@ test('workspace wires simple/parameter search, hidden rows, selection, reset and
 
  node('undo-visibility').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);assert.equal(node('element-search').value,'Насос');
  node('reset-visibility').click();node('undo-visibility').click();assert.equal(node('element-search').value,'Насос');assert.equal(node('visibility-filter').checked,false);
+
+ node('reset-visibility').click();if(node('visibility-filter').checked)node('visibility-filter').click();node('element-search').value='Насос A';node('element-search').dispatchEvent(new win.Event('input'));await wait(220);document.querySelector('.element-item').click();node('hide-selected').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['2','3']);
+ node('element-search').value='Установка';node('element-search').dispatchEvent(new win.Event('input'));await wait(220);node('visibility-filter').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['3']);
+ node('open-specifications').click();[...document.querySelectorAll('.spec-template-cards button')].find(b=>b.textContent.includes('Произвольная таблица')).click();document.querySelector('[data-build]').click();document.querySelector('[data-table] tbody tr td button').click();
+ assert.equal(node('visibility-filter').checked,false);assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);assert.equal(node('selection-count').textContent,'Выбрано 1');assert.equal(node('element-search').value,'Установка','navigating from a table preserves the tree query');
 
 });

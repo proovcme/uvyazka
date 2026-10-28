@@ -65,7 +65,7 @@ initTheme();
 installWindowControls();
 installPropertyCopy();
 modelDataPanel(()=>model,id=>{selectElement(id);viewer?.focusTargets([id]);});
-const specifications=specificationPanel({shared:!DEMO,model:()=>model,documents:()=>[...catalogues.values()],project:()=>measurementProject,matches:()=>treeItems.map(e=>e.id),selection:()=>[...selection],show:ids=>{selection.clear();for(const id of ids)selection.add(id);selectedId=ids[0]??null;updateSelection();selectElement(selectedId);selection.clear();for(const id of ids)selection.add(id);updateSelection();viewer?.focusTargets(ids);}});
+const specifications=specificationPanel({shared:!DEMO,model:()=>model,documents:()=>[...catalogues.values()],project:()=>measurementProject,matches:()=>treeItems.map(e=>e.id),selection:()=>[...selection],show:showSpecificationElements});
 reviewPanel({shared:!DEMO,project:()=>measurementProject,capture:captureWorkspace,apply:applyWorkspaceState,selection:()=>[...selection],matches:()=>treeItems.map(e=>e.id),
  focus:ids=>{isolateElements(ids);const state=captureWorkspace().state;state.selection=ids;state.view.planes=[];state.view.xray=false;applyWorkspaceState(state);viewer?.focusTargets(ids);},
  projection:()=>({aspect:viewer?.camera.aspect??1,vertical_fov:viewer?.camera.fov??40}),snapshot:()=>{if(!viewer)throw Error('Модель не открыта');viewer.renderer.render(viewer.scene,viewer.camera);return viewer.renderer.domElement.toDataURL('image/png').split(',')[1];}});
@@ -73,7 +73,14 @@ const documentPanel=rvtDocumentPanel(record=>{
   const orientation=viewOrientation(record);if(!orientation||!viewer||!model)return;
   setMode('view');el('reset-visibility').click();viewer.orient(orientation.direction,orientation.up);
   el('workspace-status').textContent='Ориентация вида · реконструкция без оформления, обрезки и фильтров Revit';
-},()=>{setMode('view');el('reset-visibility').click();},DEMO?{}:{context:()=>project,listCatalogs:offset=>projectCatalogs(project,offset),loadCatalog:async id=>{const target=project;const data=await loadCatalogSnapshot(target,id);if(target===project){acceptDocument(data);documentPanel.geometryReady(!!model&&!model.federation&&model.source.sha256===data.source?.sha256);}},importCatalog:async data=>{const target=project;const restored=await saveProjectCatalog(target,data);if(target!==project)return;acceptDocument(restored);}});
+},()=>{setMode('view');el('reset-visibility').click();},{model:()=>model,showElements:showSpecificationElements,...(DEMO?{}:{context:()=>project,listCatalogs:offset=>projectCatalogs(project,offset),loadCatalog:async id=>{const target=project;const data=await loadCatalogSnapshot(target,id);if(target===project){acceptDocument(data);documentPanel.geometryReady(!!model&&!model.federation&&model.source.sha256===data.source?.sha256);}},importCatalog:async data=>{const target=project;const restored=await saveProjectCatalog(target,data);if(target!==project)return;acceptDocument(restored);}})});
+
+function showSpecificationElements(ids:string[]){
+ const available=new Set((model?.elements??[]).filter(e=>e.mesh).map(e=>e.id));const targets=[...new Set(ids)].filter(id=>available.has(id));
+ if(!targets.length)return;
+ setMode('view');setElementVisibility(targets,true);selectElement(targets[0]);selection.clear();for(const id of targets)selection.add(id);updateSelection();viewer?.focusTargets(targets);
+ el('workspace-status').textContent=`Показано элементов из таблицы: ${targets.length}`;
+}
 
 function acceptDocument(data:RvtDocument|null){if(data?.source?.sha256)catalogues.set(data.source.sha256,data);documentPanel.set(data);documentPanel.geometryReady(!!viewer&&!!model&&!model.federation&&model.source.sha256===data?.source?.sha256&&model.statistics.meshes>0);renderElements();}
 function openDocumentRecord(data:RvtDocument,record:NativeRecord){const ready=!!viewer&&!!model&&!model.federation&&model.source.sha256===data.source?.sha256;documentPanel.openRecord(data,record,ready);}

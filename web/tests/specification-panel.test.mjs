@@ -16,8 +16,11 @@ test('specification edits are read before building/saving; selected scope links 
  const scope=document.querySelector('[data-scope]');scope.value='selection';scope.dispatchEvent(new win.Event('change'));
  document.querySelector('[data-build]').click();assert.match(document.querySelector('[data-summary]').textContent,/В области 1/);
  assert.match(document.querySelector('[data-table] thead').textContent,/Новая подпись/);
+ document.querySelector('[data-table] tbody .spec-cell').click();assert.match(document.querySelector('[data-evidence] .cell-source').textContent,/synthetic.ifc/);assert.equal(document.querySelector('[data-evidence] .cell-source pre'),null);
+ const review=document.querySelector('.table-review-filter input');review.checked=true;review.dispatchEvent(new win.Event('change'));assert.equal(document.querySelectorAll('[data-table] tbody tr').length,1,'missing IFC identity stays a question without changing the original selected scope');
  document.querySelector('[data-save]').click();assert.equal(panel.definitions()[0].name,'Синтетическая ведомость');assert.equal(panel.definitions()[0].columns[0].label,'Новая подпись');
  document.querySelector('[data-table] tbody tr td button').click();assert.deepEqual(shown,['2']);
+ name.value='Изменённая таблица';name.dispatchEvent(new win.Event('change'));assert.equal(document.querySelector('[data-table]').children.length,0);assert.equal(document.querySelector('[data-csv]').disabled,true);assert.equal(document.querySelector('[data-evidence]').open,false);
  panel.restore([]);assert.equal(panel.definitions().length,0);
 });
 

@@ -1,0 +1,20 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {build} from 'esbuild';import {Window} from 'happy-dom';import {fileURLToPath} from 'node:url';
+test('native schedule review display preserves the full export and uses human cell evidence and exact model navigation',async t=>{
+ const win=new Window({url:'http://localhost/'});t.after(()=>win.happyDOM.close());
+ for(const k of ['document','localStorage'])Object.defineProperty(globalThis,k,{value:win[k],writable:true,configurable:true});
+ const bundle=await build({entryPoints:[fileURLToPath(new URL('../src/rvt-schedule-panel.ts',import.meta.url))],bundle:true,write:false,format:'esm'});
+ const {schedulePreviewPanel}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
+ const hash='a'.repeat(64),record={identity:{element_id:50},class_name:'DBViewSchedule',kind:'schedule',status:'complete_bounded_graph',source:{},graph:{objects:[{class_name:'DBViewSchedule',fields:{m_pSchema:{offset:1,pointer_token:1}}},{class_name:'ScheduleSchema',fields:{m_categoryId:-2000023,m_filterArr:[],m_sortFieldArr:[],m_fieldIds:[0],m_pFields:[{offset:10,pointer_token:1}]}},{class_name:'ScheduleField',fields:{m_columnHeading:'Наименование',m_paramElemId:10,m_sourceType:0}}],edges:[{source_object_index:0,pointer_offset:1,target_object_index:1},{source_object_index:1,pointer_offset:10,target_object_index:2}]}};
+ const owner=id=>({identity:{element_id:id},class_name:'FamilyInstance',source:{body_sha256:'synthetic-'+id},saved_metadata:{parameter_sets:id===1?[{parameters:[{serialized_parameter_id:10,storage_type:'String',raw_value:'Насос'}]}]:[],raw_field_parameters:[{parameter_id:-1140363,storage_type:'ElementId',raw_value:-2000023}]}});
+ const doc={source:{sha256:hash,filename:'synthetic.rvt'},schedule_data:{source_sha256:hash,status:'complete',records:[owner(1),owner(2)]}};
+ const host=document.createElement('div');document.body.append(host);let exported=null,shown=null;
+ schedulePreviewPanel(host,record,doc,text=>exported=text,{resolve:(source,ids)=>({scene_ids:ids.includes('1')?['mesh-1']:[],requested:ids.length,represented:ids.includes('1')?1:0,missing_ids:ids.filter(id=>id!=='1'),ambiguous_ids:[]}),show:(source,ids)=>shown={source,ids}});
+ const button=text=>[...host.querySelectorAll('button')].find(b=>b.textContent===text);
+ button('Построить сверочную ведомость').click();assert.equal(host.querySelectorAll('tbody tr').length,2);
+ const shows=[...host.querySelectorAll('.table-show-elements')];assert.equal(shows[0].disabled,false);assert.equal(shows[1].disabled,true);shows[0].click();assert.deepEqual(shown,{source:hash,ids:['1']});
+ host.querySelector('tbody tr .rvt-cell').click();const source=host.querySelector('.cell-source');assert.match(source.textContent,/synthetic.rvt/);assert.match(source.textContent,/Revit ID экземпляра: 1/);assert.equal(source.querySelector('pre'),null);
+ const toggle=host.querySelector('.table-review-filter input');toggle.checked=true;toggle.dispatchEvent(new win.Event('change'));
+ assert.equal(host.querySelectorAll('tbody tr').length,1);assert.match(host.querySelector('tbody').textContent,/Revit #2/);
+ button('Ведомость JSON').click();assert.equal(JSON.parse(exported).rows.length,2);assert.equal(JSON.parse(exported).instance_count,2);
+});

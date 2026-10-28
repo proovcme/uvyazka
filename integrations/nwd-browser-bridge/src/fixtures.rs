@@ -82,11 +82,19 @@ pub fn fragment_record() -> Vec<u8> {
     b
 }
 pub fn scene(record: Vec<u8>, fragment: Vec<u8>) -> Vec<u8> {
-    let zipped = zip(&record);
+    scene_records(vec![record], fragment)
+}
+pub fn scene_records(records: Vec<Vec<u8>>, fragment: Vec<u8>) -> Vec<u8> {
+    let body: Vec<u8> = records.iter().flatten().copied().collect();
+    let zipped = zip(&body);
     let mut appendix = Vec::new();
-    for v in [1, 1, zipped.len() as u32, record.len() as u32] {
+    for v in [records.len() as u32, 1, zipped.len() as u32] {
         u32v(&mut appendix, v)
     }
+    for record in records {
+        u32v(&mut appendix, record.len() as u32);
+    }
+    align(&mut appendix, 8);
     let tail = zip(&appendix);
     let mut raw = vec![0; 4];
     raw.extend(zipped);

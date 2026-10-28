@@ -114,6 +114,23 @@ fn saved_asset_records(c: &mut Cursor<'_>) -> Result<serde_json::Value> {
     }
     Ok(serde_json::json!(records))
 }
+fn saved_json_record(
+    text: Option<String>,
+    label: Option<String>,
+    resources: serde_json::Value,
+) -> serde_json::Value {
+    let parsed = text
+        .as_deref()
+        .map(serde_json::from_str::<serde_json::Value>);
+    match parsed {
+        Some(Ok(value)) => {
+            serde_json::json!({"saved_json":value,"saved_json_status":"decoded","label":label,"saved_resources":resources,"references_resolved":false,"external_resources_loaded":false})
+        }
+        _ => {
+            serde_json::json!({"saved_json":null,"saved_json_status":"unread","raw_json":text,"diagnostic":"Saved asset JSON is null or invalid; bounded resource fields retained without interpretation","label":label,"saved_resources":resources,"references_resolved":false,"external_resources_loaded":false})
+        }
+    }
+}
 #[derive(Debug, Serialize, Clone)]
 pub struct Entry {
     pub name: String,
@@ -408,6 +425,7 @@ pub struct GeometryDefinition {
     pub index_count: usize,
     pub positions: Vec<[f32; 3]>,
     pub status: &'static str,
+    pub record_diagnostic: Option<String>,
 }
 pub fn geometry_definitions(container: &Container) -> Result<Vec<GeometryDefinition>> {
     let block = container
@@ -454,46 +472,63 @@ pub fn geometry_definitions_in(block: &Block) -> Result<Vec<GeometryDefinition>>
     let mut result = Vec::new();
     for (index, length) in lengths.into_iter().enumerate() {
         let raw = checked_slice(&block.body, offset, length)?;
-        let mut c = Cursor::new(raw);
-        let id = c.u32()?;
-        let class = c.u32()?;
-        let nested = c.u32()?;
-        let array_class = c.u32()?;
-        if id != 100 || ![94, 95].contains(&class) || nested != 101 || array_class != 60 {
-            return Err(format!(
-                "Unsupported geometry record {index}; raw record retained"
-            ));
-        }
-        let index_count = c.u32()? as usize;
-        let scalar_count = c.u32()? as usize;
-        if scalar_count > 3_000_000 || scalar_count % 3 != 0 {
-            return Err("Invalid coordinate array size".into());
-        }
-        let values = c.take(
-            scalar_count
-                .checked_mul(4)
-                .ok_or("Coordinate size overflow")?,
-        )?;
-        let mut positions = Vec::new();
-        for point in values.chunks_exact(12) {
-            let mut p = [0f32; 3];
-            for i in 0..3 {
-                p[i] = f32::from_le_bytes(point[4 * i..4 * i + 4].try_into().unwrap())
+        let decoded: Result<GeometryDefinition> = (|| {
+            let mut c = Cursor::new(raw);
+            let id = c.u32()?;
+            let class = c.u32()?;
+            let nested = c.u32()?;
+            let array_class = c.u32()?;
+            if id != 100 || ![94, 95].contains(&class) || nested != 101 || array_class != 60 {
+                return Err(format!(
+                    "Unsupported geometry record {index}; raw record retained"
+                ));
             }
-            if p.iter().any(|x| !x.is_finite()) {
-                return Err("Nonfinite geometry coordinate".into());
+            let index_count = c.u32()? as usize;
+            let scalar_count = c.u32()? as usize;
+            if scalar_count > 3_000_000 || scalar_count % 3 != 0 {
+                return Err("Invalid coordinate array size".into());
             }
-            positions.push(p);
-        }
-        result.push(GeometryDefinition {
+            let values = c.take(
+                scalar_count
+                    .checked_mul(4)
+                    .ok_or("Coordinate size overflow")?,
+            )?;
+            let mut positions = Vec::new();
+            for point in values.chunks_exact(12) {
+                let mut p = [0f32; 3];
+                for i in 0..3 {
+                    p[i] = f32::from_le_bytes(point[4 * i..4 * i + 4].try_into().unwrap())
+                }
+                if p.iter().any(|x| !x.is_finite()) {
+                    return Err("Nonfinite geometry coordinate".into());
+                }
+                positions.push(p);
+            }
+            Ok(GeometryDefinition {
+                index,
+                record_offset: offset,
+                record_bytes: length,
+                serialized_class: class,
+                index_count,
+                positions,
+                status: "vertices_only_indices_and_placement_unresolved",
+                record_diagnostic: None,
+            })
+        })();
+        result.push(decoded.unwrap_or_else(|error| GeometryDefinition {
             index,
             record_offset: offset,
             record_bytes: length,
-            serialized_class: class,
-            index_count,
-            positions,
-            status: "vertices_only_indices_and_placement_unresolved",
-        });
+            // An opaque slot keeps every subsequent geometry reference stable.
+            // Empty arrays are unavailable geometry, never successful zero quantities.
+            serialized_class: 0,
+            index_count: 0,
+            positions: Vec::new(),
+            status: "unsupported_or_corrupt_geometry_record",
+            record_diagnostic: Some(format!(
+                "Geometry record {index} at {offset}, {length} bytes: {error}"
+            )),
+        }));
         offset += length;
     }
     Ok(result)

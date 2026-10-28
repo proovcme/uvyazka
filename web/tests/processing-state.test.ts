@@ -20,6 +20,10 @@ test('cache jumps are marked skipped, only observed stages are completed',()=>{
   assert.equal(s.steps.find(x=>x.name==='Хеширование')?.state,'done');assert.equal(s.steps.find(x=>x.name==='Геометрия')?.state,'skipped');
   s.finish('completed','Done',60000);assert.equal(s.steps.at(-1)?.state,'done');assert.equal(s.snapshot(999999).elapsed,60000);
 });
+test('a displayed partial NWD finishes rendering; an earlier partial decode remains stopped',()=>{
+ const s=new ProcessingState();s.begin('synthetic.nwd',100,0);s.update('Отображение','Showing retained meshes',1);s.finish('partial','Some records unavailable',2);assert.equal(s.steps.at(-1)?.state,'done');assert.equal(s.state,'partial');
+ const earlier=new ProcessingState();earlier.begin('synthetic.rvt',100,0);earlier.update('RVT → IFC','Conversion',1);earlier.finish('partial','Only metadata retained',2);assert.equal(earlier.steps.find(s=>s.name==='RVT → IFC')?.state,'stopped');
+});
 test('cancel freezes time and refuses late progress; a new file resets everything',()=>{
   const s=new ProcessingState();s.begin('old.rvt',100,1000);s.update('RVT → IFC','old',2000);s.finish('cancelled','Stop',4000);s.update('Отображение','late',10000);s.reply(10000);
   assert.equal(s.stage,'RVT → IFC');assert.equal(s.snapshot(20000).elapsed,3000);assert.equal(s.steps.find(x=>x.name==='RVT → IFC')?.state,'stopped');

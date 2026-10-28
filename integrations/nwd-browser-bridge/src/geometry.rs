@@ -174,6 +174,18 @@ pub fn read_geometry_in(block: &Block) -> Result<Vec<MeshDefinition>> {
     let definitions = geometry_definitions_in(block)?;
     let mut output = Vec::new();
     for mut definition in definitions {
+        if let Some(error) = definition.record_diagnostic.clone() {
+            output.push(MeshDefinition {
+                definition,
+                indices: vec![],
+                strips: vec![],
+                triangles: vec![],
+                lines: vec![],
+                strip_table_offset: 0,
+                diagnostic: Some(error),
+            });
+            continue;
+        }
         let raw = checked_slice(
             &block.body,
             definition.record_offset,

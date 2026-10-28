@@ -46,3 +46,16 @@ CLI mode writes legacy geometry diagnostics and extracted stream bodies;
 for each source. `tools/build_browser_runtime.py` builds the WASM bindings into
 an ignored runtime directory. The parser does not accept engineering facts or
 write to the project database.
+
+
+Recovery is bounded by proven record boundaries. Geometry-directory slots remain
+stable when a single record is unsupported or corrupt. Fully consumed fragment
+records retain semantic errors without desynchronizing following graph objects;
+unknown graph layouts still stop the current sequential stream. Fixed-size
+invalid appearance channels and bounded malformed saved JSON do not invalidate
+independently decoded geometry. Nullable placements/references are unavailable,
+never identity transforms or references to slot zero. Property-slot mismatches
+preserve the tree but disable unverified external property attribution.
+The browser retains healthy fragments and marks per-source coverage; partial
+support is never reported as complete Navisworks compatibility.
+See [recovery policy and synthetic file generator](../../docs/NWD.md).

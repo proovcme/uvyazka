@@ -53,12 +53,52 @@ test('federated NWD namespaces can reuse serialized IDs without merging objects 
  assert.deepEqual(model.elements.map(e=>({id:e.id,parent:e.nwd?.parent_id,owner:e.nwd?.owner_id})),before);
  assert.equal(composed.model.nwd?.source_models.length,2);assert.equal(composed.model.statistics.physical_elements,0);
 });
-test('unknown units stay pending, partial properties retain a usable tree, invalid index buffers fail before rendering',async()=>{
+test('unknown units stay pending, partial properties retain a usable tree, bad index buffers stay unrendered',async()=>{
  const input=result();input.models[0].logical_model.partition.tail.units.status='not_decoded';assert.equal(nwdNeedsUnits(input),true);
  await assert.rejects(()=>importNwd(input,'synthetic.nwd'),/единицы/);
  input.models[0].logical_model.status='unsupported_or_partial';
  const {model}=await importNwd(input,'synthetic.nwd','mm');assert.equal(model.source.calibration?.basis,'user_assumption');assert.equal(model.nwd?.logical_nodes,4);
- input.models[0].geometry[0].triangles=[[0,1,99]];await assert.rejects(()=>importNwd(input,'synthetic.nwd','mm'),/индекс/i);
+ input.models[0].geometry[0].triangles=[[0,1,99]];const partial=await importNwd(input,'synthetic.nwd','mm');assert.equal(partial.model.statistics.meshes,0);assert.equal(partial.model.nwd?.logical_nodes,4);assert.equal(partial.model.statistics.geometry_errors,1);assert.ok(partial.model.diagnostics.some(d=>/индекс/i.test(d.message)));
+});
+test('one bad fragment reference or matrix preserves the next fragment and the source hierarchy',async()=>{
+ for(const change of [{geometry_index:99},{placement_matrix_source_units:[NaN,...Array(15).fill(0)]},{placement_matrix_source_units:Array(16).fill(0)}]){
+  const input=result(),good=input.models[0].fragments.rows[0];input.models[0].fragments.rows=[{...good,serialized_id:101,...change} as any,good];
+  const {model,binary}=await importNwd(input,'synthetic.nwd');assert.equal(model.statistics.meshes,1);assert.equal(model.statistics.geometry_errors,1);assert.equal(model.nwd?.logical_nodes,4);assert.equal(binary.byteLength,48);assert.equal(model.nwd?.source_models[0].geometry_complete,false);
+  assert.equal(model.elements.find(e=>e.id==='nwd-fragment:0:101')!.mesh,null);assert.ok(model.elements.find(e=>e.id==='nwd-fragment:0:100')!.mesh);
+ }
+});
+test('corrupt packed addresses in one source do not discard another independent source',async()=>{
+ const input:any=result([fixture('bad'),fixture('good')]),bytes=new ArrayBuffer(48);new Float32Array(bytes,0,9).set([0,0,0,1000,0,0,0,1000,0]);new Uint32Array(bytes,36,3).set([0,1,2]);
+ const good={position_byte_offset:0,vertex_count:3,triangle_byte_offset:36,triangle_index_count:3,line_byte_offset:48,line_index_count:0};input.geometry_binary=new Uint8Array(bytes);input.packed_geometry=[[{...good,position_byte_offset:9999}],[good]];
+ const {model}=await importNwd(input,'synthetic.nwd');assert.equal(model.statistics.meshes,1);assert.equal(model.nwd?.logical_nodes,8);assert.equal(model.statistics.geometry_errors,1);assert.ok(model.diagnostics.some(d=>d.kind==='nwd-recovery-summary'));
+});
+test('unknown parent or a cyclic property branch does not borrow identities or discard independent nodes',async()=>{
+ for(const cycle of [false,true]){
+  const input=result(),nodes=input.models[0].logical_model.nodes;nodes[2].parent_index=cycle?1:999;if(cycle)nodes[1].parent_index=2;
+  const {model}=await importNwd(input,'synthetic.nwd');assert.equal(model.statistics.meshes,1);assert.equal(model.nwd?.logical_nodes,4);
+  assert.equal(model.elements.find(e=>e.nwd?.kind==='fragment')!.revit,undefined,'failed parent chains must not inherit an ElementId');
+  assert.ok(model.diagnostics.some(d=>d.kind==='nwd-metadata-recovery'));assert.ok(model.elements.find(e=>e.id==='nwd-node:0:0'));
+ }
+});
+test('invalid appearance uses an explicit neutral fallback while usable geometry remains available',async()=>{
+ const input=result();input.models[0].fragments.rows[0].material_raw=[NaN,0,0];const {model}=await importNwd(input,'synthetic.nwd');
+ assert.equal(model.statistics.meshes,1);assert.equal(model.statistics.geometry_errors,0);const mesh=model.elements.find(e=>e.mesh)!.mesh!;assert.deepEqual(mesh.styles[0].color,[.65,.7,.74]);assert.equal(mesh.styles[0].opacity,1);assert.ok(model.diagnostics.some(d=>d.kind==='nwd-appearance-fallback'));
+});
+test('stale cached bounds or primitive counts are questions while independently validated geometry can still render',async()=>{
+ const input=result();input.models[0].fragments.rows[0].local_bounds_match=false;input.models[0].fragments.rows[0].primitive_count_matches=false;
+ const {model}=await importNwd(input,'synthetic.nwd');assert.equal(model.statistics.meshes,1);assert.equal(model.nwd?.source_models[0].geometry_complete,false);assert.ok(model.diagnostics.some(d=>d.kind==='nwd-consistency-question'));const props=model.elements.find(e=>e.mesh)!.property_sets['NWD fragment'];assert.equal(props['Decoded primitive count'],1);assert.equal(props['Cached bounds match'],false);
+});
+test('detailed recovery messages are bounded but totals retain all rejected fragment records',async()=>{
+ const input=result(),f=input.models[0].fragments.rows[0];input.models[0].fragments.rows=Array.from({length:600},(_,i)=>({...f,serialized_id:100+i,geometry_index:999}));
+ const {model}=await importNwd(input,'synthetic.nwd');assert.equal(model.statistics.geometry_errors,600);assert.equal(model.statistics.meshes,0);assert.ok(model.diagnostics.length<210);assert.match(model.diagnostics.find(d=>d.kind==='nwd-recovery-summary')!.message,/600/);
+});
+test('metadata warning totals remain exact after detailed messages are truncated',async()=>{
+ const input=result(),nodes=input.models[0].logical_model.nodes;nodes.push(...Array.from({length:600},()=>({...nodes[2]})));
+ const {model}=await importNwd(input,'synthetic.nwd');assert.equal(model.statistics.meshes,1);assert.ok(model.diagnostics.length<210);assert.match(model.diagnostics.find(d=>d.kind==='nwd-recovery-summary')!.message,/nwd-metadata-recovery: 602/);
+});
+test('progress reports actual decoding work and a failed observer cannot discard valid data',async()=>{
+ const messages:string[]=[];const a=await importNwd(result(),'synthetic.nwd',undefined,{progress:m=>messages.push(m)});assert.equal(a.model.statistics.meshes,1);assert.ok(messages.some(m=>m.includes('Подготовка узлов')));assert.ok(messages.some(m=>m.includes('Подготовка геометрии')));
+ const b=await importNwd(result(),'synthetic.nwd',undefined,{progress:()=>{throw Error('observer unavailable');}});assert.equal(b.model.statistics.meshes,1);assert.equal(b.model.nwd?.logical_nodes,4);
 });
 
 test('scene budget is checked before per-instance allocation and metadata survives federation without meshes',async()=>{

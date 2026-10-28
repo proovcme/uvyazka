@@ -13,7 +13,7 @@ export class ProcessingState {
     this.message=message;this.lastUpdate=now;
   }
   reply(now:number){if(this.state==='running')this.lastReply=now;}
-  finish(state:Exclude<RunState,'running'>,message:string,now:number){if(this.state!=='running')return;this.state=state;this.message=message;this.lastUpdate=now;for(const step of this.steps)if(step.state==='active')step.state=state==='completed'?'done':'stopped';}
+  finish(state:Exclude<RunState,'running'>,message:string,now:number){if(this.state!=='running')return;this.state=state;this.message=message;this.lastUpdate=now;for(const step of this.steps)if(step.state==='active')step.state=state==='completed'||state==='partial'&&step.name==='Отображение'?'done':'stopped';}
   snapshot(now:number){
     const end=this.state==='running'?now:this.lastUpdate,age=Math.max(0,now-Math.max(this.lastReply,this.lastUpdate));
     return {elapsed:Math.max(0,end-this.startedAt),stageElapsed:Math.max(0,end-this.stageAt),silent:age>=15000,replyAge:this.lastReply?Math.max(0,now-this.lastReply):null};

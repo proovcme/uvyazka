@@ -69,7 +69,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
       reportProgress(run,'Чтение файла','Загрузка байтов с локального диска');
       const buffer=await file.arrayBuffer();if(job!==active)return;
       importer=new Worker(new URL('./import.worker.ts',import.meta.url),{type:'module'});
-      importer.onerror=(event)=>{if(job===active)fail('Worker остановился: '+(event.message||'причина недоступна; возможна нехватка памяти'),{filename:event.filename,line:event.lineno});};
+      importer.onerror=(event)=>{if(job===active)fail(event.message?'Обработчик файла остановился: '+event.message:!jobRun.sha256?'Не удалось запустить обработчик файла. Обновите вкладку и повторите открытие: после обновления сайта старой вкладке могут быть недоступны её файлы программы.':'Обработчик файла прекратил работу без сообщения. Причина неизвестна; этап и параметры сохранены в журнале.',{filename:event.filename,line:event.lineno});};
       importer.onmessageerror=()=>{if(job===active)fail('Не удалось получить данные от worker.');};
       importer.onmessage=async({data})=>{
         if(data.job!==active)return;processing.reply();if(data.kind==='pong')return;

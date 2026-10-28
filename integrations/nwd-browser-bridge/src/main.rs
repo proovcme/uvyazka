@@ -63,10 +63,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let fragments = read_fragments(&result, &geometry)?;
     let partial = fragments.decoded != fragments.declared
         || fragments.diagnostic.is_some()
-        || fragments
-            .rows
-            .iter()
-            .any(|f| !f.local_bounds_match || !f.primitive_count_matches)
+        || fragments.rows.iter().any(|f| {
+            f.diagnostic.is_some()
+                || f.appearance_diagnostic.is_some()
+                || !f.local_bounds_match
+                || !f.primitive_count_matches
+        })
         || geometry.iter().any(|g| g.diagnostic.is_some());
     fs::write(
         output.join("model.json"),

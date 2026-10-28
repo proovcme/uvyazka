@@ -198,12 +198,10 @@ impl<'a> Graph<'a> {
         match class {
             52 => o.values = json!({"display": self.string()?, "internal": self.string()?}),
             185 => {
-                let text = self.string()?.ok_or("Saved asset JSON is null")?;
-                let value: Value =
-                    serde_json::from_str(&text).map_err(|_| "Invalid saved asset JSON")?;
+                let text = self.string()?;
                 let label = self.string()?;
                 let resources = crate::saved_asset_records(&mut self.c)?;
-                o.values = json!({"saved_json":value,"label":label,"saved_resources":resources,"references_resolved":false});
+                o.values = crate::saved_json_record(text, label, resources);
             }
             22 | 53 | 31 | 39 | 40 | 41 | 66 | 70 | 79 | 86 | 92 | 97 | 98 | 200 => {
                 o.name = self.string()?;
@@ -355,11 +353,18 @@ pub struct LogicalModel {
 }
 
 pub fn read_logical_models(container: &Container) -> Vec<LogicalModel> {
+    read_logical_models_with_progress(container, &mut |_| {})
+}
+pub fn read_logical_models_with_progress(
+    container: &Container,
+    phase: &mut dyn FnMut(&str),
+) -> Vec<LogicalModel> {
     container
         .blocks
         .iter()
         .filter_map(|block| {
             let namespace = block.entry.name.strip_suffix("\\LcOpNwdLogicalHierarchy")?;
+            phase("Чтение исходного дерева NWD");
             let mut result = LogicalModel {
                 namespace: namespace.into(),
                 stream: block.entry.name.clone(),
@@ -469,6 +474,7 @@ pub fn read_logical_models(container: &Container) -> Vec<LogicalModel> {
                             let mut g = Graph::new(bytes);
                             let read: Result<()> = (|| {
                                 for i in 0..count {
+                                    if result.decoded_property_slots%4096==0 {phase(&format!("Свойства NWD: прочитано {} из {} записей",result.decoded_property_slots,result.declared_property_slots));}
                                     let id = g.pointer()?.ok_or("Null property page record")?;
                                     prop_ids[slot + i] = Some((page, id));
                                     result.decoded_property_slots += 1;
@@ -526,7 +532,10 @@ pub fn read_logical_models(container: &Container) -> Vec<LogicalModel> {
                     }
                 }
                 if next != result.declared_property_slots {
-                    return Err("Logical slots and property count disagree".into());
+                    // The occurrence order is still known, but implicit external
+                    // property-slot attribution is no longer trustworthy.
+                    for attributes in refs.values_mut() {attributes.retain(|a| a.page_index.is_none());}
+                    result.property_diagnostics.push("Logical slots and property count disagree; external property attribution disabled".into());
                 }
                 fn walk(
                     id: u32,
@@ -576,6 +585,7 @@ pub fn read_logical_models(container: &Container) -> Vec<LogicalModel> {
                     active.remove(&id);
                     Ok(())
                 }
+                phase("Сборка исходного дерева NWD");
                 walk(
                     root,
                     None,
@@ -642,6 +652,9 @@ pub fn read_logical_models(container: &Container) -> Vec<LogicalModel> {
                     .into_values()
                     .filter(|o| !matches!(o.serialized_class, 22 | 32 | 53))
                     .collect();
+                for object in result.objects.iter().chain(result.property_objects.iter()) {
+                    if object.serialized_class==185 {if let Some(error)=object.values["diagnostic"].as_str(){result.property_diagnostics.push(format!("Saved appearance JSON {} at {}: {error}",object.serialized_id,object.record_offset));}}
+                }
                 if result.decoded_property_slots != result.declared_property_slots
                     || !result.property_diagnostics.is_empty()
                 {
@@ -836,6 +849,30 @@ mod tests {
             "original"
         );
         assert_eq!(asset.values["references_resolved"], false);
+    }
+    #[test]
+    fn malformed_saved_json_keeps_bounded_resources_and_the_source_tree() {
+        let mut b = vec![];
+        words(&mut b, &[0, 100, 1]);
+        leaf(&mut b, 101, "A", 1);
+        words(&mut b, &[102, 200]);
+        text(&mut b, None);
+        words(&mut b, &[0, 0, 103, 185]);
+        text(&mut b, Some("{invalid"));
+        text(&mut b, None);
+        u32v(&mut b, 0);
+        finish(&mut b);
+        let m = parse(b, vec![]);
+        assert_eq!(m.nodes.len(), 2);
+        assert_eq!(m.status, "unsupported_or_partial");
+        let asset = m
+            .objects
+            .iter()
+            .find(|o| o.serialized_class == 185)
+            .unwrap();
+        assert_eq!(asset.values["raw_json"], "{invalid");
+        assert_eq!(asset.values["saved_json_status"], "unread");
+        assert!(!m.property_diagnostics.is_empty());
     }
     #[test]
     fn legacy_material_has_five_shader_channels() {

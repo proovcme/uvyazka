@@ -7,6 +7,8 @@ import {rvtImportFailure} from './rvt-import-result';
 import type {RvtDocument} from './rvt-document';
 
 const worker=self as unknown as {onmessage:((event:MessageEvent)=>void)|null;postMessage:(value:unknown,transfer?:Transferable[])=>void};
+// Glue and WASM must advance together, including behind immutable HTTP caches.
+const nwdReaderRevision='recovery-v3-20261028';
 let unitReply:{job:unknown;resolve:(unit:any)=>void}|null=null;
 worker.onmessage=async({data})=>{
   if(data.kind==='ping'){worker.postMessage({job:data.job,kind:'pong'});return;}
@@ -23,8 +25,8 @@ worker.onmessage=async({data})=>{
     worker.postMessage({job,kind:'source',sha256:sourceHash});
     if(/\.nwd$/i.test(filename)){
       progress('Загрузка независимого NWD-декодера','NWD-движок');
-      const module=await import(/* @vite-ignore */base+'runtime/nwd/uvyazka_nwd_experiment.js');
-      await module.default({module_or_path:base+'runtime/nwd/uvyazka_nwd_experiment_bg.wasm'});
+      const module=await import(/* @vite-ignore */base+'runtime/nwd/uvyazka_nwd_experiment.js?reader='+nwdReaderRevision);
+      await module.default({module_or_path:base+'runtime/nwd/uvyazka_nwd_experiment_bg.wasm?reader='+nwdReaderRevision});
       let result=module.inspectNwdBytes(bytes,(text:string)=>progress(text,'Данные NWD'));
       let unit=data.nwdUnit;
       if(nwdNeedsUnits(result)&&!unit){
@@ -32,7 +34,7 @@ worker.onmessage=async({data})=>{
         unit=await new Promise(resolve=>{unitReply={job,resolve};worker.postMessage({job,kind:'nwd-units-required'});});
       }
       progress('Подготовка дерева, свойств и геометрии в метрах','Геометрия');
-      const {model,binary}=await importNwd(result,filename,unit);
+      const {model,binary}=await importNwd(result,filename,unit,{progress:text=>progress(text,'Геометрия')});
       result=null;bytes=new Uint8Array();
       await new Promise(resolve=>setTimeout(resolve,0));
       worker.postMessage({job,kind:'imported',model,binary},[binary]);return;

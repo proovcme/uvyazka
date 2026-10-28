@@ -41,7 +41,7 @@ enum Object {
     Scaled([f64; 3], [f64; 4], f64),
     Material([f32; 14]),
     Appearance(u32, u32, Option<u32>),
-    Bounds([f32; 6], [f64; 3], f32, u32, usize),
+    Bounds([f32; 6], [f64; 3], f32, u32, Option<usize>),
     Asset(Value),
     Schema(Value),
     Light(Value),
@@ -162,31 +162,30 @@ impl Graph<'_> {
         )
     }
     fn json_asset(&mut self) -> Result<Value> {
-        let text = self.string()?.ok_or("Saved asset JSON is null")?;
-        let value: Value = serde_json::from_str(&text).map_err(|_| "Invalid saved asset JSON")?;
+        let text = self.string()?;
         let label = self.string()?;
         let resources = crate::saved_asset_records(&mut self.cursor)?;
-        Ok(
-            json!({"saved_json":value,"label":label,"saved_resources":resources,"external_resources_loaded":false}),
-        )
+        Ok(crate::saved_json_record(text, label, resources))
     }
 
     fn f32s<const N: usize>(&mut self) -> Result<[f32; N]> {
         let mut x = [0.; N];
         for v in &mut x {
             *v = f32::from_le_bytes(self.cursor.take(4)?.try_into().unwrap());
-            if !v.is_finite() {
-                return Err("Nonfinite fragment value".into());
-            }
+            // Fixed-size cached bounds retain their bytes even if a scalar is
+            // invalid; placement and geometry are validated after the record end.
         }
         Ok(x)
     }
     fn f64(&mut self) -> Result<f64> {
-        let value = f64::from_le_bytes(self.cursor.take(8)?.try_into().unwrap());
+        let value = self.raw_f64()?;
         if !value.is_finite() {
             return Err("Nonfinite fragment scalar".into());
         }
         Ok(value)
+    }
+    fn raw_f64(&mut self) -> Result<f64> {
+        Ok(f64::from_le_bytes(self.cursor.take(8)?.try_into().unwrap()))
     }
     fn pointer(&mut self, expected: u32) -> Result<Option<u32>> {
         let start = self.cursor.pos;
@@ -232,24 +231,42 @@ impl Graph<'_> {
             13 => Object::Fragment,
             14 => {
                 self.cursor.align(8)?;
-                Object::Translation([self.f64()?, self.f64()?, self.f64()?])
+                Object::Translation([self.raw_f64()?, self.raw_f64()?, self.raw_f64()?])
             }
             15 => {
                 self.cursor.align(8)?;
                 Object::Rigid(
-                    [self.f64()?, self.f64()?, self.f64()?],
-                    [self.f64()?, self.f64()?, self.f64()?, self.f64()?],
+                    [self.raw_f64()?, self.raw_f64()?, self.raw_f64()?],
+                    [
+                        self.raw_f64()?,
+                        self.raw_f64()?,
+                        self.raw_f64()?,
+                        self.raw_f64()?,
+                    ],
                 )
             }
             16 => {
                 self.cursor.align(8)?;
                 Object::Scaled(
-                    [self.f64()?, self.f64()?, self.f64()?],
-                    [self.f64()?, self.f64()?, self.f64()?, self.f64()?],
-                    self.f64()?,
+                    [self.raw_f64()?, self.raw_f64()?, self.raw_f64()?],
+                    [
+                        self.raw_f64()?,
+                        self.raw_f64()?,
+                        self.raw_f64()?,
+                        self.raw_f64()?,
+                    ],
+                    self.raw_f64()?,
                 )
             }
-            54 => Object::Material(self.f32s::<14>()?),
+            54 => {
+                // This fixed-size appearance record has a known end even when
+                // a color channel is invalid. Keep its bits; geometry is independent.
+                let mut channels = [0.; 14];
+                for v in &mut channels {
+                    *v = f32::from_le_bytes(self.cursor.take(4)?.try_into().unwrap());
+                }
+                Object::Material(channels)
+            }
             55 => {
                 let source_flags = self.cursor.u32()?;
                 if ![1, 17, 33, 49].contains(&source_flags) {
@@ -270,13 +287,13 @@ impl Graph<'_> {
                 self.cursor.align(8)?;
                 Object::Bounds(
                     bounds,
-                    [self.f64()?, self.f64()?, self.f64()?],
+                    [self.raw_f64()?, self.raw_f64()?, self.raw_f64()?],
                     self.f32s::<1>()?[0],
                     self.cursor.u32()?,
                     self.cursor
                         .u32()?
                         .checked_sub(1)
-                        .ok_or("Zero geometry reference")? as usize,
+                        .map(|index| index as usize),
                 )
             }
             182 => Object::Asset(self.asset()?),
@@ -385,16 +402,16 @@ pub struct Fragment {
     pub serialized_id: u32,
     pub record_offset: usize,
     pub record_bytes: usize,
-    pub geometry_index: usize,
+    pub geometry_index: Option<usize>,
     pub primitive_count: u32,
     pub geometry_kind: u32,
     pub flags: u32,
     pub owner_reference: u32,
     pub material_raw: [f32; 14],
-    pub translation: [f64; 3],
+    pub translation: Option<[f64; 3]>,
     pub bounds_source_units: [f32; 6],
     pub geometry_origin: [f64; 3],
-    pub placement_matrix_source_units: [f64; 16],
+    pub placement_matrix_source_units: Option<[f64; 16]>,
     pub bounds_auxiliary_scalar: f32,
     pub scalar_raw: f64,
     pub opaque_word: u32,
@@ -407,6 +424,8 @@ pub struct Fragment {
     pub primitive_count_matches: bool,
     pub local_bounds_match: bool,
     pub status: String,
+    pub diagnostic: Option<String>,
+    pub appearance_diagnostic: Option<String>,
 }
 #[derive(Debug, Serialize)]
 pub struct Fragments {
@@ -447,7 +466,7 @@ pub fn read_fragments_in(block: &Block, geometry: &[MeshDefinition]) -> Result<F
             }
             let id = graph.pointer(13)?.ok_or("Null fragment")?;
             graph.cursor.align(8)?;
-            let factor = graph.f64()?;
+            let factor = graph.raw_f64()?;
             let primitive_count = graph.cursor.u32()?;
             let kind = graph.cursor.u32()?;
             let flags = graph.cursor.u32()?;
@@ -471,41 +490,65 @@ pub fn read_fragments_in(block: &Block, geometry: &[MeshDefinition]) -> Result<F
                     }
                     _ => return Err("Unexpected bounds object".into()),
                 };
-            let mesh = geometry
-                .get(geometry_index)
-                .ok_or("Geometry reference outside directory")?;
-            let (translation, quaternion, uniform_scale) =
-                match transform.and_then(|id| graph.objects.get(&id)) {
-                    Some((_, Object::Translation(v))) => (*v, [0., 0., 0., 1.], 1.),
-                    Some((_, Object::Rigid(v, q))) => (*v, *q, 1.),
-                    Some((_, Object::Scaled(v, q, s))) if s.is_finite() && s.abs() > 1e-12 => {
-                        (*v, *q, *s)
-                    }
-                    None => (geometry_origin, [0., 0., 0., 1.], 1.),
-                    _ => return Err("Unsupported placement".into()),
-                };
-            let mut placement_matrix_source_units = rigid_matrix(translation, quaternion)?;
-            for k in [0, 1, 2, 4, 5, 6, 8, 9, 10] {
-                placement_matrix_source_units[k] *= uniform_scale;
+            // All serialized fields have been consumed. Semantic errors below
+            // cannot desynchronize the next graph record or its backreferences.
+            let mesh = geometry_index.and_then(|index| geometry.get(index));
+            let placement_result: Result<([f64; 3], [f64; 16])> = (|| {
+                let (translation, quaternion, uniform_scale) =
+                    match transform.and_then(|id| graph.objects.get(&id)) {
+                        Some((_, Object::Translation(v))) => (*v, [0., 0., 0., 1.], 1.),
+                        Some((_, Object::Rigid(v, q))) => (*v, *q, 1.),
+                        Some((_, Object::Scaled(v, q, s))) if s.is_finite() && s.abs() > 1e-12 => {
+                            (*v, *q, *s)
+                        }
+                        None => (geometry_origin, [0., 0., 0., 1.], 1.),
+                        _ => return Err("Unsupported placement".into()),
+                    };
+                let mut placement_matrix_source_units = rigid_matrix(translation, quaternion)?;
+                for k in [0, 1, 2, 4, 5, 6, 8, 9, 10] {
+                    placement_matrix_source_units[k] *= uniform_scale;
+                }
+                Ok((translation, placement_matrix_source_units))
+            })();
+            let mut errors = Vec::new();
+            if !factor.is_finite() {
+                errors.push("Nonfinite fragment scalar".into());
+            }
+            let (translation, placement_matrix_source_units) = match placement_result {
+                Ok((t, m)) => (Some(t), Some(m)),
+                Err(e) => {
+                    errors.push(e);
+                    (None, None)
+                }
+            };
+            if mesh.is_none() {
+                errors.push("Geometry reference outside directory".into());
+            }
+            if let Some(error) = mesh.and_then(|g| g.diagnostic.as_ref()) {
+                errors.push(format!("Geometry unavailable: {error}"));
             }
             let mut lower = [f32::INFINITY; 3];
             let mut upper = [f32::NEG_INFINITY; 3];
-            for point in &mesh.definition.positions {
+            for point in mesh.into_iter().flat_map(|g| &g.definition.positions) {
                 for k in 0..3 {
                     lower[k] = lower[k].min(point[k]);
                     upper[k] = upper[k].max(point[k]);
                 }
             }
-            let local_bounds_match = (0..3).all(|k| {
-                (lower[k] - bounds[k]).abs() < 1e-4 && (upper[k] - bounds[k + 3]).abs() < 1e-4
+            let local_bounds_match = bounds_auxiliary_scalar.is_finite()
+                && geometry_origin.iter().all(|v| v.is_finite())
+                && (0..3).all(|k| {
+                    (lower[k] - bounds[k]).abs() < 1e-4 && (upper[k] - bounds[k + 3]).abs() < 1e-4
+                });
+            let primitive_count_matches = mesh.is_some_and(|mesh| {
+                if kind == 4 && mesh.definition.serialized_class == 94 {
+                    mesh.triangles.len() == primitive_count as usize
+                } else if kind == 8 && mesh.definition.serialized_class == 95 {
+                    mesh.lines.len() == primitive_count as usize
+                } else {
+                    false
+                }
             });
-            let primitive_count_matches = if kind == 4 && mesh.definition.serialized_class == 94 {
-                mesh.triangles.len() == primitive_count as usize
-            } else if kind == 8 && mesh.definition.serialized_class == 95 {
-                mesh.lines.len() == primitive_count as usize
-            } else {
-                false
-            };
             Ok(Fragment {
                 index,
                 serialized_id: id,
@@ -532,12 +575,30 @@ pub fn read_fragments_in(block: &Block, geometry: &[MeshDefinition]) -> Result<F
                 bounds_serialized_id: placement,
                 primitive_count_matches,
                 local_bounds_match,
-                status: if local_bounds_match && primitive_count_matches {
+                status: if errors.is_empty() && local_bounds_match && primitive_count_matches {
                     "decoded_requires_review"
                 } else {
                     "consistency_question"
                 }
                 .into(),
+                diagnostic: if errors.is_empty() {
+                    None
+                } else {
+                    Some(errors.join("; "))
+                },
+                appearance_diagnostic: if material.iter().all(|v| v.is_finite()) {
+                    None
+                } else {
+                    Some(format!(
+                        "Nonfinite appearance channels: {:?}",
+                        material
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, v)| !v.is_finite())
+                            .map(|(i, v)| (i, format!("{:08x}", v.to_bits())))
+                            .collect::<Vec<_>>()
+                    ))
+                },
             })
         })();
         match next {
@@ -699,7 +760,7 @@ mod tests {
         assert_eq!(g.pointer(93).unwrap(), Some(100));
         match &g.objects[&100].1 {
             Object::Bounds(bounds, origin, scalar, opaque, geometry) => {
-                assert_eq!((*opaque, *geometry), (42, 2));
+                assert_eq!((*opaque, *geometry), (42, Some(2)));
                 assert_eq!(*bounds, [0., 0., 0., 1., 2., 3.]);
                 assert_eq!(*origin, [1e10, -12345.6789, 0.25]);
                 assert_eq!(*scalar, 1.5);

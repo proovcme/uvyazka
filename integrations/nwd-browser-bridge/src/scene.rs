@@ -3,7 +3,7 @@ use crate::{
     Container,
     fragments::{Fragments, read_fragments_in},
     geometry::{MeshDefinition, read_geometry_in},
-    metadata::{LogicalModel, read_logical_models},
+    metadata::{LogicalModel, read_logical_models_with_progress},
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -104,7 +104,7 @@ pub fn read_scene(c: &Container) -> Scene {
 }
 pub fn read_scene_with_progress(c: &Container, phase: &mut dyn FnMut(&str)) -> Scene {
     phase("Исходное дерево и страницы свойств NWD");
-    let mut metadata: BTreeMap<_, _> = read_logical_models(c)
+    let mut metadata: BTreeMap<_, _> = read_logical_models_with_progress(c, phase)
         .into_iter()
         .map(|m| (m.namespace.clone(), m))
         .collect();
@@ -130,10 +130,26 @@ pub fn read_scene_with_progress(c: &Container, phase: &mut dyn FnMut(&str)) -> S
             .iter()
             .find(|b| b.entry.name == format!("{namespace}\\LcOpNwdGeometry"))
         {
-            Some(block) => match read_geometry_in(block) {
-                Ok(g) => model.geometry = g,
-                Err(e) => model.diagnostics.push(e),
-            },
+            Some(block) => {
+                match read_geometry_in(block) {
+                    Ok(g) => {
+                        let unread = g.iter().filter(|g| g.diagnostic.is_some()).count();
+                        for record in g.iter().filter(|g| g.diagnostic.is_some()).take(100) {
+                            model.diagnostics.push(format!(
+                                "Geometry slot {} at {}: {}",
+                                record.definition.index,
+                                record.definition.record_offset,
+                                record.diagnostic.as_deref().unwrap()
+                            ));
+                        }
+                        if unread > 100 {
+                            model.diagnostics.push(format!("{} further geometry records unavailable; per-record errors retained",unread-100));
+                        }
+                        model.geometry = g;
+                    }
+                    Err(e) => model.diagnostics.push(e),
+                }
+            }
             None => model.diagnostics.push("Geometry stream absent".into()),
         }
         phase("Размещения и сверка фрагментов NWD");
@@ -144,11 +160,21 @@ pub fn read_scene_with_progress(c: &Container, phase: &mut dyn FnMut(&str)) -> S
         {
             Some(block) => match read_fragments_in(block, &model.geometry) {
                 Ok(f) => {
+                    for asset in &f.assets {
+                        if let Some(error) = asset.value["diagnostic"].as_str() {
+                            model.diagnostics.push(format!(
+                                "Appearance asset {} at {}: {error}",
+                                asset.serialized_id, asset.record_offset
+                            ));
+                        }
+                    }
                     model.geometry_complete = f.decoded == f.declared
                         && f.diagnostic.is_none()
-                        && f.rows
-                            .iter()
-                            .all(|r| r.local_bounds_match && r.primitive_count_matches)
+                        && f.rows.iter().all(|r| {
+                            r.diagnostic.is_none()
+                                && r.local_bounds_match
+                                && r.primitive_count_matches
+                        })
                         && model.geometry.iter().all(|g| g.diagnostic.is_none());
                     model.fragments = Some(f);
                 }

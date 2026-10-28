@@ -1,5 +1,6 @@
 use crate::fixtures::*;
 use crate::*;
+use crate::{fragments::read_fragments, geometry::read_geometry};
 
 #[test]
 fn synthetic_scene_roundtrip_has_source_and_opaque_bits() {
@@ -90,6 +91,74 @@ fn zlib_checksum_error_remains_visible() {
     );
 }
 #[test]
+fn corrupt_or_unknown_bounded_geometry_keeps_the_next_reference_slot() {
+    for mutate in [0usize, 1] {
+        let mut bad = geometry_record();
+        if mutate == 0 {
+            bad[4..8].copy_from_slice(&999u32.to_le_bytes());
+        } else {
+            bad[24..28].copy_from_slice(&f32::NAN.to_le_bytes());
+        }
+        let c = read_container(&scene_records(
+            vec![geometry_record(), bad, geometry_record()],
+            fragment_record(),
+        ))
+        .unwrap();
+        let geometry = read_geometry(&c).unwrap();
+        assert_eq!(geometry.len(), 3);
+        assert!(geometry[0].diagnostic.is_none());
+        assert!(geometry[1].diagnostic.is_some());
+        assert!(geometry[1].definition.positions.is_empty());
+        assert_eq!(geometry[2].definition.index, 2);
+        assert_eq!(geometry[2].triangles.len(), 1);
+    }
+}
+#[test]
+fn bad_semantic_fragment_reference_keeps_the_following_complete_record() {
+    let first = fragment_record();
+    let c = read_container(&scene(geometry_record(), first.clone())).unwrap();
+    let geometry = read_geometry(&c).unwrap();
+    let f = read_fragments(&c, &geometry).unwrap();
+    let end = f.rows[0].record_offset + f.rows[0].record_bytes;
+    let mut second = first[4..end].to_vec();
+    for (id, class, new_id) in [
+        (100u32, 13u32, 104u32),
+        (101, 55, 105),
+        (102, 54, 106),
+        (103, 93, 107),
+    ] {
+        let pattern = [id.to_le_bytes(), class.to_le_bytes()].concat();
+        let at = second.windows(8).position(|p| p == pattern).unwrap();
+        second[at..at + 4].copy_from_slice(&new_id.to_le_bytes());
+    }
+    for mutation in 0..4 {
+        let mut raw = first[..end].to_vec();
+        raw[..4].copy_from_slice(&2u32.to_le_bytes());
+        match mutation {
+            0 => raw[end - 4..end].copy_from_slice(&999u32.to_le_bytes()),
+            1 => raw[end - 4..end].copy_from_slice(&0u32.to_le_bytes()),
+            2 => raw[16..24].copy_from_slice(&f64::NAN.to_le_bytes()),
+            _ => raw[end - 36..end - 28].copy_from_slice(&f64::INFINITY.to_le_bytes()),
+        }
+        raw.extend(&second);
+        let c = read_container(&scene(geometry_record(), raw)).unwrap();
+        let rows = read_fragments(&c, &read_geometry(&c).unwrap()).unwrap();
+        assert_eq!(rows.decoded, 2);
+        assert!(rows.diagnostic.is_none(), "{:?}", rows.diagnostic);
+        assert!(rows.rows[0].diagnostic.is_some(), "mutation {mutation}");
+        if mutation == 1 {
+            assert_eq!(rows.rows[0].geometry_index, None);
+        }
+        if mutation == 3 {
+            assert_eq!(rows.rows[0].placement_matrix_source_units, None);
+        }
+        assert_eq!(rows.rows[1].serialized_id, 104);
+        assert!(rows.rows[1].diagnostic.is_none());
+        assert!(rows.rows[1].local_bounds_match);
+        assert!(!serde_json::to_string(&rows).unwrap().contains("NaN"));
+    }
+}
+#[test]
 fn concatenated_zlib_members_preserve_offsets() {
     let first = zip(b"first");
     let mut z = first.clone();
@@ -135,8 +204,16 @@ fn nonexistent_geometry_reference_is_not_substituted() {
     let c = read_container(&scene(geometry_record(), f)).unwrap();
     let g = geometry::read_geometry(&c).unwrap();
     let r = fragments::read_fragments(&c, &g).unwrap();
-    assert_eq!(r.decoded, 0);
-    assert!(r.diagnostic.unwrap().contains("outside directory"));
+    assert_eq!(r.decoded, 1);
+    assert_eq!(r.rows[0].geometry_index, Some(98));
+    assert!(
+        r.rows[0]
+            .diagnostic
+            .as_deref()
+            .unwrap()
+            .contains("outside directory")
+    );
+    assert!(!r.rows[0].primitive_count_matches);
 }
 #[test]
 fn altered_declared_primitive_count_creates_question() {
@@ -168,11 +245,35 @@ fn unsupported_geometry_does_not_make_a_mesh() {
     let mut g = geometry_record();
     g[4..8].copy_from_slice(&999u32.to_le_bytes());
     let c = read_container(&scene(g, fragment_record())).unwrap();
+    let records = geometry::read_geometry(&c).unwrap();
     assert!(
-        geometry::read_geometry(&c)
-            .unwrap_err()
+        records[0]
+            .diagnostic
+            .as_deref()
+            .unwrap()
             .contains("Unsupported geometry")
     );
+    assert!(records[0].triangles.is_empty());
+}
+#[test]
+fn nonfinite_fixed_size_material_does_not_stop_geometry_or_placements() {
+    let mut fragment = fragment_record();
+    let pattern = [102u32.to_le_bytes(), 54u32.to_le_bytes()].concat();
+    let at = fragment.windows(8).position(|p| p == pattern).unwrap() + 8;
+    fragment[at..at + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+    let c = read_container(&scene(geometry_record(), fragment)).unwrap();
+    let f = read_fragments(&c, &read_geometry(&c).unwrap()).unwrap();
+    assert_eq!(f.decoded, 1);
+    assert!(f.diagnostic.is_none());
+    assert!(f.rows[0].diagnostic.is_none());
+    assert!(
+        f.rows[0]
+            .appearance_diagnostic
+            .as_deref()
+            .unwrap()
+            .contains("Nonfinite")
+    );
+    assert!(f.rows[0].local_bounds_match);
 }
 #[test]
 fn geometry_index_padding_and_segment_boundaries_are_validated() {

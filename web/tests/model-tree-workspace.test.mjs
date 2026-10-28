@@ -34,7 +34,8 @@ test('workspace wires simple/parameter search, hidden rows, selection, reset and
  const until=async predicate=>{for(let i=0;i<100&&!predicate();i++)await wait(10);assert.ok(predicate());};
  await until(()=>globalThis.__workspaceViewer.visible.length===3||!node('error').hidden);assert.equal(node('error').hidden,true,node('error').textContent);assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);
  await until(()=>document.querySelector('.branch-document'));
- const sheets=document.querySelector('.branch-document');sheets.open=true;sheets.dispatchEvent(new win.Event('toggle'));document.querySelector('.document-item').click();assert.equal(node('rvt-document').open,true);assert.match(node('rvt-record-detail').textContent,/9007199254740993/);assert.match(node('rvt-catalog-storage').textContent,/Общая база/);node('rvt-document-close').click();
+ const sourceCatalogue=document.querySelector('.branch-document').parentElement;assert.equal(sourceCatalogue.open,false);sourceCatalogue.open=true;
+ const sheets=document.querySelector('.branch-document');sheets.open=true;sheets.dispatchEvent(new win.Event('toggle'));document.querySelector('.document-item').click();assert.equal(node('rvt-document').open,true);assert.equal(node('rvt-show-source-records').checked,true);assert.match(node('rvt-record-detail').textContent,/9007199254740993/);assert.match(node('rvt-catalog-storage').textContent,/Общая база/);node('rvt-document-close').click();
  node('element-search').value='Насос A';node('element-search').dispatchEvent(new win.Event('input'));assert.equal(node('hide-matches').disabled,true);await wait(220);
  assert.equal(document.querySelectorAll('.element-item').length,1);assert.deepEqual(globalThis.__workspaceViewer.visible,['1']);
  node('visibility-filter').click();assert.deepEqual(globalThis.__workspaceViewer.visible,['1','2','3']);

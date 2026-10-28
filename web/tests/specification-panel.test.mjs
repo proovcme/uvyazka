@@ -34,6 +34,7 @@ test('GOST form uses the selected equipment, confirms only clicked bindings and 
  document.getElementById('open-specifications').click();
  [...document.querySelectorAll('.spec-template-cards button')].find(b=>b.textContent.includes('Спецификация оборудования по ГОСТ')).click();
  const host=document.querySelector('.gost-workspace');assert.equal(host.hidden,false);assert.equal(document.querySelector('.spec-legacy').hidden,true);
+ assert.equal(button(host,'JSON с источниками').parentElement.tagName,'DETAILS');assert.equal(button(host,'JSON с источниками').parentElement.open,false);
  assert.match(host.querySelector('.gost-status').textContent,/1 экземпляр → 1 строка/);assert.match(host.querySelector('tbody').textContent,/1\. Вентилятор/);
  host.querySelector('[aria-label="Настроить графу Наименование и техническая характеристика"]').click();
  assert.match(host.querySelector('.gost-drawer').textContent,/Прочитано 1 из 1/);

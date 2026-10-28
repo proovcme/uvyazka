@@ -5,6 +5,7 @@ import type {ParameterRecord} from '../src/rvt-schedule.ts';
 import type {NativeRecord,RvtDocument} from '../src/rvt-document.ts';
 import {evaluateFilter,sumCells} from '../src/rvt-schedule-rules.ts';
 import {readScheduleSettings,writeScheduleSettings} from '../src/rvt-schedule-session.ts';
+import {nativeFilterSummary} from '../src/rvt-native-filter.ts';
 
 function owner(id:number,kind='FamilyInstance',category=-2000023,type=100):ParameterRecord {
  return {identity:{element_id:id},class_name:kind,status:'complete_bounded_graph',source:{body_sha256:'body-'+id},saved_metadata:{root_references:{m_masterSymbolId:type},raw_field_parameters:[{parameter_id:-1140363,storage_type:'ElementId',raw_value:category}],parameter_sets:[],resolved_family_parameters:[],family_parameter_slots:[]}};
@@ -139,4 +140,14 @@ test('saved user workset names support text filters while integer filters use th
  record.graph!.objects.push({class_name:'ScheduleFilter',fields:rule});record.graph!.edges.push({source_object_index:1,pointer_offset:999,target_object_index:i});
  let p=reconstructSchedule(record,doc);assert.equal(p.passed_instances,1);assert.equal(p.excluded_instances,1);assert.equal(p.rows[0].cells[0].value,'Supply');
  Object.assign(rule,{m_filterType:2,m_value:{m_storageType:1,m_int:11} as any});p=reconstructSchedule(record,doc);assert.equal(p.passed_instances,1);assert.equal(p.rows[0].element_ids[0],'2');
+});
+test('saved filters on hidden fields remain mandatory alongside user filters and precede totals',()=>{
+ const {record,doc}=fixture([{id:10,extra:{m_hidden:true}},{id:-1152353,source:2}]);
+ const schema=record.graph!.objects[1].fields;schema.m_filterArr=[{pointer_token:1,offset:990}];
+ const n=record.graph!.objects.length;record.graph!.objects.push({class_name:'ScheduleFilter',fields:{m_fieldId:{m_id:0},m_filterType:2,m_value:{m_storageType:3,m_str:{m_str:'A'}}}});
+ record.graph!.edges.push({source_object_index:1,pointer_offset:990,target_object_index:n});
+ const p=reconstructSchedule(record,doc,{filters:[{field_id:'1',operator:'equal',value:1}],sum_fields:['1']});
+ assert.equal(p.columns.length,1);assert.equal(p.passed_instances,1);assert.equal(p.excluded_instances,1);assert.equal(p.totals[0].cell.value,1);
+ const summary=nativeFilterSummary(record);assert.equal(summary.complete,true);assert.equal(summary.rows[0].hidden,true);assert.equal(summary.rows[0].condition,'равно');assert.equal(summary.rows[0].value,'A');
+ schema.m_filterArr.push({pointer_token:1,offset:991});assert.equal(nativeFilterSummary(record).complete,false);assert.equal(reconstructSchedule(record,doc).passed_instances,0);
 });

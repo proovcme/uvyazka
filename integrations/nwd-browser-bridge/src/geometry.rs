@@ -42,7 +42,7 @@ fn indices(raw: &[u8], position: &mut usize, count: usize, vertices: usize) -> R
                 }
                 out.push(out[out.len() - distance]);
             }
-            128..=131 => {
+            128..=133 => {
                 let value = *out.last().ok_or("Repeat before first index")?;
                 let n = code as usize - 127;
                 if out.len() + n > count {
@@ -255,6 +255,13 @@ pub fn read_geometry_in(block: &Block) -> Result<Vec<MeshDefinition>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn longer_repeat_runs_still_obey_topology_budget() {
+        let mut at = 0;
+        assert_eq!(indices(&[0, 0x85], &mut at, 7, 1).unwrap(), vec![0; 7]);
+        let mut at = 0;
+        assert!(indices(&[0, 0x85], &mut at, 6, 1).is_err());
+    }
     #[test]
     fn index_codes_preserve_new_history_repeat_and_literal() {
         let bytes = [3, 67, 240, 0, 0, 1, 66, 66, 128];

@@ -38,9 +38,10 @@ enum Object {
     Fragment,
     Translation([f64; 3]),
     Rigid([f64; 3], [f64; 4]),
+    Scaled([f64; 3], [f64; 4], f64),
     Material([f32; 14]),
     Appearance(u32, u32, Option<u32>),
-    Bounds([f32; 6], [f64; 3], f32),
+    Bounds([f32; 6], [f64; 3], f32, u32, usize),
     Asset(Value),
     Schema(Value),
     Light(Value),
@@ -164,14 +165,12 @@ impl Graph<'_> {
         let text = self.string()?.ok_or("Saved asset JSON is null")?;
         let value: Value = serde_json::from_str(&text).map_err(|_| "Invalid saved asset JSON")?;
         let label = self.string()?;
-        let count = self.count()?;
-        let records = (0..count)
-            .map(|_| Ok([self.string()?, self.string()?, self.string()?]))
-            .collect::<Result<Vec<_>>>()?;
+        let resources = crate::saved_asset_records(&mut self.cursor)?;
         Ok(
-            json!({"saved_json":value,"label":label,"saved_string_records":records,"external_resources_loaded":false}),
+            json!({"saved_json":value,"label":label,"saved_resources":resources,"external_resources_loaded":false}),
         )
     }
+
     fn f32s<const N: usize>(&mut self) -> Result<[f32; N]> {
         let mut x = [0.; N];
         for v in &mut x {
@@ -202,7 +201,7 @@ impl Graph<'_> {
             })?;
             if *kind != expected
                 && !(expected == 182 && *kind == 185)
-                && !(expected == 14 && *kind == 15)
+                && !(expected == 14 && [15, 16].contains(kind))
             {
                 return Err("Graph backreference has unexpected type".into());
             }
@@ -220,7 +219,7 @@ impl Graph<'_> {
         let class = self.cursor.u32()?;
         if class != expected
             && !(expected == 182 && class == 185)
-            && !(expected == 14 && class == 15)
+            && !(expected == 14 && [15, 16].contains(&class))
         {
             return Err(format!(
                 "Unsupported graph class {class}, expected {expected}"
@@ -240,6 +239,14 @@ impl Graph<'_> {
                 Object::Rigid(
                     [self.f64()?, self.f64()?, self.f64()?],
                     [self.f64()?, self.f64()?, self.f64()?, self.f64()?],
+                )
+            }
+            16 => {
+                self.cursor.align(8)?;
+                Object::Scaled(
+                    [self.f64()?, self.f64()?, self.f64()?],
+                    [self.f64()?, self.f64()?, self.f64()?, self.f64()?],
+                    self.f64()?,
                 )
             }
             54 => Object::Material(self.f32s::<14>()?),
@@ -265,6 +272,11 @@ impl Graph<'_> {
                     bounds,
                     [self.f64()?, self.f64()?, self.f64()?],
                     self.f32s::<1>()?[0],
+                    self.cursor.u32()?,
+                    self.cursor
+                        .u32()?
+                        .checked_sub(1)
+                        .ok_or("Zero geometry reference")? as usize,
                 )
             }
             182 => Object::Asset(self.asset()?),
@@ -443,15 +455,6 @@ pub fn read_fragments_in(block: &Block, geometry: &[MeshDefinition]) -> Result<F
             let transform = graph.pointer(14)?;
             let appearance = graph.pointer(55)?.ok_or("Appearance missing")?;
             let placement = graph.pointer(93)?.ok_or("Bounds missing")?;
-            let opaque_word = graph.cursor.u32()?;
-            let geometry_index = graph
-                .cursor
-                .u32()?
-                .checked_sub(1)
-                .ok_or("Zero geometry reference")? as usize;
-            let mesh = geometry
-                .get(geometry_index)
-                .ok_or("Geometry reference outside directory")?;
             let (appearance_flags, material_id, extended_material_serialized_id) =
                 match graph.objects.get(&appearance) {
                     Some((_, Object::Appearance(flags, id, asset))) => (*flags, *id, *asset),
@@ -461,20 +464,30 @@ pub fn read_fragments_in(block: &Block, geometry: &[MeshDefinition]) -> Result<F
                 Some((_, Object::Material(values))) => *values,
                 _ => return Err("Unexpected material object".into()),
             };
-            let (bounds, geometry_origin, bounds_auxiliary_scalar) = match graph
-                .objects
-                .get(&placement)
-            {
-                Some((_, Object::Bounds(bounds, origin, scalar))) => (*bounds, *origin, *scalar),
-                _ => return Err("Unexpected bounds object".into()),
-            };
-            let (translation, quaternion) = match transform.and_then(|id| graph.objects.get(&id)) {
-                Some((_, Object::Translation(v))) => (*v, [0., 0., 0., 1.]),
-                Some((_, Object::Rigid(v, q))) => (*v, *q),
-                None => (geometry_origin, [0., 0., 0., 1.]),
-                _ => return Err("Unsupported placement".into()),
-            };
-            let placement_matrix_source_units = rigid_matrix(translation, quaternion)?;
+            let (bounds, geometry_origin, bounds_auxiliary_scalar, opaque_word, geometry_index) =
+                match graph.objects.get(&placement) {
+                    Some((_, Object::Bounds(bounds, origin, scalar, opaque, geometry))) => {
+                        (*bounds, *origin, *scalar, *opaque, *geometry)
+                    }
+                    _ => return Err("Unexpected bounds object".into()),
+                };
+            let mesh = geometry
+                .get(geometry_index)
+                .ok_or("Geometry reference outside directory")?;
+            let (translation, quaternion, uniform_scale) =
+                match transform.and_then(|id| graph.objects.get(&id)) {
+                    Some((_, Object::Translation(v))) => (*v, [0., 0., 0., 1.], 1.),
+                    Some((_, Object::Rigid(v, q))) => (*v, *q, 1.),
+                    Some((_, Object::Scaled(v, q, s))) if s.is_finite() && s.abs() > 1e-12 => {
+                        (*v, *q, *s)
+                    }
+                    None => (geometry_origin, [0., 0., 0., 1.], 1.),
+                    _ => return Err("Unsupported placement".into()),
+                };
+            let mut placement_matrix_source_units = rigid_matrix(translation, quaternion)?;
+            for k in [0, 1, 2, 4, 5, 6, 8, 9, 10] {
+                placement_matrix_source_units[k] *= uniform_scale;
+            }
             let mut lower = [f32::INFINITY; 3];
             let mut upper = [f32::NEG_INFINITY; 3];
             for point in &mesh.definition.positions {
@@ -554,6 +567,60 @@ pub fn read_fragments_in(block: &Block, geometry: &[MeshDefinition]) -> Result<F
 mod tests {
     use super::*;
     #[test]
+    fn repeated_bounds_reuses_its_geometry_reference_without_consuming_next_record() {
+        use crate::fixtures::*;
+        let mut b = fragment_record();
+        b.truncate(b.len() - 4); // final alignment only
+        b[0..4].copy_from_slice(&2u32.to_le_bytes());
+        for n in [104, 13] {
+            u32v(&mut b, n)
+        }
+        align(&mut b, 8);
+        b.extend(1f64.to_le_bytes());
+        for n in [1, 4, 0, 123, 0, 1, 101, 1, 103] {
+            u32v(&mut b, n)
+        }
+        align(&mut b, 8);
+        let c = crate::read_container(&scene(geometry_record(), b)).unwrap();
+        let g = crate::geometry::read_geometry(&c).unwrap();
+        let f = read_fragments(&c, &g).unwrap();
+        assert_eq!(f.decoded, 2);
+        assert!(f.diagnostic.is_none(), "{:?}", f.diagnostic);
+        assert_eq!(f.rows[0].geometry_index, f.rows[1].geometry_index);
+        assert!(
+            f.rows
+                .iter()
+                .all(|r| r.local_bounds_match && r.primitive_count_matches)
+        );
+    }
+    #[test]
+    fn scaled_placement_has_eight_doubles_and_preserves_backreferences() {
+        let mut b = Vec::new();
+        for n in [100u32, 16] {
+            b.extend(n.to_le_bytes())
+        }
+        for n in [1f64, 2., 3., 0., 0., 0., 1., -1.] {
+            b.extend(n.to_le_bytes())
+        }
+        for n in [1u32, 100] {
+            b.extend(n.to_le_bytes())
+        }
+        let mut g = Graph {
+            cursor: Cursor::new(&b),
+            objects: BTreeMap::new(),
+            depth: 0,
+            asset_values: 0,
+            assets: vec![],
+        };
+        assert_eq!(g.pointer(14).unwrap(), Some(100));
+        assert_eq!(g.pointer(14).unwrap(), Some(100));
+        assert!(matches!(
+            g.objects[&100].1,
+            Object::Scaled([1., 2., 3.], [0., 0., 0., 1.], -1.)
+        ));
+        assert_eq!(g.cursor.pos, b.len());
+    }
+    #[test]
     fn translation_backreference_preserves_values_and_type() {
         let mut b = Vec::new();
         for n in [100u32, 14] {
@@ -620,6 +687,8 @@ mod tests {
             b.extend(value.to_le_bytes());
         }
         b.extend(1.5f32.to_le_bytes());
+        b.extend(42u32.to_le_bytes());
+        b.extend(3u32.to_le_bytes());
         let mut g = Graph {
             cursor: Cursor::new(&b),
             objects: BTreeMap::new(),
@@ -629,7 +698,8 @@ mod tests {
         };
         assert_eq!(g.pointer(93).unwrap(), Some(100));
         match &g.objects[&100].1 {
-            Object::Bounds(bounds, origin, scalar) => {
+            Object::Bounds(bounds, origin, scalar, opaque, geometry) => {
+                assert_eq!((*opaque, *geometry), (42, 2));
                 assert_eq!(*bounds, [0., 0., 0., 1., 2., 3.]);
                 assert_eq!(*origin, [1e10, -12345.6789, 0.25]);
                 assert_eq!(*scalar, 1.5);

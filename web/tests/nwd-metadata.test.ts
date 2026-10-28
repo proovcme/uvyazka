@@ -82,3 +82,25 @@ test('source property names cannot mutate prototypes and specification cells ret
  const source=(cell.evidence[0].location as any).nwd_source;
  assert.equal(source.source_node_id,'nwd-node:0:2');assert.equal(source.page_index,0);assert.equal(source.record_offset,80);assert.equal(source.stream,'synthetic\\LcOaPartitionProps');
 });
+
+test('mirrored placements reverse triangle winding once while preserving source indices',async()=>{
+ const r=result();r.models[0].fragments.rows[0].placement_matrix_source_units=[-1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
+ const original=[...r.models[0].geometry[0].triangles[0]];const {model,binary}=await importNwd(r,'synthetic.nwd');
+ const mesh=model.elements.find(e=>e.mesh)!.mesh!;assert.deepEqual([...new Uint32Array(binary,mesh.index_byte_offset,3)],[0,2,1]);
+ assert.deepEqual(r.models[0].geometry[0].triangles[0],original);
+});
+
+test('packed browser geometry retains positions, topology and bounds without decimal arrays',async()=>{
+ const r:any=result(),b=new ArrayBuffer(48);new Float32Array(b,0,9).set([0,0,0,1000,0,0,0,1000,0]);new Uint32Array(b,36,3).set([0,1,2]);
+ r.geometry_binary=new Uint8Array(b);r.packed_geometry=[[{position_byte_offset:0,vertex_count:3,triangle_byte_offset:36,triangle_index_count:3,line_byte_offset:48,line_index_count:0}]];
+ r.models[0].geometry[0].positions=[];r.models[0].geometry[0].triangles=[];
+ const packed=await importNwd(r,'synthetic.nwd'),plain=await importNwd(result(),'synthetic.nwd');
+ assert.deepEqual(packed.model.coordinate_system,plain.model.coordinate_system);assert.deepEqual(new Uint8Array(packed.binary),new Uint8Array(plain.binary));
+});
+
+test('large source relationship inventory federates without argument stack overflow',async()=>{
+ const {model,binary}=await importNwd(result(),'synthetic.nwd');const relation=model.relationships[0];
+ model.relationships=Array.from({length:150000},(_,i)=>({...relation,step_id:i+1}));
+ const composed=await federate([{instanceId:'large-synthetic',model,binary,offset:[0,0,0],rotation:0,visible:true}]);
+ assert.equal(composed.model.relationships.length,150000);assert.ok(composed.model.relationships.every(r=>r.parent_id.startsWith('large-synthetic:')));
+});

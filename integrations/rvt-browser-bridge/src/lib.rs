@@ -58,6 +58,11 @@ pub fn convert_bytes(bytes: Vec<u8>) -> Result<BrowserConversion, String> {
 mod web {
     use wasm_bindgen::prelude::*;
     use serde::Serialize;
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(catch, js_namespace=JSON, js_name=parse)]
+        fn parse_json(text:&str)->Result<JsValue,JsValue>;
+    }
 
     #[wasm_bindgen(js_name = extractRvtEngineering)]
     pub fn extract_rvt_engineering(bytes: &[u8]) -> Result<JsValue, JsValue> {
@@ -70,8 +75,8 @@ mod web {
     pub fn extract_rvt_schedule_data(bytes: &[u8]) -> Result<JsValue, JsValue> {
         super::validate_input_size(bytes.len()).map_err(|e|JsValue::from_str(&e))?;
         let result=super::schedule_data::extract(bytes.to_vec()).map_err(|e|JsValue::from_str(&e))?;
-        result.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
-            .map_err(|e|JsValue::from_str(&e.to_string()))
+        // A single transfer avoids per-property WASM calls for large parameter catalogues.
+        parse_json(&serde_json::to_string(&result).map_err(|e|JsValue::from_str(&e.to_string()))?)
     }
 
     #[wasm_bindgen(js_name = extractRvtDocument)]

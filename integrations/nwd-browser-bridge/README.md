@@ -18,8 +18,10 @@ browser requests a recorded assumption for unknown headers.
 
 Geometry indices, primitive counts and local bounds are cross-checked. The
 browser keeps source nodes separate from geometric fragments, preserves property
-provenance and never counts fragments as physical equipment. Rigid translation
-and quaternion placements are supported for the observed layouts. Source assets
+provenance and never counts fragments as physical equipment. Rigid translation, quaternion and observed uniform-scale/reflection placements
+are supported. Reused bounds objects retain their geometry reference. Embedded
+material resources are bounded and hashed without loading external assets.
+Browser geometry crosses WASM as packed binary; the native CLI retains arrays. Source assets
 are data only: no remote resources, JSON code or schema XML is executed.
 
 Not yet imported: saved views, selection sets, clash results and TimeLiner.

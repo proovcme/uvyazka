@@ -58,6 +58,17 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaises(ValueError):data.snapshot('two',key)
         self.assertIsNone(self.service.for_source('one','c'*64))
 
+    def test_compact_curve_catalogue_roundtrips_definitions_and_explicit_type_links(self):
+        doc=catalogue();data=doc['schedule_data'];data.update(schema_version=2,scope=['RbsDuctCurve','AbsDuctType'])
+        row=data['records'][0];row.update(class_name='RbsDuctCurve',root_fields={'m_idType':100})
+        row['saved_metadata']['parameter_definitions_ids']=[123]
+        data['summary']={'parameter_definitions':{'123':{'parameter_id':123,'caption':'Synthetic code'}}}
+        data['records'].append({'identity':{'element_id':100},'class_name':'AbsDuctType','status':'complete','source':{'stream':'synthetic'},'saved_metadata':None})
+        key=self.service.save('one',doc,'compact')['extraction_id']
+        self.assertEqual(self.service.document('one',key)['schedule_data'],data)
+        bad=copy.deepcopy(doc);bad['schedule_data']['records'][0]['class_name']='NotDeclared'
+        with self.assertRaisesRegex(ValueError,'scope'):self.service.save('one',bad,'invalid-scope')
+
     def test_invalid_identity_hash_graph_and_request_reuse_never_mutate_a_snapshot(self):
         original=catalogue();saved=self.service.save('one',original,'r1')
         for mutate in [lambda d:d['schedule_data'].update(source_sha256='c'*64),

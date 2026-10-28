@@ -15,6 +15,21 @@ export function nwdNeedsUnits(result:any):boolean{return sourceModels(result).so
 export async function importNwd(result:any,filename:string,unit?:NwdUnit,options:{geometryBudgetBytes?:number}={}):Promise<{model:ModelPackage;binary:ArrayBuffer}>{
  const budget=options.geometryBudgetBytes??256*1024**2;
  if(!Number.isSafeInteger(budget)||budget<0||budget>256*1024**2)throw Error('NWD: недопустимый бюджет сцены');
+ const packedBytes=result.geometry_binary as Uint8Array|undefined;
+ const unpacked=new Set<string>();
+ const unpack=(source:any,si:number,gi:number)=>{
+  const packed=result.packed_geometry?.[si]?.[gi];if(!packed)return;
+  const key=si+':'+gi;if(unpacked.has(key))return;unpacked.add(key);
+  if(!(packedBytes instanceof Uint8Array))throw Error('NWD: отсутствует бинарная геометрия');
+  const view=(offset:number,count:number,kind:'position'|'index')=>{
+   if(!Number.isSafeInteger(offset)||offset<0||offset%4||!Number.isSafeInteger(count)||count<0||count>12_000_000||offset+count*4>packedBytes.byteLength)throw Error('NWD: повреждён адрес бинарной геометрии');
+   return kind==='position'?new Float32Array(packedBytes.buffer,packedBytes.byteOffset+offset,count):new Uint32Array(packedBytes.buffer,packedBytes.byteOffset+offset,count);
+  };
+  const group=(v:Float32Array|Uint32Array,n:number)=>Array.from({length:v.length/n},(_,i)=>Array.from(v.subarray(i*n,(i+1)*n)));
+  if(packed.triangle_index_count%3||packed.line_index_count%2)throw Error('NWD: повреждён размер топологии');
+  const g=source.geometry[gi];g.positions=group(view(packed.position_byte_offset,packed.vertex_count*3,'position'),3);
+  g.triangles=group(view(packed.triangle_byte_offset,packed.triangle_index_count,'index'),3);g.lines=group(view(packed.line_byte_offset,packed.line_index_count,'index'),2);
+ };
  const models=sourceModels(result),calibrations=models.map(s=>calibration(s,unit)),hash=result.container.source_sha256;
  if(!models.length)throw Error('NWD: модельные потоки не найдены');
  const id=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(['nwd-v2',hash,calibrations])))),n=>n.toString(16).padStart(2,'0')).join('');
@@ -27,6 +42,7 @@ export async function importNwd(result:any,filename:string,unit?:NwdUnit,options
   sources.push({namespace,root_id:native.rootId,geometry_complete:!!source.geometry_complete,metadata_status:source.logical_model?.status??'not_read'});
   for(const node of native.elements)if(node.nwd?.parent_id)relationships.push({step_id:node.step_id,class:'NwdLogicalHierarchy',parent_id:node.nwd.parent_id,child_ids:[node.id]});
   for(const f of source.fragments?.rows??[]){
+   unpack(source,sourceIndex,f.geometry_index);
    const g=source.geometry?.[f.geometry_index];if(!g)throw Error('NWD: ссылка за пределами каталога геометрии');
    const owner=native.byIndex.get(f.owner_reference),primitive=g.serialized_class===94?'triangles':'lines',topology=(primitive==='triangles'?g.triangles:g.lines) as number[][],matrix=f.placement_matrix_source_units;
    let indexCount=0;for(const row of topology){indexCount+=row.length;for(const v of row)if(!Number.isSafeInteger(v)||v<0||v>=g.positions.length)throw Error('NWD: индекс вне массива координат');}
@@ -35,7 +51,8 @@ export async function importNwd(result:any,filename:string,unit?:NwdUnit,options
    // Unrendered fragments still keep ownership and source properties.
    const bytes=g.positions.length*12+indexCount*4;
    if(valid&&size+bytes>budget){valid=false;if(!diagnostics.some(d=>d.kind==='nwd-memory-budget'))diagnostics.push({element_id:'',kind:'nwd-memory-budget',message:`Часть геометрии не подготовлена: бюджет сцены ${budget} байт. Исходное дерево и свойства сохранены.`});}
-   const indices=valid?topology.flat():[];
+   const determinant=matrix?matrix[0]*(matrix[5]*matrix[10]-matrix[9]*matrix[6])-matrix[4]*(matrix[1]*matrix[10]-matrix[9]*matrix[2])+matrix[8]*(matrix[1]*matrix[6]-matrix[5]*matrix[2]):1;
+   const indices=valid?topology.flatMap(row=>primitive==='triangles'&&determinant<0?[row[0],row[2],row[1]]:row):[];
    if(matrix&&(!Array.isArray(matrix)||matrix.length!==16||matrix.some((v:unknown)=>typeof v!=='number'||!Number.isFinite(v))))throw Error('NWD: неверная матрица размещения');
    const positions=(valid?g.positions.map((p:number[])=>p.map((v,k)=>matrix?(matrix[k]*p[0]+matrix[4+k]*p[1]+matrix[8+k]*p[2]+matrix[12+k])*scale:(v+f.translation[k])*scale)):[]) as Vec3[];
    if(positions.some(p=>p.length!==3||p.some(v=>!Number.isFinite(v)||Math.abs(v)>1e20)))throw Error('NWD: недопустимые преобразованные координаты');

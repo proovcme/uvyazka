@@ -115,3 +115,28 @@ test('review settings survive serialization but cannot leak across source hashes
  assert.throws(()=>readScheduleSettings(raw,'b','50'));assert.throws(()=>readScheduleSettings(raw,'a','51'));assert.throws(()=>readScheduleSettings('{','a','50'));
  assert.throws(()=>readScheduleSettings(writeScheduleSettings({...settings,filters:[{field_id:'5',operator:'equal',value:Infinity}]},'a','50'),'a','50'));
 });
+
+test('multicategory schedule retains curves and resolves a saved type link without caption matching',()=>{
+ const {record,doc,a,t}=fixture([{id:99}]);record.graph!.objects[1].fields.m_categoryId=-1;
+ a.class_name='RbsDuctCurve';a.saved_metadata!.root_references={};a.root_fields={m_idType:100};
+ value(t,99,'Inherited');const p=reconstructSchedule(record,doc);assert.equal(p.instance_count,2);
+ assert.equal(p.rows[0].cells[0].value,'Inherited');assert.match(p.rows[0].cells[0].evidence[0].rule!,/type_reference/);
+});
+test('native filters follow explicit field links and retain unknown missing parameters',()=>{
+ const {record,doc}=fixture();const schema=record.graph!.objects[1].fields;schema.m_filterArr=[{pointer_token:1,offset:900}];
+ const n=record.graph!.objects.length;record.graph!.objects.push({class_name:'ScheduleFilter',fields:{m_fieldId:{m_id:0},m_filterType:2,m_value:{m_storageType:3,m_str:{m_str:'A'}}}});
+ record.graph!.edges.push({source_object_index:1,pointer_offset:900,target_object_index:n});
+ const unknown=owner(3);doc.schedule_data!.records.push(unknown);
+ const p=reconstructSchedule(record,doc);assert.equal(p.passed_instances,1);assert.equal(p.excluded_instances,1);assert.equal(p.unknown_instances,1);assert.equal(p.rule_audit.native_filters.state,'interpreted_requires_review');
+});
+
+test('saved user workset names support text filters while integer filters use the exact partition ID',()=>{
+ const {record,doc,a,b}=fixture([{id:-1002053}]);
+ a.workset={status:'decoded',partition_id:10,name:'Supply',source:{stream:'Global/PartitionTable'}};
+ b.workset={status:'decoded',partition_id:11,name:'Return',source:{stream:'Global/PartitionTable'}};
+ const schema=record.graph!.objects[1].fields;schema.m_filterArr=[{pointer_token:1,offset:999}];const i=record.graph!.objects.length;
+ const rule={m_fieldId:{m_id:0},m_filterType:8,m_value:{m_storageType:3,m_str:{m_str:'Supply'}}};
+ record.graph!.objects.push({class_name:'ScheduleFilter',fields:rule});record.graph!.edges.push({source_object_index:1,pointer_offset:999,target_object_index:i});
+ let p=reconstructSchedule(record,doc);assert.equal(p.passed_instances,1);assert.equal(p.excluded_instances,1);assert.equal(p.rows[0].cells[0].value,'Supply');
+ Object.assign(rule,{m_filterType:2,m_value:{m_storageType:1,m_int:11} as any});p=reconstructSchedule(record,doc);assert.equal(p.passed_instances,1);assert.equal(p.rows[0].element_ids[0],'2');
+});

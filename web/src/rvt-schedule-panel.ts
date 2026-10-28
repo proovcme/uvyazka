@@ -6,7 +6,7 @@ import {readScheduleSettings,writeScheduleSettings} from './rvt-schedule-session
 const node=<K extends keyof HTMLElementTagNameMap>(tag:K,text?:string)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
 export function schedulePreviewPanel(host:HTMLElement,record:NativeRecord,document:RvtDocument,download:(text:string,type:string,name:string)=>void){
  const panel=node('details');panel.id='rvt-preview';panel.append(node('summary','Сверочная ведомость по элементам'));host.append(panel);
- panel.append(node('p','Строки строятся по параметрам экземпляров и типов с совпадением ID категории. Длины из подтверждённых слотов показаны в мм; CSV сохраняет исходные значения и единицы. Это предварительная выборка, а не пересчитанная спецификация Revit.'));
+ panel.append(node('p','Строки строятся по параметрам экземпляров и типов с совпадением ID категории либо как многокатегорийная выборка. Длины из подтверждённых слотов показаны в мм; CSV сохраняет исходные значения и единицы. Это предварительная выборка, а не пересчитанная спецификация Revit.'));
  const build=node('button','Построить сверочную ведомость');panel.append(build);
  build.disabled=!document.schedule_data;
  if(!document.schedule_data)panel.append(node('p','Параметры ещё не прочитаны или недоступны.'));

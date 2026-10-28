@@ -63,6 +63,57 @@ impl<'a> Cursor<'a> {
         Ok(text)
     }
 }
+/// Saved material resource records are inert evidence. Embedded representations
+/// are bounded and hashed; no image decoder or external URI is invoked.
+fn saved_asset_records(c: &mut Cursor<'_>) -> Result<serde_json::Value> {
+    fn text(c: &mut Cursor<'_>) -> Result<Option<String>> {
+        let n = c.u32()?;
+        if n == u32::MAX {
+            return Ok(None);
+        }
+        if n > 1_048_576 {
+            return Err("Asset resource string budget exceeded".into());
+        }
+        let v = std::str::from_utf8(c.take(n as usize)?)
+            .map_err(|_| "Invalid asset resource UTF-8")?
+            .to_owned();
+        c.align(4)?;
+        Ok(Some(v))
+    }
+    let count = c.u32()? as usize;
+    if count > 100_000 {
+        return Err("Asset resource count budget exceeded".into());
+    }
+    let mut records = Vec::new();
+    for _ in 0..count {
+        let offset = c.pos;
+        let uri = text(c)?;
+        let n = c.u32()? as usize;
+        if n > 1000 {
+            return Err("Asset representation count budget exceeded".into());
+        }
+        let mut representations = Vec::new();
+        for _ in 0..n {
+            let name = text(c)?;
+            let format = text(c)?;
+            c.align(8)?;
+            let size = c.u64()?;
+            if size > 16 * 1024 * 1024 {
+                return Err(format!(
+                    "Embedded asset budget exceeded at {}: {size}, resource {offset}",
+                    c.pos - 8
+                ));
+            }
+            let data_offset = c.pos;
+            let sha = hash(c.take(size as usize)?);
+            c.align(4)?;
+            representations.push(serde_json::json!({"name":name,"format":format,"bytes":size,"record_offset":data_offset,"sha256":sha,"decoded":false}));
+        }
+        let suffix = if n == 0 { text(c)? } else { None };
+        records.push(serde_json::json!({"uri":uri,"representations":representations,"saved_suffix":suffix,"record_offset":offset,"external_resources_loaded":false}));
+    }
+    Ok(serde_json::json!(records))
+}
 #[derive(Debug, Serialize, Clone)]
 pub struct Entry {
     pub name: String,
@@ -455,13 +506,14 @@ mod web {
         bytes: &[u8],
         on_phase: &js_sys::Function,
     ) -> std::result::Result<JsValue, JsValue> {
-        let phase = |text: &str| {
+        let mut phase = |text: &str| {
             let _ = on_phase.call1(&JsValue::NULL, &JsValue::from_str(text));
         };
         phase("Контейнер и распаковка потоков");
         let c = super::read_container(bytes).map_err(|e| JsValue::from_str(&e))?;
         phase("Дерево, страницы свойств, геометрия и размещения");
-        let scene = super::scene::read_scene(&c);
+        let mut scene = super::scene::read_scene_with_progress(&c, &mut phase);
+        let (binary, packed_geometry) = super::scene::pack_geometry(&mut scene);
         phase("Подготовка данных для сцены");
         let report = super::scene::SceneReport {
             container: &c,
@@ -469,8 +521,24 @@ mod web {
         };
         // One JSON transfer avoids millions of individual WASM → JS property
         // calls for a large coordination model. Precise source IDs are strings.
-        let json = serde_json::to_string(&report).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        #[derive(serde::Serialize)]
+        struct BrowserReport<'a> {
+            #[serde(flatten)]
+            report: super::scene::SceneReport<'a>,
+            packed_geometry: Vec<Vec<super::scene::PackedGeometry>>,
+        }
+        let json = serde_json::to_string(&BrowserReport {
+            report,
+            packed_geometry,
+        })
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
         phase("Передача дерева, свойств и геометрии в браузер");
-        js_sys::JSON::parse(&json)
+        let result = js_sys::JSON::parse(&json)?;
+        js_sys::Reflect::set(
+            &result,
+            &JsValue::from_str("geometry_binary"),
+            &js_sys::Uint8Array::from(binary.as_slice()),
+        )?;
+        Ok(result)
     }
 }

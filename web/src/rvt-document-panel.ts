@@ -35,14 +35,14 @@ export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>vo
   const copy=node('button','Копировать запись');copy.dataset.copy=JSON.stringify({source:data?.source,record},null,2);host.append(copy);
   if(record.kind==='schedule'){
    if(data)schedulePreviewPanel(host,record,data,download);
-   const s=schedule(record);const note=node('p','Ниже — сохранённые ячейки RVT, без пересчёта. Сверочная ведомость выше строится отдельно; формулы, нативные фильтры и точное оформление Revit пока не воспроизводятся.');note.className='rvt-notice';host.append(note);
+   const s=schedule(record);const note=node('p','Ниже — сохранённые ячейки RVT, без пересчёта. Сверочная ведомость выше строится отдельно; формулы и точное оформление Revit пока не воспроизводятся. Поддержанные сохранённые фильтры применяются по профилю Увязки, остальные отмечаются как неизвестные.');note.className='rvt-notice';host.append(note);
    const csv=node('button','Ячейки CSV');csv.disabled=!s.cells.length;csv.onclick=()=>download(scheduleCsv(record),'text/csv',`rvt-schedule-${record.identity.element_id}.csv`);host.append(csv);
    const definition=node('details'),definitionTitle=node('summary',`Поля спецификации · ${s.columns.length}`);definition.append(definitionTitle);host.append(definition);
    if(s.columns.length)table(definition,['Порядок в RVT','ID','Заголовок','Скрыто','Параметр'],s.columns.map(c=>[c.order,c.id,c.properties.m_columnHeading,typeof c.properties.m_hidden==='boolean'?(c.properties.m_hidden?'Да':'Нет'):null,identifier(c.properties.m_paramElemId)]));
    for(const issue of s.issues)host.append(node('p',issue));
    host.append(node('h3',`Сохранённые ячейки · ${s.cells.length}`));
    if(!s.cells.length)host.append(node('p','Сохранённых ячеек не получено. Это не пустая спецификация и не нулевые количества.'));
-   if(s.cells.length)host.append(node('p','Номера строк и колонок — исходные. «Пустая» — сохранён пустой текст; «Нет данных» — записи в этой позиции нет среди прочитанных. Нажмите ячейку для проверки источника. Объединение и оформление не реконструируются.'));
+   if(s.cells.length)host.append(node('p','Номера строк и колонок — исходные. «Пустая» — сохранён пустой текст; «Нет данных» — записи в этой позиции нет среди прочитанных. Нажмите ячейку для проверки источника. Пустой текст у ссылки на параметр или формулу отмечается как непрочитанное значение. Объединение и оформление не реконструируются.'));
    for(const grid of scheduleGrids(s.cells)){
     const section=node('section');section.className='rvt-schedule-grid';section.append(node('h4',`Секция ${JSON.stringify(grid.section)??'неизвестна'}`));host.append(section);
     const toolbar=node('div');toolbar.className='rvt-grid-controls';const area=node('div');area.className='rvt-table-scroll';const evidence=node('details'),caption=node('summary','Источник выбранной ячейки'),pre=node('pre','Выберите ячейку таблицы.');evidence.append(caption,pre);section.append(toolbar,area,evidence);
@@ -57,7 +57,7 @@ export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>vo
     const render=()=>{
      controls();area.replaceChildren();const t=node('table'),head=node('thead'),header=node('tr'),body=node('tbody');header.append(node('th','Строка / колонка'));const columns=grid.columns.slice(columnOffset,columnOffset+12);for(const col of columns)header.append(node('th',String(col)));head.append(header);
      for(const row of grid.rows.slice(rowOffset,rowOffset+50)){const tr=node('tr'),label=node('th',String(row));label.scope='row';tr.append(label);
-      for(const column of columns){const entries=grid.cells.get(`${row}:${column}`)??[],state=savedCellState(entries),td=node('td'),value=state==='text'?entries[0].text!:({missing:'Нет данных',conflict:`Конфликт: ${entries.length} записей`,unreadable:'Текст не прочитан',empty:'Пустая'} as Record<string,string>)[state];
+      for(const column of columns){const entries=grid.cells.get(`${row}:${column}`)??[],state=savedCellState(entries),td=node('td'),value=state==='text'?entries[0].text!:({missing:'Нет данных',conflict:`Конфликт: ${entries.length} записей`,unreadable:'Значение не прочитано',empty:'Пустая'} as Record<string,string>)[state];
        const b=node('button',value);b.className='rvt-cell';b.dataset.state=state;b.setAttribute('aria-label',`Строка ${row}, колонка ${column}: ${value}`);b.onclick=()=>{caption.textContent=`Источник: строка ${row}, колонка ${column}`;pre.textContent=JSON.stringify({source:data?.source,element_id:record.identity.element_id,section:grid.section,row,column,status:state,cells:entries},null,2);evidence.open=true;};td.append(b);tr.append(td);
       }body.append(tr);
      }t.append(head,body);area.append(t);

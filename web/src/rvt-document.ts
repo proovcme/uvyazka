@@ -74,5 +74,7 @@ export function scheduleGrids(cells:SavedCell[]):SavedGrid[]{
  return [...groups.values()];
 }
 export function savedCellState(cells:SavedCell[]):'missing'|'conflict'|'unreadable'|'empty'|'text'{
- if(!cells.length)return 'missing';if(cells.length>1)return 'conflict';if(cells[0].text===null)return 'unreadable';return cells[0].text===''?'empty':'text';
+ if(!cells.length)return 'missing';if(cells.length>1)return 'conflict';if(cells[0].text===null)return 'unreadable';const c=cells[0],pid=identifier(c.properties.m_paramId);
+ if(c.text===''&&(pid!==null&&pid!=='-1'||c.properties.m_oCalculatedValue?.pointer_token||c.properties.m_arrCombinedParams?.length))return 'unreadable';
+ return c.text===''?'empty':'text';
 }

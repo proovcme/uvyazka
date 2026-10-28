@@ -55,7 +55,10 @@ impl<'a> Graph<'a> {
             return Ok(None);
         }
         if n > 1_048_576 {
-            return Err("Metadata string exceeds budget".into());
+            return Err(format!(
+                "Metadata string exceeds budget at {}: {n}",
+                self.c.pos - 4
+            ));
         }
         let value = std::str::from_utf8(self.c.take(n as usize)?)
             .map_err(|_| "Invalid metadata UTF-8")?
@@ -199,14 +202,10 @@ impl<'a> Graph<'a> {
                 let value: Value =
                     serde_json::from_str(&text).map_err(|_| "Invalid saved asset JSON")?;
                 let label = self.string()?;
-                let count = self.count()?;
-                let mut string_records = Vec::new();
-                for _ in 0..count {
-                    string_records.push([self.string()?, self.string()?, self.string()?]);
-                }
-                o.values = json!({"saved_json":value,"label":label,"saved_string_records":string_records,"references_resolved":false});
+                let resources = crate::saved_asset_records(&mut self.c)?;
+                o.values = json!({"saved_json":value,"label":label,"saved_resources":resources,"references_resolved":false});
             }
-            22 | 53 | 31 | 40 | 41 | 66 | 70 | 79 | 86 | 92 | 97 | 98 | 200 => {
+            22 | 53 | 31 | 39 | 40 | 41 | 66 | 70 | 79 | 86 | 92 | 97 | 98 | 200 => {
                 o.name = self.string()?;
                 o.type_reference = self.pointer()?;
                 o.flags = self.c.u32()?;
@@ -223,6 +222,12 @@ impl<'a> Graph<'a> {
                         }
                     }
                     31 => o.values = json!({"material_components": self.doubles(14)?}),
+                    39 => {
+                        if o.flags != 0x20000 {
+                            return Err("Unsupported logical affine-transform flags".into());
+                        }
+                        o.values = json!({"affine_components_source":self.doubles(12)?,"raw_transform_suffix":self.c.u32()?,"layout_requires_review":true});
+                    }
                     40 => {
                         if o.flags != 0x20000 {
                             return Err(format!(
@@ -805,7 +810,7 @@ mod tests {
         }
     }
     #[test]
-    fn saved_json_asset_has_three_strings_per_record_and_no_invented_tail() {
+    fn saved_json_asset_preserves_empty_resource_suffix_without_invented_tail() {
         let mut b = vec![];
         words(&mut b, &[0, 100, 1]);
         leaf(&mut b, 101, "A", 1);
@@ -826,7 +831,10 @@ mod tests {
             .iter()
             .find(|o| o.serialized_class == 185)
             .unwrap();
-        assert_eq!(asset.values["saved_string_records"][1][2], "original");
+        assert_eq!(
+            asset.values["saved_resources"][1]["saved_suffix"],
+            "original"
+        );
         assert_eq!(asset.values["references_resolved"], false);
     }
     #[test]

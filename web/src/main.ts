@@ -1,3 +1,5 @@
+import {installWindowControls} from './window-controls';
+import './window-controls.css';
 import {specificationPanel} from './specification-panel';
 import {reviewPanel} from './review-panel';
 import {engineeringPanel} from './engineering-panel';
@@ -60,6 +62,7 @@ const tree=modelTreePanel(el('element-tree'),visibility,{select:(id,additive)=>{
 const levelFacet=facetFilter(el<HTMLDetailsElement>('level-filter'),'Уровни',applySceneVisibility);
 const categoryFacet=facetFilter(el<HTMLDetailsElement>('category-filter'),'Категории',applySceneVisibility);
 initTheme();
+installWindowControls();
 installPropertyCopy();
 modelDataPanel(()=>model,id=>{selectElement(id);viewer?.focusTargets([id]);});
 const specifications=specificationPanel({shared:!DEMO,model:()=>model,documents:()=>[...catalogues.values()],project:()=>measurementProject,matches:()=>treeItems.map(e=>e.id),selection:()=>[...selection],show:ids=>{selection.clear();for(const id of ids)selection.add(id);selectedId=ids[0]??null;updateSelection();selectElement(selectedId);selection.clear();for(const id of ids)selection.add(id);updateSelection();viewer?.focusTargets(ids);}});

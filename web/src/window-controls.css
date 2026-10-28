@@ -1,0 +1,17 @@
+dialog.window-resizable{resize:both;min-width:min(360px,calc(100dvw - 16px));min-height:min(240px,calc(100dvh - 16px));box-sizing:border-box}
+.window-resizable .panel-head,.window-resizable .gost-head{flex-shrink:0}
+.window-maximize{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;flex:0 0 auto;padding:8px 12px;font:inherit;font-size:12px;color:var(--secondary);background:var(--panel);border:1px solid var(--edge);border-radius:4px;white-space:nowrap}
+.window-maximize svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.5}
+.window-maximize:hover{background:var(--field);color:var(--ink)}
+.window-maximize:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.window-maximize[aria-pressed=true]{background:var(--field);color:var(--ink)}
+.window-resizable.window-expanded{position:fixed!important;inset:0!important;width:100dvw!important;height:100dvh!important;max-width:100dvw!important;max-height:100dvh!important;min-width:0!important;min-height:0!important;margin:0!important;border-radius:0!important;resize:none!important;box-sizing:border-box}
+dialog.window-expanded>.panel-head{position:sticky;top:0;z-index:3;background:var(--panel)}
+.window-resizable.specification-dialog{height:92dvh}
+.window-resizable .spec-legacy{height:100%;min-height:0;display:flex;flex-direction:column}
+.window-expanded .rvt-table-scroll{max-height:none}
+.window-resizable .gost-workspace{height:100%;max-height:none;min-height:0}
+.window-resizable .spec-workbench{height:auto;min-height:0;flex:1}
+@media(max-width:600px){.window-maximize{min-width:40px;padding:8px}.window-maximize span{display:none}.window-resizable .panel-head,.window-resizable .gost-head{gap:8px}}
+
+.window-resizable .window-actions{display:flex;align-items:center;gap:8px;margin-left:auto;flex:0 0 auto!important}

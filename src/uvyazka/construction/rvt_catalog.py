@@ -40,6 +40,12 @@ def validate(document):
     parameters = schedule.get('records', []) if schedule else []
     if not isinstance(parameters, list) or len(parameters) > 100000:
         raise ValueError('Bounded parameter records required')
+    parameter_classes={'FamilyInstance','FamilySymbol'}
+    if schedule and schedule.get('schema_version') == 2:
+        scope=schedule.get('scope')
+        if not isinstance(scope,list) or not 1<=len(scope)<=512 or any(not isinstance(c,str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,127}',c) for c in scope):
+            raise ValueError('Bounded declared native parameter classes required')
+        parameter_classes=set(scope)
     for rows, catalogue in [(records, True), (parameters, False)]:
         ids = set()
         for row in rows:
@@ -53,8 +59,8 @@ def validate(document):
                 raise ValueError('Native record class/status required')
             if catalogue and row.get('kind') not in {'view', 'schedule', 'placement'}:
                 raise ValueError('Catalogue kind must be view, schedule or placement')
-            if not catalogue and (row['class_name'] not in {'FamilyInstance','FamilySymbol'} or row.get('kind','element')!='element'):
-                raise ValueError('Schedule parameter scope must be FamilyInstance or FamilySymbol')
+            if not catalogue and (row['class_name'] not in parameter_classes or row.get('kind','element')!='element'):
+                raise ValueError('Schedule parameter class is outside the declared extraction scope')
             if row.get('saved_metadata') is not None and not isinstance(row['saved_metadata'],dict):
                 raise ValueError('Saved parameter metadata must be an object')
             if 'root_fields' in row and not isinstance(row['root_fields'],dict):
@@ -161,12 +167,12 @@ class RvtCatalog:
             db.execute(SQL)
             meta = db.execute('select payload from rvt_catalog_metadata where extraction_id=?', (extraction_id,)).fetchone()
             rows=[];budget=0;clipped=0
-            for stored in db.execute("select kind,payload from rvt_native_records where extraction_id=? and (kind in ('view','schedule','placement') or class_name in ('FamilyInstance','FamilySymbol')) order by record_id", (extraction_id,)):
+            for stored in db.execute("select kind,payload from rvt_native_records where extraction_id=? and kind in ('view','schedule','placement','element') order by record_id", (extraction_id,)):
                 row=json.loads(stored['payload']);kind=stored['kind']
                 if not meta and kind=='element':
                     fields=objects(row)[0]['fields'] if objects(row) else row.get('root_fields',{})
                     row={**{k:row.get(k) for k in ['identity','class_name','status','diagnostic','source','saved_metadata','metadata_diagnostic']},
-                         'root_fields':{k:v for k,v in fields.items() if k in {'m_masterSymbolId','m_familyId','m_createdPhaseId','m_demolishedPhaseId','m_designOptionId','m_name','m_categoryId'}}}
+                         'root_fields':{k:v for k,v in fields.items() if k in {'m_masterSymbolId','m_familyId','m_createdPhaseId','m_demolishedPhaseId','m_designOptionId','m_name','m_categoryId','m_idType','m_idSystemCategory'}}}
                 size=len(encode(row).encode('utf-8'))
                 if not meta and budget+size>120*1024*1024:
                     row={k:v for k,v in row.items() if k not in {'graph','saved_metadata'}}

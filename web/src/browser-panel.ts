@@ -111,7 +111,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;openDocumen
           if(data.convertedIfc)download('browser-ifc',new Blob([data.convertedIfc],{type:'application/x-step'}),file.name.replace(/\.rvt$/i,'.ifc'));
           reportProgress(jobRun,'Отображение','Создание 3D-сцены');status('Отображение модели');
           try{const displayed=await callbacks.model(data.model,data.binary,append);if(job!==active)return;current=displayed;fallback=null;}
-          catch(e){if(job===active)fail('Не удалось отобразить модель: '+String(e));return;}
+          catch(e){if(job===active)fail('Не удалось отобразить модель: '+String(e),{stage:'Отображение',stack:e instanceof Error?e.stack:undefined});return;}
           const result=`${file.name}: ${data.model.source.format==='nwd'?(data.model.nwd?.logical_nodes??0)+' узлов дерева, '+(data.model.nwd?.fragments??0)+' геометрических фрагментов':s.physical_elements+' физических элементов'}, ${s.meshes} сеток, ${s.geometry_errors} без геометрии.`;
           const partial=data.model.source.format==='nwd'&&(data.model.nwd?.unread_features.length>0||data.model.nwd?.source_models.some((s:any)=>!s.geometry_complete||s.metadata_status!=='decoded_logical_subset'));
           finishRun(jobRun,partial?'partial':'completed',result);status(result+(data.model.source.format==='nwd'?' Ограничения чтения — в журнале.':' Можно рассчитать сценарий.'));busy(false);

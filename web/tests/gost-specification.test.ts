@@ -21,3 +21,8 @@ test('XLSX stores quantities numerically, Cyrillic and formula-like names as tex
 test('large grouped positions retain individual origins without exceeding Excel cell length',()=>{const {dataset,definition}=fixture(400);complete(definition);definition.gost!.group_identical=true;const r=buildGost(dataset,definition);assert.equal(r.rows.length,1);assert.equal(r.rows[0].cells.name.evidence.length,400);const zip=unzipSync(gostXlsx(r));const sources=strFromU8(zip['xl/worksheets/sheet2.xml']);assert.ok(sources.includes('source_sha256'));assert.ok(sources.includes('&quot;scene_id&quot;:&quot;400&quot;'));});
 
 test('a native FamilyInstance record alone does not prove a physical equipment category',()=>{assert.equal(physicalRow({key:'x',scene_id:null,source_sha256:hash,name:'Unread category',native:{identity:{element_id:1},class_name:'FamilyInstance',status:'partial',source:{}}}),false);});
+
+test('ADSK captions propose the effective RVT field while keeping engineer confirmation pending',()=>{
+ const {dataset}=fixture();for(const scope of ['instance','type','effective']as const)dataset.columns.push({id:scope,label:`RVT · ${scope} · ADSK_Наименование · #123`,kind:'rvt',scope,parameter_id:'123',source_sha256:hash});
+ const proposed=proposeGost(dataset);assert.deepEqual(proposed.bindings.name,{kind:'field',field_id:'effective',confirmed:false});
+});

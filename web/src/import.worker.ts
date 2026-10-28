@@ -25,7 +25,7 @@ worker.onmessage=async({data})=>{
       progress('Загрузка независимого NWD-декодера','NWD-движок');
       const module=await import(/* @vite-ignore */base+'runtime/nwd/uvyazka_nwd_experiment.js');
       await module.default({module_or_path:base+'runtime/nwd/uvyazka_nwd_experiment_bg.wasm'});
-      const result=module.inspectNwdBytes(bytes,(text:string)=>progress(text,'Данные NWD'));
+      let result=module.inspectNwdBytes(bytes,(text:string)=>progress(text,'Данные NWD'));
       let unit=data.nwdUnit;
       if(nwdNeedsUnits(result)&&!unit){
         progress('Единицы некоторых источников не прочитаны; требуется уточнение','Ожидание единиц');
@@ -33,6 +33,8 @@ worker.onmessage=async({data})=>{
       }
       progress('Подготовка дерева, свойств и геометрии в метрах','Геометрия');
       const {model,binary}=await importNwd(result,filename,unit);
+      result=null;bytes=new Uint8Array();
+      await new Promise(resolve=>setTimeout(resolve,0));
       worker.postMessage({job,kind:'imported',model,binary},[binary]);return;
     }
     if(/\.ifc$/i.test(filename)){

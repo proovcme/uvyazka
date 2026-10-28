@@ -42,10 +42,10 @@ export async function federate(members:SceneMember[]):Promise<{model:ModelPackag
       }
       elements.push(e);
     }
-    storeys.push(...source.storeys.map(s=>({...s,id:prefix(s.id),name:source.source.filename+' · '+s.name,elevation_m:s.elevation_m===null?null:s.elevation_m+member.offset[2],placement_origin_m:s.placement_origin_m?placedPoint(s.placement_origin_m,member.offset,member.rotation):null})));
-    relationships.push(...source.relationships.map(r=>({...r,source_instance_id:member.instanceId,parent_id:prefix(r.parent_id),child_ids:r.child_ids.map(prefix)})));
-    diagnostics.push(...source.diagnostics.map(d=>({...d,element_id:prefix(d.element_id)})));
-    systems.push(...(source.systems??[]).map(s=>({...s,id:prefix(s.id),member_ids:s.member_ids.map(prefix)})));
+    for(const s of source.storeys)storeys.push({...s,id:prefix(s.id),name:source.source.filename+' · '+s.name,elevation_m:s.elevation_m===null?null:s.elevation_m+member.offset[2],placement_origin_m:s.placement_origin_m?placedPoint(s.placement_origin_m,member.offset,member.rotation):null});
+    for(const r of source.relationships)relationships.push({...r,source_instance_id:member.instanceId,parent_id:prefix(r.parent_id),child_ids:r.child_ids.map(prefix)});
+    for(const d of source.diagnostics)diagnostics.push({...d,element_id:prefix(d.element_id)});
+    for(const s of source.systems??[])systems.push({...s,id:prefix(s.id),member_ids:s.member_ids.map(prefix)});
   }
   const geometryReady=low.every(Number.isFinite);
   if(!geometryReady){if(!elements.some(e=>e.semantic_kind==='source_node'))throw Error('В сцене нет геометрии');low.splice(0,3,0,0,0);high.splice(0,3,0,0,0);}

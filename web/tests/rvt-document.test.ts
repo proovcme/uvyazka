@@ -34,3 +34,9 @@ test('cell states distinguish absent evidence, unreadable text, saved empty text
  assert.equal(savedCellState([{...base,text:''}]),'empty');assert.equal(savedCellState([{...base,text:'0'}]),'text');
  assert.equal(savedCellState([base,{...base}]),'conflict');
 });
+
+test('empty saved text with a parameter or expression is not an empty evaluated value',()=>{
+ const cell=schedule(fixture()).cells[0];cell.text='';cell.properties={m_paramId:{m_id:123}};assert.equal(savedCellState([cell]),'unreadable');
+ cell.properties={m_paramId:{m_id:-1}};assert.equal(savedCellState([cell]),'empty');
+ cell.properties={m_oCalculatedValue:{pointer_token:1}};assert.equal(savedCellState([cell]),'unreadable');
+});

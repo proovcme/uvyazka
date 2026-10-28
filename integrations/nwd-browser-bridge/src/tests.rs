@@ -228,3 +228,32 @@ fn corrupt_strip_table_preserves_vertices_and_reports_unknown() {
     let r = fragments::read_fragments(&c, &g).unwrap();
     assert!(!r.rows[0].primitive_count_matches);
 }
+
+#[test]
+fn embedded_resource_is_bounded_hashed_and_never_loaded_from_its_uri() {
+    use crate::fixtures::{align, u32v};
+    fn text(b: &mut Vec<u8>, s: &str) {
+        u32v(b, s.len() as u32);
+        b.extend(s.as_bytes());
+        align(b, 4)
+    }
+    let mut b = Vec::new();
+    u32v(&mut b, 1);
+    text(&mut b, "synthetic:inert");
+    u32v(&mut b, 1);
+    text(&mut b, "navis");
+    text(&mut b, "bin");
+    align(&mut b, 8);
+    b.extend(3u64.to_le_bytes());
+    b.extend([1, 2, 3]);
+    align(&mut b, 4);
+    let x = super::saved_asset_records(&mut super::Cursor::new(&b)).unwrap();
+    assert_eq!(
+        x[0]["representations"][0]["sha256"],
+        super::hash(&[1, 2, 3])
+    );
+    assert_eq!(x[0]["external_resources_loaded"], false);
+    for end in 0..b.len() - 1 {
+        assert!(super::saved_asset_records(&mut super::Cursor::new(&b[..end])).is_err());
+    }
+}

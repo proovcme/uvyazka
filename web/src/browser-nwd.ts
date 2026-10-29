@@ -1,5 +1,6 @@
 import type {ModelPackage,BimElement,Vec3} from './model';
 import {nativeNwdData} from './nwd-metadata.ts';
+export const NWD_READER_REVISION='index-runs-v4-20261029';
 export const nwdUnits={m:1,mm:.001,cm:.01,ft:.3048,in:.0254,yd:.9144,km:1000,mi:1609.344,um:.000001,mil:.0000254,uin:.0000000254} as const;
 export type NwdUnit=keyof typeof nwdUnits;
 const sourceModels=(result:any):any[]=>result.models??[{namespace:'',geometry:result.geometry,fragments:result.fragments,logical_model:result.logical_models?.[0],geometry_complete:!result.fragments?.diagnostic,diagnostics:[]}];
@@ -33,7 +34,7 @@ export async function importNwd(result:any,filename:string,unit?:NwdUnit,options
  };
  const models=sourceModels(result),calibrations=models.map(s=>calibration(s,unit)),hash=result.container.source_sha256;
  if(!models.length)throw Error('NWD: модельные потоки не найдены');
- const id=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(['nwd-v2',hash,calibrations])))),n=>n.toString(16).padStart(2,'0')).join('');
+ const id=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([NWD_READER_REVISION,hash,calibrations])))),n=>n.toString(16).padStart(2,'0')).join('');
  const low:Vec3=[Infinity,Infinity,Infinity],high:Vec3=[-Infinity,-Infinity,-Infinity],elements:BimElement[]=[],relationships:ModelPackage['relationships']=[],diagnostics:ModelPackage['diagnostics']=[];
  let size=0,triangles=0,fragmentCount=0,geometryErrors=0,logicalCount=0;
  const recoveryCounts=new Map<string,number>();let recoveryDetails=0;
@@ -124,7 +125,7 @@ export async function importNwd(result:any,filename:string,unit?:NwdUnit,options
  if(recoveryCounts.size)diagnostics.push({element_id:'',kind:'nwd-recovery-summary',message:'Частичное чтение NWD: '+[...recoveryCounts].map(([kind,count])=>`${kind}: ${count}`).join('; ')+`. Подробности: первые ${Math.min(recoveryDetails,200)} сообщений. Пропуски не подтверждают отсутствие объектов в проекте.`});
  const unread=result.unsupported_features??['saved viewpoints','clash results','TimeLiner','rendered textures'];
  diagnostics.push({element_id:'',kind:'nwd-limitations',message:'Не прочитаны или не отображаются: '+unread.join(', ')+'. Фрагменты не считаются оборудованием.'});
- const model:ModelPackage={contract:'ModelPackage',contract_version:'0.1.0',model_id:id,importer_version:'uvyazka-nwd-v3',source:{filename,sha256:hash,size_bytes:result.container.source_bytes,schema:`navisworks:${result.container.serialization_version??431}`,format:/\.nwc$/i.test(filename)?'nwc':'nwd',exported_at:'',exporter:'uvyazka-independent-nwd',calibration:calibrations.length===1?calibrations[0]:undefined,calibrations},coordinate_system:{length_to_m:calibrations.length===1?calibrations[0].length_to_m:1,render_origin_m:origin,up_axis:'Z',bounds_min_m:low,bounds_max_m:high},elements,storeys:[],relationships,diagnostics,
+ const model:ModelPackage={contract:'ModelPackage',contract_version:'0.1.0',model_id:id,importer_version:'uvyazka-nwd-v4',source:{filename,sha256:hash,size_bytes:result.container.source_bytes,schema:`navisworks:${result.container.serialization_version??431}`,format:/\.nwc$/i.test(filename)?'nwc':'nwd',exported_at:'',exporter:'uvyazka-independent-nwd',calibration:calibrations.length===1?calibrations[0]:undefined,calibrations},coordinate_system:{length_to_m:calibrations.length===1?calibrations[0].length_to_m:1,render_origin_m:origin,up_axis:'Z',bounds_min_m:low,bounds_max_m:high},elements,storeys:[],relationships,diagnostics,
   nwd:{logical_nodes:logicalCount,fragments:fragmentCount,source_models:sources,unread_features:unread},statistics:{products:elements.length,physical_elements:0,meshes:projected.filter(x=>x.valid).length,triangles,geometry_errors:geometryErrors,binary_bytes:size},capabilities:{read:true,geometry_ready:projected.some(x=>x.valid),technology_resolved:false,schedule_ready:false}};
  return {model,binary};
 }

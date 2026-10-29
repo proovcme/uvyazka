@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 
 pub const OUTER: &[u8] = b"#LcUStream-V1.1 binary double release C lichunk-008\n";
 pub const MAX_INPUT: usize = 512 * 1024 * 1024;
+pub const READER_REVISION: &str = "index-runs-v4-20261029";
 pub const MAX_EXPANDED: usize = 256 * 1024 * 1024;
 const MAX_ENTRIES: usize = 100_000;
 type Result<T> = std::result::Result<T, String>;
@@ -558,11 +559,13 @@ mod web {
         // calls for a large coordination model. Precise source IDs are strings.
         #[derive(serde::Serialize)]
         struct BrowserReport<'a> {
+            reader_revision: &'static str,
             #[serde(flatten)]
             report: super::scene::SceneReport<'a>,
             packed_geometry: Vec<Vec<super::scene::PackedGeometry>>,
         }
         let json = serde_json::to_string(&BrowserReport {
+            reader_revision: super::READER_REVISION,
             report,
             packed_geometry,
         })

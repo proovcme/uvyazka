@@ -110,7 +110,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSou
           if(!unit){current=fallback;stop('Открытие NWD отменено: единицы не выбраны.');status('Открытие NWD отменено.');return;}
           importer?.postMessage({job,kind:'nwd-unit-choice',unit});
         }
-        else if(data.kind==='source'){journal.source(jobRun,data.sha256);if(append&&callbacks.containsSource?.(data.sha256,/\.rvt$/i.test(file.name)?rvtMode:undefined)){skippedRuns.add(jobRun);current=fallback;finishRun(jobRun,'completed',new SourceAlreadyPresent().message);stop();status('Повторный исходный файл пропущен.');}}
+         else if(data.kind==='source'){journal.source(jobRun,data.sha256);if(append&&!intent?.replaceInstanceId&&callbacks.containsSource?.(data.sha256,/\.rvt$/i.test(file.name)?rvtMode:undefined)){skippedRuns.add(jobRun);current=fallback;finishRun(jobRun,'completed',new SourceAlreadyPresent().message);stop();status('Повторный исходный файл пропущен.');}}
         else if(data.kind==='progress'){if(data.details?.warning)journal.event(jobRun,'warning',data.text,data.details);reportProgress(jobRun,data.stage||'Импорт',data.text,data.details);status(data.text);}
         else if(data.kind==='error'){
           diagnosticReport({filename:file.name,sha256:jobRun.sha256,outcome:'failed',message:data.message,...data.details});

@@ -1,4 +1,5 @@
 import {sameReadSource,rvtMode} from './browser-rvt-direct';
+import {geometryQuality} from './geometry-quality';
 import {isNavisFormat,onlyNavisSources} from './navis-format.ts';
 import {installWindowControls} from './window-controls';
 import './window-controls.css';
@@ -129,10 +130,11 @@ function selectElement(id: string | null,additive=false) {
   el('selected-visibility-actions').hidden=!selection.size||!e||e.role!=='element';
   if (!e) { renderState(); return; }
   el('inspector-title').textContent = e.name;
-  const identity=elementIdentity(e),systems=elementSystems(model,e.id);
+  const identity=elementIdentity(e),systems=elementSystems(model,e.id),quality=geometryQuality(e);
   const renderSets=(sets:Record<string,Record<string,unknown>>)=>Object.entries(sets).map(([name,values])=>`<details class="property-set" ${e.nwd&&name==='NWD fragment'||name==='Источник RVT'?'':'open'}><summary>${esc(e.nwd&&name==='NWD fragment'?'Служебные данные чтения Navisworks':name)}</summary><dl>${Object.entries(values).map(([key,value])=>`<dt>${esc(key)}</dt><dd>${copyValue(value)}</dd>`).join('')}</dl></details>`).join('');
   const card={...e,revit_identity:identity,systems,model_source:model?.source};
   el('inspector').innerHTML = `<span class="eyebrow">${esc(e.class)}</span><button class="copy-card" data-copy="${esc(JSON.stringify(card,null,2))}">Копировать все свойства</button><dl><dt>Revit ElementId</dt><dd>${identity.element_id?copyValue(identity.element_id):'Не прочитан'}</dd><dt>Revit UniqueId</dt><dd>${identity.unique_id?copyValue(identity.unique_id):'Не прочитан'}</dd><dt>IFC / ID сцены</dt><dd>${copyValue(e.id)}</dd><dt>Этаж</dt><dd>${copyValue(model?.storeys.find(s=>s.id===e.storey_id)?.name||'Не прочитан')}</dd><dt>Материалы</dt><dd>${copyValue(e.materials.join(', ')||'Не прочитаны')}</dd></dl><p class="identity-basis">${esc(identity.basis)}</p>${renderSets(e.quantity_sets)}${renderSets(e.property_sets)}<details><summary>Идентификаторы и источник</summary><dl><dt>IFC GlobalId</dt><dd>${e.global_id?copyValue(e.global_id):'Не прочитан'}</dd><dt>Исходный Tag</dt><dd>${e.tag?copyValue(e.tag):'Не прочитан'}</dd></dl><pre>${esc(JSON.stringify(e.source,null,2))}</pre></details>`;
+  if(quality){const note=document.createElement('p');note.className='geometry-quality';note.dataset.quality=quality.kind;note.textContent=quality.message;el('inspector').querySelector('.copy-card')!.after(note);}
   el('inspector').innerHTML+=`<details ${systems.length?'open':''}><summary>${systems.length?'Прочитанных систем: '+systems.length:'Системы не прочитаны'}</summary>${systems.map(s=>`<p>${esc(s.name||s.class)} · #${esc(s.id)}</p>`).join('')||'<p>Принадлежность к системе не прочитана.</p>'}<p>Членство не подтверждает физическое подключение.</p></details>`;
 }
 try { viewer = new Viewer(el('canvas'), selectElement); } catch(e) { error('3D недоступно; график и расчёты остаются доступны. ' + String(e)); }
@@ -491,7 +493,7 @@ const browser=browserPanel({publicDemo:DEMO,
   model:async(pkg,binary,append,intent)=>{
     const candidate:SceneMember={instanceId:pkg.model_id,model:pkg,binary,offset:[0,0,0],rotation:0,visible:true};
     const existing=append?(sceneMembers.length?sceneMembers:model&&loadedBinary?[{instanceId:model.model_id,model,binary:loadedBinary,offset:[0,0,0] as [number,number,number],rotation:0,visible:true}]:[]):[];
-    if(existing.some(m=>sameReadSource(m.model,pkg.source.sha256,pkg.source.format==='rvt'?rvtMode(pkg):undefined)))throw new SourceAlreadyPresent();
+    if(existing.some(m=>m.instanceId!==intent?.replaceInstanceId&&sameReadSource(m.model,pkg.source.sha256,pkg.source.format==='rvt'?rvtMode(pkg):undefined)))throw new SourceAlreadyPresent();
     if(intent?.replaceInstanceId){
       const old=existing.find(member=>member.instanceId===intent.replaceInstanceId);if(!old||!model)throw Error('Исходная модель больше не найдена в сцене.');
       const previous=captureWorkspace(),before=model,controller=new AbortController();revisionPreparation?.abort();revisionPreparation=controller;
@@ -503,8 +505,8 @@ const browser=browserPanel({publicDemo:DEMO,
         const next=existing.map(member=>member===old?{...member,model:pkg,binary}:member);
         await presentMembers(next,()=>commitBrowserContext(true));
         if(!model)throw Error('Новая сцена не получена.');
-        const remapped=remapRevisionState(previous.state,before,model,old.instanceId,new Map(comparison.mapping));applyWorkspaceState(remapped.state);
-        const change={before_sha256:old.model.source.sha256,after_sha256:pkg.source.sha256,created_at:new Date().toISOString(),report:comparison.report,unresolved_presentation_ids:remapped.unresolved};sourceChanges=[...sourceChanges,change];
+        const remapped=remapRevisionState(previous.state,before,model,old.instanceId,new Map(comparison.mapping),previous.members.filter(member=>!member.visible).map(member=>member.instanceId));applyWorkspaceState(remapped.state);
+        const change={before_sha256:old.model.source.sha256,after_sha256:pkg.source.sha256,before_model_id:old.model.model_id,after_model_id:pkg.model_id,before_importer_version:old.model.importer_version,after_importer_version:pkg.importer_version,created_at:new Date().toISOString(),report:comparison.report,unresolved_presentation_ids:remapped.unresolved};sourceChanges=[...sourceChanges,change];
         const note=document.querySelector('.notice')!;note.textContent='Источник обновлён. Предыдущая сцена сохранена. Замеры, виды, таблицы и проверки прежней ревизии требуют перепроверки. Не перенесено неоднозначных настроек элементов: '+remapped.unresolved+'.';
         const counts=document.createElement('span');counts.textContent=' Новых в прочитанном наборе: '+comparison.report.rows.filter(row=>row.kind==='added').length+'; не найдено в новом наборе: '+comparison.report.rows.filter(row=>row.kind==='removed').length+'; изменено: '+comparison.report.rows.filter(row=>row.kind==='changed').length+'; вопросов: '+comparison.report.rows.filter(row=>row.kind==='question').length+'.';note.append(counts);
         document.querySelector('.source-update-banner')?.remove();const banner=document.createElement('section');banner.className='source-update-banner';const message=document.createElement('span');message.textContent='Источник обновлён. Прежняя сцена сохранена. Замеры, виды, таблицы и проверки требуют перепроверки.';const details=document.createElement('details'),summary=document.createElement('summary'),body=document.createElement('p');summary.textContent='Изменения прочитанного набора';body.textContent=counts.textContent+' Не перенесено неоднозначных настроек: '+remapped.unresolved+'.';details.append(summary,body);const dismiss=document.createElement('button');dismiss.textContent='Скрыть сообщение';dismiss.onclick=()=>banner.remove();banner.append(message,details,dismiss);document.querySelector('.app-header')!.after(banner);recovery.dirty();return browserModel!;

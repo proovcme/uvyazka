@@ -40,3 +40,11 @@ test('source revision remaps only unique native identity and keeps the camera in
 test('duplicate identifiers and matching names never justify revision correspondence',()=>{
  const old=fixture(),after=structuredClone(old.model);after.elements.push({...after.elements[0],id:'two'});assert.equal(revisionIdMap(old.model,after).size,0);after.elements=[{...after.elements[0],id:'changed',global_id:'different'}];assert.equal(revisionIdMap(old.model,after).size,0);const mapped=remapRevisionState(old.state,old.model,after,'member',new Map());assert.equal(mapped.unresolved,1);assert.deepEqual(mapped.state.selection,[]);
 });
+
+test('whole-source hiding survives a reader upgrade without guessing missing element identities',()=>{
+ const old=fixture();old.state.hidden=['one'];const after=structuredClone(old.model);
+ after.elements=[{...after.elements[0],id:'new',global_id:'',source_instance_id:'member',source_element_id:'changed'}, {...after.elements[0],id:'added',global_id:'',source_instance_id:'member',source_element_id:'added'}, {...after.elements[0],id:'other',source_instance_id:'another',source_element_id:'other'}];
+ const mapped=remapRevisionState(old.state,old.model,after,'member',new Map(),['member']);
+ assert.deepEqual(mapped.state.hidden,['new','added']);assert.deepEqual(mapped.state.selection,[]);assert.equal(mapped.unresolved,2);
+ const visible=remapRevisionState(old.state,old.model,after,'member',new Map());assert.deepEqual(visible.state.hidden,[]);
+});

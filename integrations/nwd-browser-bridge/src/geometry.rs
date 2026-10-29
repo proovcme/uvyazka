@@ -42,7 +42,7 @@ fn indices(raw: &[u8], position: &mut usize, count: usize, vertices: usize) -> R
                 }
                 out.push(out[out.len() - distance]);
             }
-            128..=133 => {
+            128..=223 => {
                 let value = *out.last().ok_or("Repeat before first index")?;
                 let n = code as usize - 127;
                 if out.len() + n > count {
@@ -71,7 +71,6 @@ fn indices(raw: &[u8], position: &mut usize, count: usize, vertices: usize) -> R
                 }
                 out.push(index);
             }
-            _ => return Err(format!("Unsupported geometry index code {code:#x}")),
         }
     }
     if fresh as usize != vertices {
@@ -273,6 +272,75 @@ mod tests {
         assert_eq!(indices(&[0, 0x85], &mut at, 7, 1).unwrap(), vec![0; 7]);
         let mut at = 0;
         assert!(indices(&[0, 0x85], &mut at, 6, 1).is_err());
+        // Repeat tokens fill the interval before the long-history family.
+        // These are coordinate-slot runs, not a fabricated triangle topology.
+        for code in 0x80..=0xdf {
+            let repeat = code as usize - 127;
+            let mut at = 0;
+            assert_eq!(
+                indices(&[0, code], &mut at, repeat + 1, 1).unwrap(),
+                vec![0; repeat + 1]
+            );
+            assert_eq!(at, 2);
+            if repeat > 1 {
+                assert!(indices(&[0, code], &mut 0, repeat, 1).is_err());
+            }
+            assert!(indices(&[code], &mut 0, repeat + 2, 2).is_err());
+        }
+    }
+    fn long_run_geometry(repeat: u8) -> Vec<MeshDefinition> {
+        use crate::fixtures::{align, envelope, u32v, zip};
+        let mut raw = Vec::new();
+        for word in [100, 94, 101, 60, 18, 9] {
+            u32v(&mut raw, word);
+        }
+        for value in [0f32, 0., 0., 1., 0., 0., 0., 1., 0.] {
+            raw.extend(value.to_le_bytes());
+        }
+        raw.extend([0, repeat, 1]); // one fresh slot, fifteen repeats, two fresh slots
+        align(&mut raw, 4);
+        for word in [1, 5, 1, 18u32 << 27] {
+            u32v(&mut raw, word);
+        }
+        let body = zip(&raw);
+        let mut appendix = Vec::new();
+        for word in [1, 1, body.len() as u32, raw.len() as u32] {
+            u32v(&mut appendix, word);
+        }
+        align(&mut appendix, 8);
+        let tail = zip(&appendix);
+        let stored = [vec![0; 4], body, tail.clone()].concat();
+        let container = crate::read_container(&envelope(vec![(
+            "synthetic\\LcOpNwdGeometry".into(),
+            1,
+            stored,
+            4,
+            tail.len() as u32,
+        )]))
+        .unwrap();
+        read_geometry(&container).unwrap()
+    }
+    #[test]
+    fn long_coordinate_repeat_preserves_independent_strip_topology() {
+        let rows = long_run_geometry(0x8e);
+        let row = &rows[0];
+        assert!(row.diagnostic.is_none(), "{:?}", row.diagnostic);
+        assert_eq!(row.indices.len(), 18);
+        assert_eq!(row.strips, vec![18]);
+        assert_eq!(row.triangles.len(), 16);
+        let nondegenerate: Vec<_> = row
+            .triangles
+            .iter()
+            .filter(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2])
+            .copied()
+            .collect();
+        assert_eq!(nondegenerate, vec![[1, 0, 2]]);
+    }
+    #[test]
+    fn overflowing_long_repeat_retains_record_but_produces_no_faces() {
+        let rows = long_run_geometry(0xdf);
+        assert!(rows[0].diagnostic.is_some());
+        assert!(rows[0].triangles.is_empty());
     }
     #[test]
     fn index_codes_preserve_new_history_repeat_and_literal() {

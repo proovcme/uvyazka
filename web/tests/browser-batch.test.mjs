@@ -25,6 +25,7 @@ test('actual browser controller waits for worker completion, survives a failed f
  const replaceStart=workers.length;
  const replace=panel.openFile(new File(['synthetic'],'new.rvt'),true,{replaceInstanceId:'native-source',rvtMode:'direct'});
  await wait(()=>workers[replaceStart]?.file);assert.equal(workers[replaceStart].mode,'direct');
+ await workers[replaceStart].emit({kind:'source',sha256:'c'.repeat(64)});assert.notEqual(workers[replaceStart].terminated,true,'Explicit source replacement must reach the decoder even for identical source bytes');
  const result=imported('new.rvt');result.model.source.format='rvt';
  await workers[replaceStart].emit(result);await replace;assert.equal(intents.at(-1).rvtMode,'direct');assert.equal(intents.at(-1).replaceInstanceId,'native-source');
  assert.equal(document.querySelector('#conversion-title').textContent,'Открыто частично');

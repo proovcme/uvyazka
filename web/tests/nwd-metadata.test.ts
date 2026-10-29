@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {importNwd,nwdNeedsUnits} from '../src/browser-nwd.ts';
+import {importNwd,nwdNeedsUnits,NWD_READER_REVISION} from '../src/browser-nwd.ts';
 import {modelTreeNodes} from '../src/model-tree-panel.ts';
 import {federate} from '../src/federation.ts';
 import {specificationDataset,specificationCell,defaultSpecification} from '../src/model-specification.ts';
@@ -9,6 +9,12 @@ const hash='a'.repeat(64),guid='12345678-1234-5678-90ab-000000000001';
 test('NWC retains its source format while using Navis geometry, tree and provenance',async()=>{
  const {model,binary}=await importNwd(result(),'synthetic.NWC');assert.equal(model.source.format,'nwc');assert.equal(model.source.filename,'synthetic.NWC');assert.ok(model.nwd!.logical_nodes>0);assert.ok(model.statistics.meshes>0);assert.ok(binary.byteLength>0);assert.ok(model.elements.every(element=>element.source.file_sha256===hash));
  const composed=await federate([{instanceId:'nwc-a',model,binary,offset:[0,0,0],rotation:0,visible:true},{instanceId:'nwc-b',model,binary,offset:[1,0,0],rotation:0,visible:true}]);assert.ok(composed.model.federation!.members.every(member=>member.source_format==='nwc'));assert.equal(defaultSpecification(specificationDataset(composed.model)).columns[2].id,'id');
+});
+test('Navis package identity advances with the reader, keeping older derived snapshots separate',async()=>{
+ const {model}=await importNwd(result(),'synthetic.nwc');
+ const old=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(['nwd-v2',hash,model.source.calibrations]))))].map(n=>n.toString(16).padStart(2,'0')).join('');
+ assert.notEqual(model.model_id,old);assert.equal(model.importer_version,'uvyazka-nwd-v4');assert.equal(NWD_READER_REVISION,'index-runs-v4-20261029');
+ assert.equal((await importNwd(result(),'synthetic.nwc')).model.model_id,model.model_id);
 });
 function fixture(namespace='synthetic'){
  const label=(id:number,display:string,internal:string)=>({serialized_id:id,serialized_class:52,page_index:0,values:{display,internal}});

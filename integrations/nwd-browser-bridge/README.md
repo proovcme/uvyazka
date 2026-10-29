@@ -17,7 +17,11 @@ NWD GUIDs or IFC GlobalIds. Source unit headers are read when supported; the
 browser requests a recorded assumption for unknown headers.
 
 Geometry indices, primitive counts and local bounds are cross-checked. The
-browser keeps source nodes separate from geometric fragments, preserves property
+coordinate-index reader accepts bounded repeat runs `0x80..0xdf`, with synthetic
+tests for the long-run topology and overflow. The WASM report includes
+`reader_revision`; the browser checks it before accepting the result and versions
+derived model IDs. [Mixed-scene validation](../../docs/MIXED_SCENE_VALIDATION.md).
+The browser keeps source nodes separate from geometric fragments, preserves property
 provenance and never counts fragments as physical equipment. Rigid translation, quaternion and observed uniform-scale/reflection placements
 are supported. Reused bounds objects retain their geometry reference. Embedded
 material resources are bounded and hashed without loading external assets.

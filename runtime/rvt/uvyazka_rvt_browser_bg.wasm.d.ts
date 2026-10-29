@@ -2,6 +2,7 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const convertRvtBytes: (a: number, b: number) => [number, number, number];
+export const extractRvtDirectScene: (a: number, b: number) => [number, number, number];
 export const extractRvtDocument: (a: number, b: number) => [number, number, number];
 export const extractRvtEngineering: (a: number, b: number) => [number, number, number];
 export const extractRvtScheduleData: (a: number, b: number) => [number, number, number];

@@ -4,6 +4,7 @@ import {batchSummary} from './import-batch.ts';
 import type {BatchSnapshot} from './import-batch.ts';
 import {renderCoverage,renderCoverageItems} from './model-coverage.ts';
 import type {ModelPackage} from './model';
+import type {RvtMode} from './browser-rvt-direct';
 const labels={running:'Обработка файла',completed:'Готово',partial:'Открыто частично',failed:'Не удалось обработать',cancelled:'Отменено',interrupted:'Прервано'};
 const stepLabels={waiting:'Ожидает',active:'В работе',done:'Завершён',skipped:'Пропущен',stopped:'Остановлен'};
 export function processingPanel(cancel:()=>void,openLog:()=>void,skip?:()=>void,retry?:()=>void){
@@ -49,5 +50,5 @@ export function processingPanel(cancel:()=>void,openLog:()=>void,skip?:()=>void,
     if(value&&!value.finished&&value.rows.every(row=>row.state==='waiting')){openCoverage.clear();state.begin('Пакет файлов',value.rows.reduce((n,row)=>n+row.size,0),Date.now());used=true;reopen.hidden=false;open();}
     if(value?.finished&&state.state==='running')state.finish(value.cancelled?'cancelled':value.rows.some(row=>row.included)?'partial':'failed',batchSummary(value),Date.now());
     render();
-  },begin(filename:string,size:number,simulation=false){coverageBox.hidden=true;if(simulation)batch=null;state.begin(filename,size,Date.now(),simulation);used=true;reopen.hidden=false;render();open();},update(stage:string,message:string){state.update(stage,message,Date.now());render();},reply(){state.reply(Date.now());},finish(result:Exclude<RunState,'running'>,message:string){state.finish(result,message,Date.now());render();},open};
+  },begin(filename:string,size:number,simulation=false,rvtMode:RvtMode='ifc'){coverageBox.hidden=true;if(simulation)batch=null;state.begin(filename,size,Date.now(),simulation,rvtMode);used=true;reopen.hidden=false;render();open();},update(stage:string,message:string){state.update(stage,message,Date.now());render();},reply(){state.reply(Date.now());},finish(result:Exclude<RunState,'running'>,message:string){state.finish(result,message,Date.now());render();},open};
 }

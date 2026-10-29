@@ -9,9 +9,9 @@ test('actual browser controller waits for worker completion, survives a failed f
  t.after(()=>{w.dispatchEvent(new w.Event('pagehide'));for(const [name,value]of Object.entries(old))globalThis[name]=value;w.happyDOM.close();});
  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;};
  document.body.innerHTML='<dialog id="file-dialog"></dialog><div id="import-host"></div><button id="status-details"></button><span id="workspace-status"></span><button id="open-file"></button><button id="empty-add-model"></button><button id="replace-model"></button>';
- const workers=[];globalThis.Worker=class{constructor(){workers.push(this);}postMessage(data){if(data.kind==='ping')return;this.job=data.job;this.file=data.filename;}terminate(){this.terminated=true;}emit(data){return this.onmessage({data:{job:this.job,...data}});}};
- const resets=[],models=[];
- const panel=browserPanel({containsSource:hash=>hash==='c'.repeat(64),reset:append=>resets.push(append),openDocument:()=>{},noGeometry:()=>{},document:()=>{},drawing:async()=>{},cancelDrawing:()=>{},model:async model=>{models.push(model);return model;},run:()=>{}});
+ const workers=[];globalThis.Worker=class{constructor(){workers.push(this);}postMessage(data){if(data.kind==='ping')return;this.job=data.job;this.file=data.filename;this.mode=data.rvtMode;}terminate(){this.terminated=true;}emit(data){return this.onmessage({data:{job:this.job,...data}});}};
+ const resets=[],models=[],intents=[];
+ const panel=browserPanel({containsSource:hash=>hash==='c'.repeat(64),reset:append=>resets.push(append),openDocument:()=>{},noGeometry:()=>{},document:()=>{},drawing:async()=>{},cancelDrawing:()=>{},model:async(model,_binary,_append,intent)=>{models.push(model);intents.push(intent);return model;},run:()=>{}});
  const wait=async predicate=>{for(let i=0;i<200;i++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,5));}assert.fail('Expected controller state was not reached');};
  const files=['broken.nwc','a.nwc','b.nwc'].map(name=>new File(['synthetic'],name));
  const pending=panel.openFiles(files,false);await wait(()=>workers[0]?.file);assert.equal(workers.length,1);
@@ -22,4 +22,23 @@ test('actual browser controller waits for worker completion, survives a failed f
  const next=panel.openFiles(files,true);await wait(()=>workers[3]?.file);panel.stop('Остановлено тестом');await next;assert.equal(workers.length,4);assert.equal(workers[3].terminated,true);assert.match(document.querySelector('.conversion-batch').textContent,/Отменено: 3/);
  const skipStart=workers.length,skipped=panel.openFiles(files,true);await wait(()=>workers[skipStart]?.file);[...document.querySelectorAll('button')].find(button=>button.textContent==='Пропустить файл').click();await wait(()=>workers[skipStart+1]?.file);await workers[skipStart+1].emit({kind:'source',sha256:'c'.repeat(64)});await wait(()=>workers[skipStart+2]?.file);await workers[skipStart+2].emit(imported('b.nwc'));await skipped;assert.match(document.querySelector('.conversion-batch').textContent,/Пропущено: 2/);assert.match(document.querySelector('.conversion-batch').textContent,/Ошибок: 0/);
 
+ const replaceStart=workers.length;
+ const replace=panel.openFile(new File(['synthetic'],'new.rvt'),true,{replaceInstanceId:'native-source',rvtMode:'direct'});
+ await wait(()=>workers[replaceStart]?.file);assert.equal(workers[replaceStart].mode,'direct');
+ const result=imported('new.rvt');result.model.source.format='rvt';
+ await workers[replaceStart].emit(result);await replace;assert.equal(intents.at(-1).rvtMode,'direct');assert.equal(intents.at(-1).replaceInstanceId,'native-source');
+ assert.equal(document.querySelector('#conversion-title').textContent,'Открыто частично');
+ const ifcStart=workers.length,ifc=panel.openFile(new File(['synthetic'],'ifc-route.rvt'),false,{rvtMode:'ifc'});
+ await wait(()=>workers[ifcStart]?.file);const ifcResult=imported('ifc-route.rvt');ifcResult.model.source.format='rvt';ifcResult.convertedIfc=new Uint8Array([1,2,3]).buffer;
+ await workers[ifcStart].emit(ifcResult);await ifc;
+ const previousIfc=document.querySelector('#browser-ifc').href;assert.equal(document.querySelector('#browser-ifc').hidden,false);
+ const brokenStart=workers.length,broken=panel.openFile(new File(['bad'],'broken.rvt'),false);
+ await wait(()=>workers[brokenStart]?.file);await workers[brokenStart].emit({kind:'error',message:'Broken RVT'});await broken;
+ assert.equal(document.querySelector('#browser-ifc').href,previousIfc);assert.equal(document.querySelector('#browser-ifc').hidden,false);
+ const mode=document.querySelector('#browser-rvt-mode');mode.value='direct';const batchStart=workers.length;
+ const batch=panel.openFiles([new File(['s'],'one.rvt'),new File(['s'],'two.rvt')],true);
+ await wait(()=>workers[batchStart]?.file);mode.value='ifc';
+ await workers[batchStart].emit(imported('one.rvt'));await wait(()=>workers[batchStart+1]?.file);
+ assert.equal(workers[batchStart+1].mode,'direct');await workers[batchStart+1].emit(imported('two.rvt'));await batch;
+ assert.equal(document.querySelector('#browser-ifc').hidden,true);
 });

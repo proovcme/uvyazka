@@ -40,7 +40,7 @@ export interface BimElement {
   source_instance_id?: string;
   source_element_id?: string;
   source_step_id?: number;
-  revit?: { element_id: string; unique_id?: string; id_basis?:string; phase_status: string; phase_created_id?: string | null; phase_demolished_id?: string | null };
+  revit?: { element_id: string; unique_id?: string; id_basis?:string; phase_status: string; phase_created_id?: string | null; phase_demolished_id?: string | null; identity_source?:{file_sha256:string;record_source:unknown;identity_row_offset?:number} };
 }
 export interface Storey {
   id: string;

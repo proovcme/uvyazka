@@ -4,7 +4,9 @@ import {importNwd,nwdNeedsUnits} from './browser-nwd';
 import {geometryCache} from './geometry-cache';
 import { importIfc } from './browser-ifc';
 import {documentCache} from './rvt-document-cache';
-import {rvtImportFailure} from './rvt-import-result';
+import {rvtImportFailure,validateRvtContainer} from './rvt-import-result';
+import {rvtModelCache} from './rvt-model-cache';
+import {attachNativeIdentities} from './rvt-native-identity';
 import type {RvtDocument} from './rvt-document';
 
 const worker=self as unknown as {onmessage:((event:MessageEvent)=>void)|null;postMessage:(value:unknown,transfer?:Transferable[])=>void};
@@ -49,6 +51,18 @@ worker.onmessage=async({data})=>{
       }}catch(error){progress('Кеш IFC недоступен; читаем исходный файл','Кеш IFC',{warning:String(error)});}finally{cache?.close();}
     }
     if(/\.rvt$/i.test(filename)){
+      progress('Проверка внешнего формата RVT','Проверка формата');validateRvtContainer(bytes);
+      let cache:Awaited<ReturnType<typeof rvtModelCache>>|undefined;
+      try{
+        cache=await rvtModelCache();const cached=await cache.get(sourceHash,rvtMode);
+        if(cached){
+          cached.model.source.filename=filename;
+          if(cached.document){cached.document.source={filename,sha256:sourceHash,size_bytes:sourceSize};worker.postMessage({job,kind:'document',document:cached.document,cached:true});}
+          progress('Модель, свойства и каталог восстановлены из локального кеша RVT','Кеш RVT');
+          const {model,binary,conversion,convertedIfc}=cached;
+          worker.postMessage({job,kind:'imported',model,binary,conversion,convertedIfc,cached:true},[binary,...(convertedIfc?[convertedIfc]:[])]);return;
+        }
+      }catch(error){progress('Кеш RVT недоступен; читаем исходный файл','Кеш RVT',{warning:String(error)});}finally{cache?.close();}
       progress('Загрузка RVT-декодера · файл остаётся в браузере','RVT-движок');
       const module=await import(/* @vite-ignore */base+'runtime/rvt/uvyazka_rvt_browser.js?reader=direct-v1-20261029');
       await module.default({module_or_path:base+'runtime/rvt/uvyazka_rvt_browser_bg.wasm?reader=direct-v1-20261029'});
@@ -85,6 +99,7 @@ worker.onmessage=async({data})=>{
         progress('Подготовка нативных ID, параметров и бинарной геометрии','Сцена RVT');
         const {model,binary}=await importRvtDirect(result,{filename,sha256:sourceHash,size_bytes:sourceSize});result=null;
         if(engineering)attachNativeEngineering(model,engineering,sourceHash);
+        await cacheRvt(model,binary);
         worker.postMessage({job,kind:'imported',model,binary},[binary]);return;
       }
       if(rvtMode!=='ifc')throw Error('Неизвестный режим RVT');
@@ -103,8 +118,16 @@ worker.onmessage=async({data})=>{
       text=>progress(text,text.startsWith('Геометрия:')?'Геометрия':'Свойства IFC'),!!conversion,memoryMiB);
     if(conversion){model.model_id=sourceHash;model.source={...model.source,format:'rvt',sha256:sourceHash,size_bytes:sourceSize,conversion:{engine:'rvt-rs',local_patches:['uvyazka-native-mep-v1','uvyazka-wasm-field-bounds-v1','uvyazka-native-2021-v1'],warnings:conversion.diagnostics.warnings,unsupported_features:conversion.diagnostics.unsupported_features,ifc_sha256:model.source.sha256,confidence:conversion.diagnostics.confidence,source_revision:'b6086d41b9758fd9b92f42f0a47b8345b9c58056'}};}
     if(conversion?.engineering)attachNativeEngineering(model,conversion.engineering,sourceHash);
+    if(conversion)attachNativeIdentities(model,rvtDocument,sourceHash);
+    if(conversion)await cacheRvt(model,binary,convertedIfc);
     if(!conversion){let cache;try{cache=await geometryCache();await cache.put(sourceHash,model,binary);}catch(error){progress('Модель прочитана; кеш не сохранён','Кеш IFC',{warning:String(error)});}finally{cache?.close();}}
     worker.postMessage({job,kind:'imported',model,binary,conversion,convertedIfc},[binary,...(convertedIfc?[convertedIfc]:[])]);
+
+    async function cacheRvt(model:import('./model').ModelPackage,binary:ArrayBuffer,convertedIfc:ArrayBuffer|null=null){
+      let cache:Awaited<ReturnType<typeof rvtModelCache>>|undefined;
+      try{progress('Сохранение прочитанной модели для повторного открытия','Кеш RVT');cache=await rvtModelCache();await cache.put(sourceHash,rvtMode,{model,binary,document:rvtDocument,conversion,convertedIfc});}
+      catch(error){progress('Модель прочитана; кеш RVT не сохранён','Кеш RVT',{warning:String(error)});}finally{cache?.close();}
+    }
   } catch(error) {
     if(conversion)delete conversion.ifc_step;
     const message=error instanceof Error?error.message:String(error);

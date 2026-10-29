@@ -9,6 +9,16 @@ test('light is the default, explicit dark choice survives; invalid storage canno
 test('format-specific steps do not imply RVT conversion for IFC or CAD',()=>{
   assert(stagesFor('a.RVT').includes('RVT → IFC'));assert(!stagesFor('a.ifc').includes('RVT → IFC'));assert.deepEqual(stagesFor('a.dwg'),['Чтение файла','CAD']);
 });
+test('direct RVT progress has its own route and skipped steps cannot remain waiting after completion',()=>{
+ const s=new ProcessingState();s.begin('a.rvt',100,0,false,'direct');
+ assert(s.steps.some(step=>step.name==='RVT напрямую'));assert(!s.steps.some(step=>step.name.includes('IFC')));
+ s.update('Хеширование','hash',1);s.update('Кеш RVT','cache hit',2);
+ assert.equal(s.steps.find(step=>step.name==='Кеш RVT')?.state,'active');
+ s.update('Отображение','show',3);s.finish('partial','requires review',4);
+ assert(!s.steps.some(step=>step.state==='waiting'||step.state==='active'));
+ assert.equal(s.steps.find(step=>step.name==='RVT напрямую')?.state,'skipped');
+ assert.equal(s.steps.at(-1)?.state,'done');
+});
 test('a responsive UI timer cannot claim the decoder is alive; pong does not advance a step',()=>{
   const s=new ProcessingState();s.begin('a.rvt',200,1000);s.update('RVT → IFC','Conversion',2000);
   assert.equal(s.snapshot(18000).silent,true);assert.equal(s.snapshot(18000).replyAge,null);

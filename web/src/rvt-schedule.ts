@@ -5,7 +5,7 @@ import {compareCells,evaluateFilter,sumCells} from './rvt-schedule-rules.ts';
 import type {ReviewFilter,FilterDecision} from './rvt-schedule-rules.ts';
 
 export interface ParameterRecord {
- identity:{element_id:number|string};class_name:string;status:string;source:unknown;
+ identity:{element_id:number|string;unique_id?:string;row_offset?:number};class_name:string;status:string;source:unknown;
  workset?:{status:string;partition_id:number;name:string;source:unknown};root_fields?:Record<string,any>;saved_metadata?:Record<string,any>|null;metadata_diagnostic?:string;
 }
 export interface ScheduleData {source_sha256:string;status:string;error?:string;scope:string[];records:ParameterRecord[];summary?:any;clipped_records?:number;workset_error?:string|null}

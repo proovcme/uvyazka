@@ -8,15 +8,16 @@ import {importErrorMessage,SourceAlreadyPresent} from './import-errors.ts';
 import {chooseNwdUnits} from './nwd-unit-dialog';
 import {processingPanel} from './processing-panel';
 import {geometryCache} from './geometry-cache';
+import {rvtModelCache} from './rvt-model-cache';
 import type { ModelPackage } from './model';
 import type { RunPackage } from './simulation';
 import { journalPanel } from './import-journal-panel';
 import { filePolicy } from './import-journal';
 import type { RunState, ImportRun } from './import-journal';
 import type {RvtDocument} from './rvt-document';
-import {hasReadableDocument} from './rvt-import-result';
+import {hasReadableDocument,rvtDocumentIncomplete} from './rvt-import-result';
 
-export interface ImportIntent {replaceInstanceId?:string}
+export interface ImportIntent {replaceInstanceId?:string;rvtMode?:RvtMode}
 export type BrowserRun=RunPackage & {cpm:{duration_minutes:number;operations:Record<string,{critical:boolean}>}};
 export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSource?:(sha:string,mode?:RvtMode)=>boolean;cancelPreparation?:()=>void;persist?:(model:ModelPackage,binary:ArrayBuffer,progress:(text:string)=>void,cancelled:()=>boolean)=>Promise<void>;persistDocument?:(document:RvtDocument)=>Promise<void>;publicDemo?:boolean;openDocument:()=>void;noGeometry:(filename:string,message:string)=>void;document:(data:RvtDocument|null,message?:string)=>void;drawing:(file:File)=>Promise<void>;cancelDrawing:()=>void;model:(model:ModelPackage,binary:ArrayBuffer,append:boolean,intent?:ImportIntent)=>Promise<ModelPackage>;run:(run:BrowserRun)=>void|Promise<void>}) {
   const section=document.createElement('section');section.className='panel browser-import';section.innerHTML=`
@@ -26,7 +27,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSou
 <input id="browser-rvt-file" type="file" accept=".rvt" multiple hidden>
 <p>Файл остаётся на вашем устройстве. Для RVT и IFC прежний порог размера снят; большие модели требуют больше памяти. DWG/DXF до 64 MiB. Чтение RVT экспериментальное; Revit и агент не нужны.</p>
 <div class="browser-actions"><label>DWG / RVT / IFC / NWD / NWC<input id="browser-file" type="file" accept=".dwg,.dxf,.rvt,.ifc,.nwd,.nwc" multiple></label><button id="browser-cancel" disabled>Отменить</button><button id="browser-demo">Учебный пример</button><button id="browser-log">Журнал обработки</button><button id="browser-document">Виды и таблицы</button></div>
-<label class="check"><input id="browser-append" type="checkbox">Добавить IFC / RVT / NWD к открытой сцене</label><button id="browser-clear-cache">Очистить кеш IFC</button>
+<label class="check"><input id="browser-append" type="checkbox">Добавить IFC / RVT / NWD к открытой сцене</label><button id="browser-clear-cache">Очистить кеш моделей</button>
 <p id="browser-status" role="status" aria-live="polite">Выберите файл или изучите готовый пример ниже.</p>
 <details><summary>Память и большие модели</summary><label>Бюджет IFC-декодера<select id="browser-memory"><option value="512">512 MiB</option><option value="1024" selected>1 GiB</option><option value="2048">2 GiB</option></select></label><p>Это бюджет IFC-движка, а не всей вкладки. RVT, промежуточный IFC и 3D требуют дополнительной памяти. Технический предел RVT-читателя — 2 GiB входного файла; успешное чтение такого размера не гарантируется.</p></details>
 <div class="browser-actions simulation-only"><label>Ресурсы<select id="browser-variant"><option value="base">Базовые</option><option value="reinforced">Усиленные</option></select></label><label>Доступность ресурсов<select id="browser-capacity"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option></select></label><label>Выдержка бетона, суток<input id="browser-curing" type="number" min="1" max="365" value="28"></label><button id="browser-plan" disabled>Рассчитать сценарий</button></div>
@@ -36,7 +37,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSou
   if(callbacks.publicDemo===false){section.querySelector<HTMLElement>('#browser-demo')!.hidden=true;const note=document.createElement('p');note.textContent='Модель сохраняется в локальной базе выбранного проекта и становится доступна MCP. Исходный файл не заменяется.';section.querySelector('h2')!.after(note);}
   const el=<T extends HTMLElement=HTMLElement>(id:string)=>section.querySelector<T>('#'+id)!;
   const log=journalPanel(),journal=log.journal;
-  el('browser-clear-cache').onclick=async()=>{let cache;try{cache=await geometryCache();await cache.clear();status('Кеш IFC очищен. При следующем открытии файл будет прочитан заново.');}catch(e){status('Кеш не очищен: '+String(e));}finally{cache?.close();}};
+  el('browser-clear-cache').onclick=async()=>{const results=await Promise.allSettled([geometryCache,rvtModelCache].map(async open=>{const cache=await open();try{await cache.clear();}finally{cache.close();}}));status(results.every(result=>result.status==='fulfilled')?'Кеш моделей IFC и RVT очищен. При следующем открытии геометрия будет прочитана заново.':'Часть кеша не очищена: '+results.filter(result=>result.status==='rejected').map(result=>(result as PromiseRejectedResult).reason).join('; '));};
   el('browser-log').onclick=log.open;el('browser-document').onclick=callbacks.openDocument;
   const logButton=document.createElement('button');logButton.id='open-import-log';logButton.textContent='Журнал';logButton.onclick=log.open;
   document.getElementById('status-details')!.after(logButton);
@@ -64,27 +65,29 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSou
   };
   const fail=(message:string,details?:unknown)=>{current=fallback;if(run)finishRun(run,'failed',message,details);stop();status(message+' · подробности в журнале');};
   const download=(id:string,data:Blob,name:string)=>{const old=urls.get(id);if(old)URL.revokeObjectURL(old);const url=URL.createObjectURL(data);urls.set(id,url);const a=el<HTMLAnchorElement>(id);a.href=url;a.download=name;a.hidden=false;};
+  const clearIfcDownload=()=>{const old=urls.get('browser-ifc');if(old)URL.revokeObjectURL(old);urls.delete('browser-ifc');el('browser-ifc').hidden=true;};
   const diagnosticReport=(report:unknown)=>{el('browser-diagnostics').hidden=false;section.querySelector('pre')!.textContent=JSON.stringify(report,null,2);download('browser-report',new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),'uvyazka-diagnostics.json');};
   el('browser-cancel').onclick=()=>{batchController?.abort();current=fallback;callbacks.cancelDrawing();stop('Отменено пользователем.');status('Обработка отменена. События сохранены в журнале.');};
   el('browser-demo').onclick=async()=>{batchController?.abort();stop('Переход к учебному примеру.');await journal.flush();location.href=base;};
   const startFile=async(file:File,appendMode:boolean|undefined,done:(result:FileImportResult)=>void,intent?:ImportIntent)=>{
     document.querySelector<HTMLDialogElement>('#file-dialog')!.close();
     stop();const job=active;await log.ready;if(job!==active){done({state:'cancelled',included:false,message:'Открытие отменено до запуска.'});return;}
-    run=journal.begin('import',file.name,file.size);const jobRun=run;log.select(run);processing.begin(file.name,file.size);
+    const rvtMode=intent?.rvtMode??el<HTMLSelectElement>('browser-rvt-mode').value as RvtMode;
+    run=journal.begin('import',file.name,file.size);const jobRun=run;log.select(run);processing.begin(file.name,file.size,false,rvtMode);
     pendingFile={run:jobRun,resolve:done};
     fallback=current;
     const policy=filePolicy(file.name,file.size);
     if(policy.error){fail(policy.error);return;}
     if(policy.warning)journal.event(run,'warning',policy.warning);
-    const memoryMiB=Number(el<HTMLSelectElement>('browser-memory').value);const rvtMode=el<HTMLSelectElement>('browser-rvt-mode').value as RvtMode;
+    const memoryMiB=Number(el<HTMLSelectElement>('browser-memory').value);
     journal.event(run,'info','Настройки обработки',{ifc_memory_budget_mib:memoryMiB,rvt_reader_max_bytes:2*1024**3,processing:'browser-local',rvt_read_mode:rvtMode});
     const append=(appendMode??el<HTMLInputElement>('browser-append').checked)&&!/\.(dwg|dxf)$/i.test(file.name);
     fallback=current;busy(true);status('Чтение '+file.name);
-    for(const [id,url] of urls){URL.revokeObjectURL(url);el(id).hidden=true;}urls.clear();el('browser-diagnostics').hidden=true;
+    for(const [id,url] of urls)if(id!=='browser-ifc'){URL.revokeObjectURL(url);el(id).hidden=true;urls.delete(id);}el('browser-diagnostics').hidden=true;
     try{
       if(/\.(dwg|dxf)$/i.test(file.name)){
         reportProgress(run,'CAD','Чтение чертежа');await callbacks.drawing(file);
-        if(job===active){document.querySelector<HTMLDialogElement>('#file-dialog')!.close();finishRun(jobRun,'completed','Чертёж открыт.');status(file.name+' открыт. Масштаб и слои — над чертежом.');busy(false);}return;
+        if(job===active){clearIfcDownload();document.querySelector<HTMLDialogElement>('#file-dialog')!.close();finishRun(jobRun,'completed','Чертёж открыт.');status(file.name+' открыт. Масштаб и слои — над чертежом.');busy(false);}return;
       }
       reportProgress(run,'Чтение файла','Загрузка байтов с локального диска');
       const buffer=await file.arrayBuffer();if(job!==active)return;
@@ -130,17 +133,17 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSou
             journal.event(jobRun,'warning','Есть пропуски геометрии или предупреждения декодера. Проверьте покрытие.',report);
           el('browser-diagnostics').hidden=false;section.querySelector('pre')!.textContent=JSON.stringify(report,null,2);
           download('browser-report',new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),'uvyazka-diagnostics.json');
-          if(data.convertedIfc)download('browser-ifc',new Blob([data.convertedIfc],{type:'application/x-step'}),file.name.replace(/\.rvt$/i,'.ifc'));
           reportProgress(jobRun,'Отображение','Создание 3D-сцены');status('Отображение модели');
           try{const displayed=await callbacks.model(data.model,data.binary,append,intent);if(job!==active)return;current=displayed;fallback=displayed;includedRuns.add(jobRun);}
           catch(e){if(job===active){if(e instanceof SourceAlreadyPresent){skippedRuns.add(jobRun);current=fallback;finishRun(jobRun,'completed',e.message);stop();}else fail('Не удалось отобразить модель: '+String(e),{stage:'Отображение',stack:e instanceof Error?e.stack:undefined});}return;}
+           if(data.convertedIfc)download('browser-ifc',new Blob([data.convertedIfc],{type:'application/x-step'}),file.name.replace(/\.rvt$/i,'.ifc'));else clearIfcDownload();
           if(stagedDocument)callbacks.document(stagedDocument);
           let persistenceError='';if(stagedDocument&&callbacks.persistDocument)try{await callbacks.persistDocument(stagedDocument);}catch(error){persistenceError=String(error);journal.event(jobRun,'warning','Каталог не сохранён в базу',{error:persistenceError});}if(callbacks.persist)try{await callbacks.persist(data.model,data.binary,text=>{reportProgress(jobRun,'Сохранение в проект',text);},()=>job!==active);}catch(error){persistenceError=String(error);journal.event(jobRun,'warning','Модель открыта, но не сохранена в общей базе',{error:persistenceError});}
           if(job!==active)return;
           processing.coverage(data.model);
           coverageRuns.set(jobRun,modelCoverage(data.model));
           const result=`${file.name}: ${isNavisFormat(data.model.source.format)?(data.model.nwd?.logical_nodes??0)+' узлов дерева, '+(data.model.nwd?.fragments??0)+' геометрических фрагментов':data.model.rvt_direct?s.products+' владельцев сохранённой графики':s.physical_elements+' физических элементов'}, ${s.meshes} сеток, ${s.geometry_errors} без геометрии.`+(persistenceError?' В общую базу не записано; причина — в журнале.':'');
-          const partial=!!data.model.rvt_direct||!!persistenceError||isNavisFormat(data.model.source.format)&&(data.model.nwd?.unread_features.length>0||data.model.nwd?.source_models.some((s:any)=>!s.geometry_complete||s.metadata_status!=='decoded_logical_subset'));
+           const partial=!!data.model.rvt_direct||s.geometry_errors>0||!!persistenceError||data.model.source.format==='rvt'&&(rvtDocumentIncomplete(stagedDocument)||!!data.conversion?.saved_mesh_error||!!data.conversion?.diagnostics?.unsupported_features?.length)||isNavisFormat(data.model.source.format)&&(data.model.nwd?.unread_features.length>0||data.model.nwd?.source_models.some((s:any)=>!s.geometry_complete||s.metadata_status!=='decoded_logical_subset'));
           includedRuns.add(jobRun);finishRun(jobRun,partial?'partial':'completed',result);status(result+(data.model.rvt_direct?' RVT напрямую: без IFC; полнота не подтверждена.':isNavisFormat(data.model.source.format)?' Ограничения чтения — в журнале.':' Можно рассчитать сценарий.'));busy(false);
         }
       };
@@ -148,13 +151,15 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSou
     }catch(e){if(job===active)fail(String(e),{stack:e instanceof Error?e.stack:undefined});}
   };
   const openSingle=(file:File,appendMode?:boolean,intent?:ImportIntent)=>new Promise<FileImportResult>(resolve=>{void startFile(file,appendMode,resolve,intent).catch(error=>{const message=String(error);fail(message);resolve({state:'failed',included:false,message});});});
-  const openFile=(file:File,appendMode?:boolean,intent?:ImportIntent)=>{batchController?.abort();batchController=null;processing.batch(null);return openSingle(file,appendMode,intent);};
+  const readIntent=(intent?:ImportIntent):ImportIntent=>({...intent,rvtMode:intent?.rvtMode??el<HTMLSelectElement>('browser-rvt-mode').value as RvtMode});
+  const openFile=(file:File,appendMode?:boolean,intent?:ImportIntent)=>{batchController?.abort();batchController=null;processing.batch(null);return openSingle(file,appendMode,readIntent(intent));};
   const openFiles=async(files:File[],appendMode?:boolean)=>{
     if(!files.length)return;
     if(files.length===1){await openFile(files[0],appendMode);return;}
     batchController?.abort();stop('Запущена новая очередь.');
     const controller=new AbortController();batchController=controller;const append=appendMode??el<HTMLInputElement>('browser-append').checked;
-    const result=await importBatch(files,openSingle,{append,signal:controller.signal,update:snapshot=>{if(batchController===controller)processing.batch(snapshot);}});
+    const intent=readIntent();
+    const result=await importBatch(files,(file,append)=>openSingle(file,append,intent),{append,signal:controller.signal,update:snapshot=>{if(batchController===controller)processing.batch(snapshot);}});
     if(batchController===controller){retryFiles=files.filter((_,index)=>result.rows[index].state==='failed');retryAppend=append||result.rows.some(row=>row.included);}
     const batchRun=journal.begin('import','Пакет файлов',files.reduce((n,file)=>n+file.size,0));
     journal.finish(batchRun,result.cancelled?'cancelled':result.rows.every(row=>row.included&&row.state==='completed')?'completed':result.rows.some(row=>row.included)?'partial':'failed',batchSummary(result),result);

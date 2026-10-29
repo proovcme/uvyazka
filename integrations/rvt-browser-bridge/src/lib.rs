@@ -6,6 +6,7 @@ use serde::Serialize;
 mod document;
 mod schedule_data;
 mod engineering;
+mod direct;
 pub use document::extract_document;
 
 // Match the reader's technical limit rather than imposing the former demo cap.
@@ -69,6 +70,14 @@ mod web {
         super::validate_input_size(bytes.len()).map_err(|e|JsValue::from_str(&e))?;
         let result=super::engineering::extract(bytes.to_vec()).map_err(|e|JsValue::from_str(&e))?;
         result.serialize(&serde_wasm_bindgen::Serializer::json_compatible()).map_err(|e|JsValue::from_str(&e.to_string()))
+    }
+
+    #[wasm_bindgen(js_name = extractRvtDirectScene)]
+    pub fn extract_rvt_direct_scene(bytes: &[u8]) -> Result<JsValue, JsValue> {
+        super::validate_input_size(bytes.len()).map_err(|e| JsValue::from_str(&e))?;
+        let result = super::direct::extract(bytes.to_vec()).map_err(|e| JsValue::from_str(&e))?;
+        result.serialize(&serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true))
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     #[wasm_bindgen(js_name = extractRvtScheduleData)]

@@ -26,6 +26,9 @@ test('appending RVT in public viewer keeps its catalogue through project and fed
  await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
  const wait=ms=>new Promise(r=>setTimeout(r,ms));for(let i=0;i<100&&!globalThis.__viewer.loaded;i++)await wait(10);assert.equal(globalThis.__viewer.loaded,true);
  const callbacks=globalThis.__callbacks,hash='a'.repeat(64),pkg=make(hash,'new.rvt','rvt');
+ const appendInput=document.createElement('input');appendInput.id='browser-append';appendInput.type='checkbox';appendInput.checked=true;
+ const directInput=document.createElement('input');directInput.id='browser-rvt-file';directInput.type='file';let directPicker=0;directInput.onclick=()=>directPicker++;document.body.append(appendInput,directInput);
+ document.querySelector('.add-scene-folder').click();assert.equal(appendInput.checked,false);assert.equal(directPicker,1);appendInput.remove();directInput.remove();
  callbacks.reset(true);
  await callbacks.model(pkg,new ArrayBuffer(4),true);
  callbacks.document({schema_version:1,schema_sha256:'b'.repeat(64),status:'partial',clipped_records:0,summary:{},source:{sha256:hash,filename:'new.rvt',size_bytes:42},evaluated_schedule_body_available:false,records:[{identity:{element_id:'9007199254740993'},kind:'view',class_name:'DBViewDrafting',status:'partial',source:{stream:'Partitions/1'},graph:{objects:[{class_name:'DBViewDrafting',fields:{m_viewName:'Лист А',m_sheetNumber:'АР-1'}}],edges:[]}}]});

@@ -7,6 +7,6 @@ export function elementCategory(element:BimElement,model:ModelPackage){
   const rvt=model.source.format==='rvt'||member?.source_format==='rvt'||element.revit?.id_basis==='rvt_converter_tag';
   if(!rvt)return {key:JSON.stringify(['ifc',element.class]),name:element.class,format:'IFC'};
   const value=element.property_sets?.Other?.Category;
-  const name=typeof value==='string'&&value.trim()?value.trim():'Категория Revit не прочитана';
+  const name=typeof value==='string'&&value.trim()?value.trim():element.revit?.id_basis==='rvt_native_identity'?'Класс RVT: '+element.class:'Категория Revit не прочитана';
   return {key:JSON.stringify(['rvt',name]),name,format:'RVT'};
 }

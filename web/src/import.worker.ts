@@ -1,3 +1,4 @@
+import {importRvtDirect} from './browser-rvt-direct';
 import {attachNativeEngineering} from './native-engineering';
 import {importNwd,nwdNeedsUnits} from './browser-nwd';
 import {geometryCache} from './geometry-cache';
@@ -13,7 +14,7 @@ let unitReply:{job:unknown;resolve:(unit:any)=>void}|null=null;
 worker.onmessage=async({data})=>{
   if(data.kind==='ping'){worker.postMessage({job:data.job,kind:'pong'});return;}
   if(data.kind==='nwd-unit-choice'){if(unitReply&&unitReply.job===data.job){unitReply.resolve(data.unit);unitReply=null;}return;}
-  const {job,buffer,filename,base,memoryMiB=1024}=data;
+  const {job,buffer,filename,base,memoryMiB=1024,rvtMode='ifc'}=data;
   let stage='Проверка файла',conversion:any=null,rvtDocument:RvtDocument|null=null;
   const progress=(text:string,nextStage=stage,details?:unknown)=>{stage=nextStage;worker.postMessage({job,kind:'progress',stage,text,details});};
   try {
@@ -49,8 +50,8 @@ worker.onmessage=async({data})=>{
     }
     if(/\.rvt$/i.test(filename)){
       progress('Загрузка RVT-декодера · файл остаётся в браузере','RVT-движок');
-      const module=await import(/* @vite-ignore */base+'runtime/rvt/uvyazka_rvt_browser.js');
-      await module.default({module_or_path:base+'runtime/rvt/uvyazka_rvt_browser_bg.wasm'});
+      const module=await import(/* @vite-ignore */base+'runtime/rvt/uvyazka_rvt_browser.js?reader=direct-v1-20261029');
+      await module.default({module_or_path:base+'runtime/rvt/uvyazka_rvt_browser_bg.wasm?reader=direct-v1-20261029'});
       progress('Чтение видов, листов и спецификаций RVT','Документ RVT');
       try {
         let cache:Awaited<ReturnType<typeof documentCache>>|undefined;
@@ -77,6 +78,16 @@ worker.onmessage=async({data})=>{
       }
       let engineering;
       if(module.extractRvtEngineering){progress('Чтение систем и базового оборудования цепей','Связи RVT');try{engineering=module.extractRvtEngineering(bytes);}catch(error){engineering={status:'partial',systems:[],diagnostics:[String(error)]};}}
+      if(rvtMode==='direct'){
+        progress('Экспериментальное чтение сохранённой графики RVT без IFC','RVT напрямую');
+        if(typeof module.extractRvtDirectScene!=='function')throw Error('Прямой RVT-читатель отсутствует в этой версии runtime. Обновите сборку. IFC автоматически не используется.');
+        let result=module.extractRvtDirectScene(bytes);
+        progress('Подготовка нативных ID, параметров и бинарной геометрии','Сцена RVT');
+        const {model,binary}=await importRvtDirect(result,{filename,sha256:sourceHash,size_bytes:sourceSize});result=null;
+        if(engineering)attachNativeEngineering(model,engineering,sourceHash);
+        worker.postMessage({job,kind:'imported',model,binary},[binary]);return;
+      }
+      if(rvtMode!=='ifc')throw Error('Неизвестный режим RVT');
       progress('Конверсия RVT и чтение сохранённых сеток','RVT → IFC');
       conversion=module.convertRvtBytes(bytes);conversion.engineering=engineering;
       if(!conversion.ifc_step)throw Error(conversion.quality_error||'RVT: пригодная геометрия не получена');
@@ -98,7 +109,7 @@ worker.onmessage=async({data})=>{
     if(conversion)delete conversion.ifc_step;
     const message=error instanceof Error?error.message:String(error);
     if(/\.rvt$/i.test(filename)){
-      const result=rvtImportFailure(message,rvtDocument,conversion);
+      const result=rvtImportFailure(message,rvtDocument,conversion);if(rvtMode==='direct')result.message+=' Прямой режим: автоматический переход на IFC не выполнялся.';
       worker.postMessage({job,...result,details:{...result.details,stage,stack:error instanceof Error?error.stack:undefined,memory_budget_mib:memoryMiB}});return;
     }
     worker.postMessage({job,kind:'error',message,

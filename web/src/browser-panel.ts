@@ -1,3 +1,4 @@
+import type {RvtMode} from './browser-rvt-direct';
 import {isNavisFormat} from './navis-format.ts';
 import {importBatch,batchSummary} from './import-batch.ts';
 import type {FileImportResult} from './import-batch.ts';
@@ -17,9 +18,12 @@ import {hasReadableDocument} from './rvt-import-result';
 
 export interface ImportIntent {replaceInstanceId?:string}
 export type BrowserRun=RunPackage & {cpm:{duration_minutes:number;operations:Record<string,{critical:boolean}>}};
-export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSource?:(sha:string)=>boolean;cancelPreparation?:()=>void;persist?:(model:ModelPackage,binary:ArrayBuffer,progress:(text:string)=>void,cancelled:()=>boolean)=>Promise<void>;persistDocument?:(document:RvtDocument)=>Promise<void>;publicDemo?:boolean;openDocument:()=>void;noGeometry:(filename:string,message:string)=>void;document:(data:RvtDocument|null,message?:string)=>void;drawing:(file:File)=>Promise<void>;cancelDrawing:()=>void;model:(model:ModelPackage,binary:ArrayBuffer,append:boolean,intent?:ImportIntent)=>Promise<ModelPackage>;run:(run:BrowserRun)=>void|Promise<void>}) {
+export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSource?:(sha:string,mode?:RvtMode)=>boolean;cancelPreparation?:()=>void;persist?:(model:ModelPackage,binary:ArrayBuffer,progress:(text:string)=>void,cancelled:()=>boolean)=>Promise<void>;persistDocument?:(document:RvtDocument)=>Promise<void>;publicDemo?:boolean;openDocument:()=>void;noGeometry:(filename:string,message:string)=>void;document:(data:RvtDocument|null,message?:string)=>void;drawing:(file:File)=>Promise<void>;cancelDrawing:()=>void;model:(model:ModelPackage,binary:ArrayBuffer,append:boolean,intent?:ImportIntent)=>Promise<ModelPackage>;run:(run:BrowserRun)=>void|Promise<void>}) {
   const section=document.createElement('section');section.className='panel browser-import';section.innerHTML=`
 <h2>Открыть файл</h2>
+<label>Режим чтения RVT<select id="browser-rvt-mode"><option value="ifc">Через IFC · текущий режим</option><option value="direct">Напрямую · экспериментальный</option></select></label>
+<p>Прямой режим читает сохранённую графику и параметры без IFC. Покрытие отличается; при ошибке автоматического перехода на IFC нет.</p>
+<input id="browser-rvt-file" type="file" accept=".rvt" multiple hidden>
 <p>Файл остаётся на вашем устройстве. Для RVT и IFC прежний порог размера снят; большие модели требуют больше памяти. DWG/DXF до 64 MiB. Чтение RVT экспериментальное; Revit и агент не нужны.</p>
 <div class="browser-actions"><label>DWG / RVT / IFC / NWD / NWC<input id="browser-file" type="file" accept=".dwg,.dxf,.rvt,.ifc,.nwd,.nwc" multiple></label><button id="browser-cancel" disabled>Отменить</button><button id="browser-demo">Учебный пример</button><button id="browser-log">Журнал обработки</button><button id="browser-document">Виды и таблицы</button></div>
 <label class="check"><input id="browser-append" type="checkbox">Добавить IFC / RVT / NWD к открытой сцене</label><button id="browser-clear-cache">Очистить кеш IFC</button>
@@ -52,7 +56,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSou
   addEventListener('pagehide',()=>clearInterval(probe));
 
   const status=(text:string)=>{el('browser-status').textContent=text;const footer=document.getElementById('workspace-status')!;footer.textContent=text;footer.title=text;};
-  const busy=(yes:boolean)=>{document.body.classList.toggle('is-busy',yes);el<HTMLButtonElement>('browser-cancel').disabled=!yes;el<HTMLButtonElement>('browser-plan').disabled=yes||!current||isNavisFormat(current.source.format);for(const id of ['open-file','empty-add-model','replace-model']){const button=document.getElementById(id) as HTMLButtonElement|null;if(button)button.disabled=yes;}};
+  const busy=(yes:boolean)=>{document.body.classList.toggle('is-busy',yes);el<HTMLButtonElement>('browser-cancel').disabled=!yes;el<HTMLButtonElement>('browser-plan').disabled=yes||!current||!!current.rvt_direct||isNavisFormat(current.source.format);for(const id of ['open-file','empty-add-model','replace-model']){const button=document.getElementById(id) as HTMLButtonElement|null;if(button)button.disabled=yes;}};
   const stop=(reason='Обработка отменена: выбран другой файл или режим.',keepPlanner=false)=>{
     callbacks.cancelPreparation?.();
     if(run?.state==='running')finishRun(run,'cancelled',reason);
@@ -72,8 +76,8 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSou
     const policy=filePolicy(file.name,file.size);
     if(policy.error){fail(policy.error);return;}
     if(policy.warning)journal.event(run,'warning',policy.warning);
-    const memoryMiB=Number(el<HTMLSelectElement>('browser-memory').value);
-    journal.event(run,'info','Настройки обработки',{ifc_memory_budget_mib:memoryMiB,rvt_reader_max_bytes:2*1024**3,processing:'browser-local'});
+    const memoryMiB=Number(el<HTMLSelectElement>('browser-memory').value);const rvtMode=el<HTMLSelectElement>('browser-rvt-mode').value as RvtMode;
+    journal.event(run,'info','Настройки обработки',{ifc_memory_budget_mib:memoryMiB,rvt_reader_max_bytes:2*1024**3,processing:'browser-local',rvt_read_mode:rvtMode});
     const append=(appendMode??el<HTMLInputElement>('browser-append').checked)&&!/\.(dwg|dxf)$/i.test(file.name);
     fallback=current;busy(true);status('Чтение '+file.name);
     for(const [id,url] of urls){URL.revokeObjectURL(url);el(id).hidden=true;}urls.clear();el('browser-diagnostics').hidden=true;
@@ -103,7 +107,7 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSou
           if(!unit){current=fallback;stop('Открытие NWD отменено: единицы не выбраны.');status('Открытие NWD отменено.');return;}
           importer?.postMessage({job,kind:'nwd-unit-choice',unit});
         }
-        else if(data.kind==='source'){journal.source(jobRun,data.sha256);if(append&&callbacks.containsSource?.(data.sha256)){skippedRuns.add(jobRun);current=fallback;finishRun(jobRun,'completed',new SourceAlreadyPresent().message);stop();status('Повторный исходный файл пропущен.');}}
+        else if(data.kind==='source'){journal.source(jobRun,data.sha256);if(append&&callbacks.containsSource?.(data.sha256,/\.rvt$/i.test(file.name)?rvtMode:undefined)){skippedRuns.add(jobRun);current=fallback;finishRun(jobRun,'completed',new SourceAlreadyPresent().message);stop();status('Повторный исходный файл пропущен.');}}
         else if(data.kind==='progress'){if(data.details?.warning)journal.event(jobRun,'warning',data.text,data.details);reportProgress(jobRun,data.stage||'Импорт',data.text,data.details);status(data.text);}
         else if(data.kind==='error'){
           diagnosticReport({filename:file.name,sha256:jobRun.sha256,outcome:'failed',message:data.message,...data.details});
@@ -135,12 +139,12 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSou
           if(job!==active)return;
           processing.coverage(data.model);
           coverageRuns.set(jobRun,modelCoverage(data.model));
-          const result=`${file.name}: ${isNavisFormat(data.model.source.format)?(data.model.nwd?.logical_nodes??0)+' узлов дерева, '+(data.model.nwd?.fragments??0)+' геометрических фрагментов':s.physical_elements+' физических элементов'}, ${s.meshes} сеток, ${s.geometry_errors} без геометрии.`+(persistenceError?' В общую базу не записано; причина — в журнале.':'');
-          const partial=!!persistenceError||isNavisFormat(data.model.source.format)&&(data.model.nwd?.unread_features.length>0||data.model.nwd?.source_models.some((s:any)=>!s.geometry_complete||s.metadata_status!=='decoded_logical_subset'));
-          includedRuns.add(jobRun);finishRun(jobRun,partial?'partial':'completed',result);status(result+(isNavisFormat(data.model.source.format)?' Ограничения чтения — в журнале.':' Можно рассчитать сценарий.'));busy(false);
+          const result=`${file.name}: ${isNavisFormat(data.model.source.format)?(data.model.nwd?.logical_nodes??0)+' узлов дерева, '+(data.model.nwd?.fragments??0)+' геометрических фрагментов':data.model.rvt_direct?s.products+' владельцев сохранённой графики':s.physical_elements+' физических элементов'}, ${s.meshes} сеток, ${s.geometry_errors} без геометрии.`+(persistenceError?' В общую базу не записано; причина — в журнале.':'');
+          const partial=!!data.model.rvt_direct||!!persistenceError||isNavisFormat(data.model.source.format)&&(data.model.nwd?.unread_features.length>0||data.model.nwd?.source_models.some((s:any)=>!s.geometry_complete||s.metadata_status!=='decoded_logical_subset'));
+          includedRuns.add(jobRun);finishRun(jobRun,partial?'partial':'completed',result);status(result+(data.model.rvt_direct?' RVT напрямую: без IFC; полнота не подтверждена.':isNavisFormat(data.model.source.format)?' Ограничения чтения — в журнале.':' Можно рассчитать сценарий.'));busy(false);
         }
       };
-      importer.postMessage({job,buffer,filename:file.name,base,memoryMiB},[buffer]);
+      importer.postMessage({job,buffer,filename:file.name,base,memoryMiB,rvtMode},[buffer]);
     }catch(e){if(job===active)fail(String(e),{stack:e instanceof Error?e.stack:undefined});}
   };
   const openSingle=(file:File,appendMode?:boolean,intent?:ImportIntent)=>new Promise<FileImportResult>(resolve=>{void startFile(file,appendMode,resolve,intent).catch(error=>{const message=String(error);fail(message);resolve({state:'failed',included:false,message});});});
@@ -156,12 +160,13 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSou
     journal.finish(batchRun,result.cancelled?'cancelled':result.rows.every(row=>row.included&&row.state==='completed')?'completed':result.rows.some(row=>row.included)?'partial':'failed',batchSummary(result),result);
     if(batchController===controller){status(batchSummary(result));batchController=null;busy(false);}
   };
+  el<HTMLInputElement>('browser-rvt-file').onchange=()=>{const input=el<HTMLInputElement>('browser-rvt-file'),files=Array.from(input.files??[]);input.value='';el<HTMLSelectElement>('browser-rvt-mode').value='direct';void openFiles(files);};
   el<HTMLInputElement>('browser-file').onchange=()=>{const input=el<HTMLInputElement>('browser-file'),files=Array.from(input.files??[]);input.value='';void openFiles(files);};
   const folderLabel=document.createElement('label');folderLabel.textContent='Папка моделей';const folder=document.createElement('input');folder.type='file';folder.id='browser-folder';folder.multiple=true;folder.setAttribute('webkitdirectory','');folderLabel.append(folder);el('browser-file').parentElement!.after(folderLabel);
   folder.onchange=()=>{const files=Array.from(folder.files??[]).filter(file=>/\.(nwc|nwd|ifc|rvt)$/i.test(file.name)).map(file=>new File([file],file.webkitRelativePath||file.name,{type:file.type,lastModified:file.lastModified}));folder.value='';if(files.length)void openFiles(files);else status('В папке не найдены NWC, NWD, IFC или RVT.');};
   el('browser-plan').onclick=async()=>{
     if(!current)return;
-    if(current.elements.some(e=>e.semantic_kind==='geometry_fragment')){status('Сценарий для геометрических фрагментов NWD не рассчитывается: семантика объектов не прочитана.');return;}
+    if(current.elements.some(e=>e.semantic_kind==='geometry_fragment')){status('Сценарий для непроверенной сохранённой графики не рассчитывается: семантика объектов не прочитана.');return;}
     const curingDays=Number(el<HTMLInputElement>('browser-curing').value);if(!Number.isInteger(curingDays)||curingDays<1||curingDays>365){status('Выдержка бетона: целое число от 1 до 365 суток');return;}
     await log.ready;stop('Запущен новый расчёт.',true);const job=active;fallback=current;
     run=journal.begin('simulation',current.source.filename,current.source.size_bytes);const jobRun=run;log.select(run);journal.source(run,current.source.sha256);document.querySelector<HTMLDialogElement>('#file-dialog')!.close();processing.begin(current.source.filename,current.source.size_bytes,true);

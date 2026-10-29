@@ -50,6 +50,7 @@ export interface Storey {
   element_count: number;
 }
 export interface ModelPackage {
+  rvt_direct?:{experimental:true;complete_document_geometry:false;graphics_owners:number;observed_records:number;unrendered_records:number;partial_owners:number;metadata_error:string|null;parameter_definitions?:Record<string,unknown>};
   project_id?: string;
   attribution?: Record<string,unknown>;
   contract: 'ModelPackage';
@@ -57,6 +58,7 @@ export interface ModelPackage {
   importer_version: string;
   model_id: string;
   source: { filename: string; sha256: string; size_bytes: number; schema: string; exported_at: string; exporter: string; format?: string;
+    rvt_read_mode?:'ifc'|'direct';
     calibration?: {unit:string;length_to_m:number;basis:'user_assumption'|'source';source_units_decoded:boolean};
     calibrations?:{namespace:string;unit:string;length_to_m:number;basis:'user_assumption'|'source';source_units_decoded:boolean}[];
     conversion?: { engine: string; local_patches?: string[]; warnings: string[]; unsupported_features: string[]; ifc_sha256: string; confidence: { level?: string }; source_revision: string } };

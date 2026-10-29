@@ -7,6 +7,7 @@ import type {Vec3} from './model';
 import { validatePackage } from './model';
 import { ConstructionSite } from './site';
 import {renderPolicy} from './render-policy';
+import {performanceSample,performanceDiagnostics} from './performance-probe';
 import type { RunPackage } from './simulation';
 
 type ElementMesh = THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial[]>;
@@ -64,6 +65,7 @@ export class Viewer {
   constructor(readonly host: HTMLElement, onPick: (id: string | null,additive?:boolean) => void) {
     this.onPick = onPick;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    if(performanceDiagnostics){const gl=this.renderer.getContext(),debug=gl.getExtension('WEBGL_debug_renderer_info');performanceSample('graphics-device',performance.now(),{renderer:debug?String(gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)):'not_disclosed',vendor:debug?String(gl.getParameter(debug.UNMASKED_VENDOR_WEBGL)):'not_disclosed'});}
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x12181d, 0);
     document.addEventListener('theme-change',this.themeChanged);
@@ -136,11 +138,14 @@ export class Viewer {
     if (this.frame) return;
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;
+      const start=performance.now();
       this.renderer.render(this.scene, this.camera);
+      performanceSample('render',start,{calls:this.renderer.info.render.calls,triangles:this.renderer.info.render.triangles,lines:this.renderer.info.render.lines,geometries:this.renderer.info.memory.geometries,meshes:this.meshes.size,shadows:this.renderer.shadowMap.enabled});
     });
   };
 
   load(pkg: ModelPackage, binary: ArrayBuffer) {
+    const loadStart=performance.now();
     validatePackage(pkg, binary);
     this.clearModel();
     this.model = pkg;
@@ -213,6 +218,7 @@ export class Viewer {
     this.fit();
     this.host.dataset.renderReady = 'true';
     this.host.dataset.meshCount = String(this.meshes.size);
+    performanceSample('viewer-load',loadStart,{records:pkg.elements.length,meshes:this.meshes.size,binaryMiB:Math.round(binary.byteLength/1048576)});
   }
 
   fit(direction: 'iso' | 'top' | 'front' = 'iso', selectedOnly = false) {

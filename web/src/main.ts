@@ -1,5 +1,6 @@
 import {sameReadSource,rvtMode} from './browser-rvt-direct';
 import {geometryQuality} from './geometry-quality';
+import {performanceSample,performanceDiagnostics} from './performance-probe';
 import {isNavisFormat,onlyNavisSources} from './navis-format.ts';
 import {installWindowControls} from './window-controls';
 import './window-controls.css';
@@ -248,7 +249,7 @@ async function loadProject(id:string,skipModel=false) {
   el<HTMLAnchorElement>('back').href=DEMO?'https://locia.work/':'/?project='+encodeURIComponent(id); if(DEMO)el('back').textContent='locia.work ↗'; if(!DEMO)el<HTMLAnchorElement>('memory-link').href=el<HTMLAnchorElement>('back').href;
   el('measurement-link').hidden=DEMO;
   if(!DEMO)el<HTMLAnchorElement>('measurement-link').href='/measurements/?project='+encodeURIComponent(id);
-  history.replaceState(null,'','?project='+encodeURIComponent(id));
+  history.replaceState(null,'','?project='+encodeURIComponent(id)+(performanceDiagnostics?'&diagnostics=performance':''));
   const key=project; const [models,runs]=await Promise.all([api<{items:{model_id:string;name:string}[]}>('models'),api<{items:{run_id:string;scenario_id:string;scenario_revision:number;duration_minutes:number;name?:string}[]}>('runs')]); if(key!==project)return;
   el<HTMLSelectElement>('models').innerHTML='<option value="">Без геометрии</option>'+models.items.map(m=>`<option value="${esc(m.model_id)}">${esc(m.name)}</option>`).join('');
   el<HTMLSelectElement>('runs').innerHTML='<option value="">Выберите расчёт</option>'+runs.items.map(r=>`<option value="${esc(r.run_id)}">${esc(r.name||r.scenario_id)} · ревизия ${r.scenario_revision} · ${r.duration_minutes} мин</option>`).join('');
@@ -318,10 +319,12 @@ function setMode(mode:'view'|'simulate') {
 el('mode-view').onclick=()=>setMode('view');el('mode-simulate').onclick=()=>setMode('simulate');
 function sceneVisible(instance:string|undefined){return !instance?(sceneMembers.length!==1||sceneMembers[0].visible):sceneMembers.find(m=>m.instanceId===instance)?.visible!==false;}
 function applySceneVisibility(){
+  const start=performance.now();
   if(cadFrame)return;
   renderElements();const filtered=el<HTMLInputElement>('visibility-filter').checked?new Set(sceneFilterItems.map(e=>e.id)):null;
   viewer?.show(new Set((model?.elements??[]).filter(e=>e.role==='element'&&visibility.visible(e.id)&&(!filtered||filtered.has(e.id))).map(e=>e.id)));
   refreshHighlights();
+  performanceSample('visibility-and-tree',start,{records:model?.elements.length??0});
 }
 async function presentMembers(members:SceneMember[],commitContext?:()=>void,expected?:SavedScene){
   scenePreparation?.abort();const controller=new AbortController();scenePreparation=controller;
@@ -388,6 +391,7 @@ function renderSystemSummary(){
 function parameterDraft():ParameterFilter{return {name:el<HTMLInputElement>('parameter-name').value,value:el<HTMLInputElement>('parameter-value').value,operator:el<HTMLSelectElement>('parameter-operator').value as ParameterOperator};}
 function renderParameterFilters(){const host=el('parameter-active');host.replaceChildren();parameterFilters.forEach((filter,index)=>{const row=document.createElement('div');row.className='parameter-chip';const text=document.createElement('span');const operator=[...el<HTMLSelectElement>('parameter-operator').options].find(o=>o.value===filter.operator)?.textContent??filter.operator;text.textContent=filter.name+' · '+operator+' '+filter.value;const remove=document.createElement('button');remove.textContent='×';remove.setAttribute('aria-label','Убрать условие '+filter.name);remove.onclick=()=>{parameterFilters.splice(index,1);renderParameterFilters();applySceneVisibility();};row.append(text,remove);host.append(row);});}
 function renderElements() {
+  const start=performance.now();
   if(cadFrame)return;
   const query=el<HTMLInputElement>('element-search').value.trim(),levels=levelFacet.selected(),categories=categoryFacet.selected();
   const system=el<HTMLSelectElement>('system-filter').value,members=systemMembers(model,system),filters=[...parameterFilters,parameterDraft()];
@@ -406,6 +410,7 @@ function renderElements() {
   tree.render(model,treeItems,selectedId,searching||hiddenOnly,JSON.stringify([query,filters,combine,[...levels],[...categories],system,hiddenOnly]),el<HTMLSelectElement>('tree-grouping').value as 'categories'|'levels',hiddenOnly?[]:[...catalogues.values()],query);
   if(hiddenOnly&&!hiddenItems.length){const empty=el('element-tree').lastElementChild;if(empty?.tagName==='P')empty.textContent='Скрытых элементов нет. Вернитесь к дереву модели.';}
   for(const key of ['hide-matches','show-matches','isolate-matches'])el<HTMLButtonElement>(key).disabled=!treeItems.length;updateSelection();
+  performanceSample('filter-and-tree',start,{records:model?.elements.length??0,matches:treeItems.length});
 }
 function memberElementIds(instanceId:string){return (model?.elements??[]).filter(e=>e.role==='element'&&(!e.source_instance_id?sceneMembers.length===1:e.source_instance_id===instanceId)).map(e=>e.id);}
 function syncMemberVisibility(){for(const member of sceneMembers){const ids=memberElementIds(member.instanceId);member.visible=visibility.count(ids).shown>0;}}

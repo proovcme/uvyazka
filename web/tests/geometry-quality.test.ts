@@ -12,3 +12,8 @@ test('saved graphics and reconstruction have explicit separate quality labels; p
  assert.equal(geometryQuality(e)?.kind,'reconstructed');assert.equal(modelCoverage(model)[0].status,'partial');
  e.geometry_evidence.engine='rvt_native_saved_graphics';assert.equal(geometryQuality(e)?.kind,'saved');
 });
+
+test('a Navisworks subset is never described as reconstructed RVT geometry',()=>{
+ const {model}=fixture(),e=model.elements[0];e.nwd={kind:'fragment',namespace:'synthetic'};e.geometry_evidence={engine:'independent_nwd',body_source:'synthetic',status:'decoded_subset',quantity_eligible:false,requires_review:true,reason:'synthetic'};
+ assert.equal(geometryQuality(e)?.kind,'navis');assert.doesNotMatch(geometryQuality(e)!.message,/RVT/);
+});

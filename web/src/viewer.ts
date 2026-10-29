@@ -7,7 +7,8 @@ import type {Vec3} from './model';
 import { validatePackage } from './model';
 import { ConstructionSite } from './site';
 import {renderPolicy} from './render-policy';
-import {performanceSample,performanceDiagnostics} from './performance-probe';
+import {performanceSample,performanceDiagnostics,individualRendering} from './performance-probe';
+import {ModelBatches} from './model-batches';
 import type { RunPackage } from './simulation';
 
 type ElementMesh = THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial[]>;
@@ -38,6 +39,7 @@ export class Viewer {
   private showFuture = false;
   private site?: ConstructionSite;
   private model?: ModelPackage;
+  private batches?:ModelBatches;
   private clipPlanes: THREE.Plane[] = [];
   private measureHandler: ((point:SurfacePoint)=>void)|null = null;
   private measurementOverlay?:THREE.Line;
@@ -45,7 +47,7 @@ export class Viewer {
   captureView(){return {position:this.camera.position.toArray(),target:this.controls.target.toArray(),up:this.camera.up.toArray(),planes:this.clipPlanes.map(p=>({normal:p.normal.toArray(),constant:p.constant})),xray:this.xray};}
   restoreView(view:{position:number[];target:number[];up:number[];planes:{normal:number[];constant:number}[];xray:boolean}){
     const vectors=[view.position,view.target,view.up];if(vectors.some(v=>v.length!==3||!v.every(Number.isFinite))||view.up.every(x=>x===0)||view.planes.length>6||view.planes.some(p=>p.normal.length!==3||!p.normal.every(Number.isFinite)||!Number.isFinite(p.constant)||Math.abs(Math.hypot(...p.normal)-1)>1e-5))throw Error('Неверное состояние камеры или сечений');
-    this.camera.position.fromArray(view.position);this.controls.target.fromArray(view.target);this.camera.up.fromArray(view.up);this.xray=view.xray;this.applyClip(view.planes.map(p=>new THREE.Plane(new THREE.Vector3(...p.normal as [number,number,number]),p.constant)));this.controls.update();this.refreshPresentation();
+    this.camera.position.fromArray(view.position);this.controls.target.fromArray(view.target);this.camera.up.fromArray(view.up);this.xray=view.xray;this.batches?.setXray(view.xray);this.applyClip(view.planes.map(p=>new THREE.Plane(new THREE.Vector3(...p.normal as [number,number,number]),p.constant)));this.controls.update();this.refreshPresentation();
   }
   setMeasureHandler(handler:((point:SurfacePoint)=>void)|null){this.measureHandler=handler;this.renderer.domElement.style.cursor=handler?'crosshair':'';}
   showMeasurement(points:Vec3[]){
@@ -64,7 +66,7 @@ export class Viewer {
 
   constructor(readonly host: HTMLElement, onPick: (id: string | null,additive?:boolean) => void) {
     this.onPick = onPick;
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true,powerPreference:'high-performance' });
     if(performanceDiagnostics){const gl=this.renderer.getContext(),debug=gl.getExtension('WEBGL_debug_renderer_info');performanceSample('graphics-device',performance.now(),{renderer:debug?String(gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)):'not_disclosed',vendor:debug?String(gl.getParameter(debug.UNMASKED_VENDOR_WEBGL)):'not_disclosed'});}
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x12181d, 0);
@@ -140,7 +142,7 @@ export class Viewer {
       this.frame = 0;
       const start=performance.now();
       this.renderer.render(this.scene, this.camera);
-      performanceSample('render',start,{calls:this.renderer.info.render.calls,triangles:this.renderer.info.render.triangles,lines:this.renderer.info.render.lines,geometries:this.renderer.info.memory.geometries,meshes:this.meshes.size,shadows:this.renderer.shadowMap.enabled});
+      performanceSample('render',start,{calls:this.renderer.info.render.calls,triangles:this.renderer.info.render.triangles,lines:this.renderer.info.render.lines,geometries:this.renderer.info.memory.geometries,meshes:this.meshes.size,batches:this.batches?.count??0,multiDraw:this.renderer.extensions.has('WEBGL_multi_draw'),shadows:this.renderer.shadowMap.enabled});
     });
   };
 
@@ -154,7 +156,8 @@ export class Viewer {
     this.renderer.shadowMap.enabled=quality.shadows;
     this.renderer.setPixelRatio(quality.pixelRatio);
     // Bound edge extraction work on large imports; meshes beyond the budget retain solid geometry.
-    let edgeBudget = quality.edgeBudget;
+    const heavy=pkg.statistics.meshes>2000,batchLarge=heavy&&!individualRendering;
+    let edgeBudget = heavy?0:quality.edgeBudget;
     for (const element of pkg.elements) {
       const data = element.mesh;
       if (!data) continue;
@@ -175,6 +178,7 @@ export class Viewer {
       const mesh = new THREE.Mesh(geometry, materials);
       mesh.userData.elementId = element.id;
       mesh.userData.role = element.role;
+      mesh.userData.sourcePrimitive=data.primitive??'triangles';
       mesh.userData.filterVisible = element.role === 'element';
       mesh.userData.baseColors = materials.map((material) => material.color.clone());
       mesh.castShadow = element.role === 'element';
@@ -192,6 +196,7 @@ export class Viewer {
       this.root.add(mesh);
       this.meshes.set(element.id, mesh);
     }
+    if(batchLarge)this.batches=new ModelBatches(this.root,this.meshes);
     this.root.updateMatrixWorld(true);
     const origin = pkg.coordinate_system.render_origin_m;
     const convert = (point: number[]) => new THREE.Vector3(point[0] - origin[0], point[2] - origin[2], -(point[1] - origin[1]));
@@ -266,13 +271,14 @@ export class Viewer {
   }
 
   show(ids: Set<string>) {
-    let count = 0;
+    let count = 0,changed=false;
     for (const [id, mesh] of this.meshes) {
+      if(mesh.userData.filterVisible!==ids.has(id))changed=true;
       mesh.userData.filterVisible = ids.has(id);
-      mesh.visible = ids.has(id);
-      if (mesh.visible) count++;
+      if (ids.has(id)) count++;
     }
     this.host.dataset.visibleMeshes = String(count);
+    if(!changed)return;
     this.refreshPresentation();
     this.invalidate();
   }
@@ -289,6 +295,7 @@ export class Viewer {
   }
 
   highlightElements(ids:Set<string>) {
+    if(ids.size===this.highlightedElements.size&&[...ids].every(id=>this.highlightedElements.has(id)))return;
     this.highlightedElements = new Set(ids);
     this.refreshPresentation();
   }
@@ -296,11 +303,13 @@ export class Viewer {
   setXray(active: boolean, elements: BimElement[]) {
     this.xray = active;
     this.currentElements = elements;
+    this.batches?.setXray(active);
     this.refreshPresentation();
   }
   setSourceColors(active:boolean) {this.sourceColors=active;this.refreshPresentation();}
 
   setConstruction(states: Map<string, ConstructionState> | null, showFuture = false) {
+    this.batches?.setEnabled(states===null);
     this.showFuture = showFuture;
     this.construction = states;
     this.refreshPresentation();
@@ -355,6 +364,7 @@ export class Viewer {
   }
   private applyClip(planes:THREE.Plane[]){
     this.clipPlanes=planes;
+    this.batches?.clip(planes);
     for(const mesh of this.meshes.values())for(const material of mesh.material){material.clippingPlanes=planes;material.clipShadows=true;material.needsUpdate=true;}
     for(const edge of this.edges.values()){edge.material.clippingPlanes=planes;edge.material.needsUpdate=true;}
     if(this.highlight){const materials=Array.isArray(this.highlight.material)?this.highlight.material:[this.highlight.material];for(const m of materials){m.clippingPlanes=planes;m.needsUpdate=true;}}
@@ -381,6 +391,7 @@ export class Viewer {
       mesh.visible = Boolean(mesh.userData.filterVisible) && (!this.construction || state === 'active' || state === 'complete' || state === 'future' && this.showFuture);
       if (this.construction && this.site?.group.visible && this.site.hiddenTargets.has(element.id)) mesh.visible = false;
       const appearance=[state,this.showFuture,this.sourceColors,this.xray,this.selected===element.id,this.highlightedElements.has(element.id),this.lightTheme()].join('|');
+      this.batches?.updateVisibility(element.id,mesh.visible);
       if(mesh.userData.appearance===appearance)continue;
       mesh.userData.appearance=appearance;
       mesh.material.forEach((material, index) => {
@@ -402,12 +413,14 @@ export class Viewer {
       });
       const edges=this.edges.get(element.id);
       if(edges){if(edges.userData.sourceLines){edges.material.color.copy(mesh.material[0].color);edges.material.opacity=mesh.material[0].opacity;edges.material.transparent=mesh.material[0].transparent;}else{edges.material.opacity=state==='future'?.5:.3;edges.material.color.set(this.selected===element.id||state==='active'?0xefb65e:state==='future'?0x8c9ba8:(this.lightTheme()?0x647586:0x40505c));}}
+      this.batches?.update(element.id,mesh,this.selected===element.id||this.highlightedElements.has(element.id));
     }
     if(this.highlight)this.highlight.visible=!!this.selected&&this.meshes.get(this.selected)?.visible===true;
     this.invalidate();
   }
 
   private clearModel() {
+    this.batches?.dispose();this.batches=undefined;
     this.site?.dispose(); this.site = undefined; this.clipPlanes = [];this.showMeasurement([]);
     this.select(null);
     for(const edge of this.edges.values()){edge.geometry.dispose();edge.material.dispose();}

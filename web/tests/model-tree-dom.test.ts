@@ -5,6 +5,16 @@ import {modelTreePanel} from '../src/model-tree-panel.ts';
 import {ModelVisibility} from '../src/model-visibility.ts';
 import type {BimElement,ModelPackage} from '../src/model.ts';
 
+test('presentation-only updates retain actual tree nodes, scroll and page while updating every checkbox',t=>{
+ const win=new Window();t.after(()=>win.happyDOM.close());globalThis.document=win.document as unknown as Document;const host=document.createElement('div');document.body.append(host);
+ const items=Array.from({length:120},(_,i)=>({id:String(i),name:'Учебный элемент '+i,role:'element',class:'IfcWall',property_sets:{},mesh:{}} as BimElement));const model={elements:items,source:{filename:'synthetic.ifc'},storeys:[]} as unknown as ModelPackage;
+ const visibility=new ModelVisibility(),tree=modelTreePanel(host,visibility,{select:()=>{},show:()=>{},isolate:()=>{}});tree.render(model,items,null,true,'fixed');
+ host.querySelector<HTMLButtonElement>('.tree-more')!.click();const branch=host.querySelector('.branch-model'),row=host.querySelector('.element-item');assert.equal(row!.getAttribute('data-id'),'50');host.scrollTop=80;
+ visibility.set(['50'],false);tree.render(model,[...items],'50',true,'fixed');assert.equal(host.querySelector('.branch-model'),branch);assert.equal(host.querySelector('.element-item'),row);assert.equal(host.scrollTop,80);assert.equal(row!.getAttribute('aria-pressed'),'true');assert.equal(host.querySelector<HTMLInputElement>('.tree-element-row input')!.checked,false);assert.equal(host.querySelector<HTMLInputElement>('.branch-model>summary input')!.indeterminate,true);
+ tree.reveal('100');assert.equal(host.querySelector('.element-item')!.getAttribute('data-id'),'100');assert.equal(host.querySelector('.element-item')!.getAttribute('aria-pressed'),'true');tree.reveal(null);host.querySelector<HTMLButtonElement>('.tree-more')!.click();host.querySelectorAll<HTMLButtonElement>('.tree-more')[1]!.click();assert.equal(host.querySelector('.element-item')!.getAttribute('data-id'),'100');assert.equal(host.querySelector('.element-item')!.getAttribute('aria-pressed'),'false');
+ tree.render(model,items.slice(0,2),null,true,'different');assert.notEqual(host.querySelector('.branch-model'),branch);assert.equal(host.querySelector('.element-item')!.getAttribute('data-id'),'0');
+});
+
 test('tree checkboxes hide and restore rows, mixed branches and isolation use complete IDs',t=>{
  const win=new Window();t.after(()=>win.happyDOM.close());globalThis.document=win.document as unknown as Document;
  const host=document.createElement('div');document.body.append(host);const visibility=new ModelVisibility();

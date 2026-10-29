@@ -5,8 +5,10 @@ import {elementCategory} from './element-category.ts';
 import {documentBranches} from './rvt-navigation.ts';
 import type {RvtDocument,NativeRecord} from './rvt-document.ts';
 interface Node {key:string;name:string;kind:'model'|'storey'|'class'|'native';items:BimElement[];children:Node[];nativeId?:string;directItems?:BimElement[]}
+const nativeIndexes=new WeakMap<ModelPackage,{sourceNodes:BimElement[];source:Map<string,BimElement>;children:Map<string,BimElement[]>}>();
+function nativeIndex(model:ModelPackage){let index=nativeIndexes.get(model);if(!index){const sourceNodes=model.elements.filter(e=>e.nwd?.kind==='node'),source=new Map(sourceNodes.map(e=>[e.id,e])),children=new Map<string,BimElement[]>();for(const e of sourceNodes){const parent=e.nwd?.parent_id;if(parent){const rows=children.get(parent)??[];rows.push(e);children.set(parent,rows);}}index={sourceNodes,source,children};nativeIndexes.set(model,index);}return index;}
 function nwdTree(model:ModelPackage,items:BimElement[]):{roots:Node[];remaining:BimElement[]}{
- const sourceNodes=model.elements.filter(e=>e.nwd?.kind==='node'),source=new Map(sourceNodes.map(e=>[e.id,e])),nodes=new Map<string,Node>(),wanted=new Set<string>(),remaining:BimElement[]=[];
+ const {sourceNodes,source}=nativeIndex(model),nodes=new Map<string,Node>(),wanted=new Set<string>(),remaining:BimElement[]=[];
  if(!sourceNodes.length)return {roots:[],remaining:items};
  for(const e of sourceNodes)nodes.set(e.id,{key:JSON.stringify(['nwd-tree',e.id]),name:e.name,kind:e.nwd?.parent_id?'native':'model',nativeId:e.id,items:[],directItems:[],children:[]});
  const include=(id:string)=>{let depth=0;while(id&&!wanted.has(id)){if(++depth>256)throw Error('NWD: превышена глубина дерева');wanted.add(id);id=source.get(id)?.nwd?.parent_id??'';}};
@@ -35,29 +37,41 @@ export function modelTreePanel(host:HTMLElement,visibility:ModelVisibility,actio
   let current:ModelPackage|null=null;const expanded=new Map<string,boolean>(),limits=new Map<string,number>(),offsets=new Map<string,number>();
   let lastItems:BimElement[]=[],lastSearching=false,lastSearchKey='',lastGrouping:'categories'|'levels'='categories';
   let catalogues:RvtDocument[]=[],documentQuery='';const documentExpanded=new Set<string>();
+  let cachedNodes:Node[]=[],forceRender=false,lastSelected:string|null=null;
+  const checks=new Map<HTMLInputElement,{ids:string[];count?:HTMLElement}>(),rowChecks=new Map<HTMLInputElement,string>();
+  const sameRows=(a:BimElement[],b:BimElement[])=>a===b||a.length===b.length&&a.every((e,i)=>e===b[i]);
+  function updateChecks(selected:string|null){
+    for(const [check,binding]of checks){if(!check.isConnected){checks.delete(check);continue;}const state=visibility.count(binding.ids);check.checked=state.checked;check.indeterminate=state.mixed;if(binding.count)binding.count.title=`Включено ${state.shown} из ${state.total}`;}
+    for(const [check,id]of rowChecks){if(!check.isConnected){rowChecks.delete(check);continue;}const visible=visibility.visible(id);check.checked=visible;check.parentElement!.dataset.visible=String(visible);}
+    if(selected!==lastSelected)for(const item of host.querySelectorAll<HTMLElement>('.element-item'))item.setAttribute('aria-pressed',String(item.dataset.id===selected));lastSelected=selected;
+  }
   function render(model:ModelPackage|null,items:BimElement[],selected:string|null,searching:boolean,searchKey=String(searching),grouping:'categories'|'levels'='categories',documents:RvtDocument[]=catalogues,query=documentQuery){
+    const sameStructure=current===model&&lastGrouping===grouping&&lastSearchKey===searchKey&&sameRows(lastItems,items)&&catalogues.length===documents.length&&catalogues.every((d,i)=>d===documents[i])&&documentQuery===query&&lastSearching===searching;
     catalogues=documents;documentQuery=query;
     if(current!==model){current=model;expanded.clear();limits.clear();offsets.clear();}
     if(lastSearchKey!==searchKey){expanded.clear();limits.clear();offsets.clear();lastSearchKey=searchKey;}
     if(lastGrouping!==grouping){expanded.clear();limits.clear();offsets.clear();lastGrouping=grouping;}
     lastItems=items;lastSearching=searching;
+    if(sameStructure&&!forceRender&&host.childElementCount){const stats=host.querySelector('.tree-results');if(stats)stats.textContent=`Элементов найдено ${items.length} · включено ${visibility.count(items.map(e=>e.id)).shown}`;updateChecks(selected);return;}
+    forceRender=false;checks.clear();rowChecks.clear();lastSelected=selected;
     host.replaceChildren();if(!model&&!documents.length)return;
     const stats=document.createElement('p');stats.className='tree-results';const visible=visibility.count(items.map(e=>e.id));stats.textContent=`Элементов найдено ${items.length} · включено ${visible.shown}`;host.append(stats);
     if(!items.length&&!documents.length){const empty=document.createElement('p');empty.textContent='Совпадений нет. Измените поиск или фильтры.';host.append(empty);return;}
     const matched=new Set<RvtDocument>();
-    const roots=model?modelTreeNodes(model,items,grouping):[];
+    const roots=model?(sameStructure?cachedNodes:modelTreeNodes(model,items,grouping)):[];cachedNodes=roots;
     const sources=model?.federation?.members.map(m=>({key:JSON.stringify(['model',m.instance_id]),name:m.label,hash:m.source_sha256}))??(model?[{key:JSON.stringify(['model','']),name:model.source.filename,hash:model.source.sha256}]:[]);
     const rootDocuments=new Map<string,RvtDocument>();
     for(const source of sources){const data=documents.find(d=>d.source?.sha256===source.hash);if(!data)continue;matched.add(data);rootDocuments.set(source.key,data);if(!roots.some(r=>r.key===source.key))roots.push({key:source.key,name:source.name,kind:'model',items:[],children:[]});}
     const branch=(node:Node):HTMLDetailsElement=>{
       const details=document.createElement('details');details.className='model-branch branch-'+node.kind;
-      details.open=expanded.get(node.key)??(node.kind==='model'||node.kind==='storey'||node.kind==='class'&&searching||node.nativeId===selected||node.items.some(e=>e.id===selected));
+      details.open=expanded.get(node.key)??(node.kind==='model'||node.kind==='storey'||node.kind==='class'&&searching||node.nativeId===lastSelected||node.items.some(e=>e.id===lastSelected));
       const summary=document.createElement('summary'),check=document.createElement('input');check.type='checkbox';
       const ids=node.items.map(e=>e.id),state=visibility.count(ids);check.checked=state.checked;check.indeterminate=state.mixed;
       check.disabled=!ids.length;
       check.setAttribute('aria-label','Показывать '+node.name);check.onclick=e=>e.stopPropagation();check.onchange=()=>actions.show(ids,check.checked);
       const name=document.createElement('span');name.textContent=node.name;name.className='tree-node-name';
       const count=document.createElement('small');count.textContent=String(node.items.length);count.title=`Включено ${state.shown} из ${state.total}`;
+      checks.set(check,{ids,count});
       const only=document.createElement('button');only.className='tree-isolate';only.textContent='Только';only.title='Оставить только '+node.name;only.setAttribute('aria-label',only.title);only.onclick=e=>{e.stopPropagation();actions.isolate(ids);};
       only.disabled=!ids.length;
       summary.append(check,name,count);
@@ -88,7 +102,8 @@ export function modelTreePanel(host:HTMLElement,visibility:ModelVisibility,actio
           for(const element of rowItems.slice(offset,offset+limit)){
             const row=document.createElement('div');row.className='tree-element-row';row.dataset.visible=String(visibility.visible(element.id));
             const toggle=document.createElement('input');toggle.type='checkbox';toggle.checked=visibility.visible(element.id);toggle.disabled=!element.mesh;toggle.setAttribute('aria-label','Показывать '+(element.name||element.id));toggle.title=element.mesh?'Показать / скрыть элемент':'Геометрия не прочитана';toggle.onchange=()=>actions.show([element.id],toggle.checked);
-            const select=document.createElement('button');select.className='element-item';select.dataset.id=element.id;select.setAttribute('aria-pressed',String(selected===element.id));
+            rowChecks.set(toggle,element.id);
+            const select=document.createElement('button');select.className='element-item';select.dataset.id=element.id;select.setAttribute('aria-pressed',String(lastSelected===element.id));
             const text=document.createElement('span'),title=document.createElement('strong'),identity=document.createElement('small');title.textContent=element.name||element.id;const revit=elementIdentity(element).element_id;identity.textContent=(revit?'Revit '+revit:'#'+element.id)+(element.mesh?'':' · без геометрии');text.append(title,identity);select.append(text);select.onclick=event=>actions.select(element.id,event.ctrlKey||event.metaKey||event.shiftKey);
             row.append(toggle,select);list.append(row);
           }
@@ -101,16 +116,17 @@ export function modelTreePanel(host:HTMLElement,visibility:ModelVisibility,actio
     for(const node of roots)host.append(branch(node));
     for(const data of documents)if(!matched.has(data)){const root=document.createElement('details');root.className='model-branch branch-model document-only';root.open=true;const summary=document.createElement('summary');summary.textContent=(data.source?.filename??'RVT')+' · каталог без привязки к геометрии этой сцены';root.append(summary);documentBranches(root,data,documentQuery,(d,r)=>actions.document?.(d,r),documentExpanded);host.append(root);}
   }
-  function reveal(id:string){
-    if(!current||!lastItems.some(e=>e.id===id)||[...host.querySelectorAll<HTMLElement>('.element-item')].some(e=>e.dataset.id===id))return;
-    const sourceNodes=new Map(current.elements.filter(e=>e.nwd?.kind==='node').map(e=>[e.id,e]));
+  function reveal(id:string|null){
+    lastSelected=id;
+    if(!id||!current||!lastItems.some(e=>e.id===id)||[...host.querySelectorAll<HTMLElement>('.element-item')].some(e=>e.dataset.id===id))return;
+    const index=nativeIndex(current),sourceNodes=index.source;
     let native=current.elements.find(e=>e.id===id);let nativeId=native?.nwd?.kind==='node'?native.id:native?.nwd?.owner_id;
     while(nativeId){const node=sourceNodes.get(nativeId);if(!node)break;expanded.set(JSON.stringify(['nwd-tree',nativeId]),true);const parent=node.nwd?.parent_id;
-      if(parent){const children=[...sourceNodes.values()].filter(e=>e.nwd?.parent_id===parent),index=children.findIndex(e=>e.id===nativeId);offsets.set(JSON.stringify(['nwd-tree',parent])+':children',Math.floor(Math.max(0,index)/50)*50);}nativeId=parent??undefined;
+      if(parent){const children=index.children.get(parent)??[],at=children.findIndex(e=>e.id===nativeId);offsets.set(JSON.stringify(['nwd-tree',parent])+':children',Math.floor(Math.max(0,at)/50)*50);}nativeId=parent??undefined;
     }
-    let nodes=modelTreeNodes(current,lastItems,lastGrouping);
+    let nodes=cachedNodes;
     while(nodes.length){const node=nodes.find(n=>n.items.some(e=>e.id===id));if(!node)break;expanded.set(node.key,true);if(node.kind==='class'){offsets.set(node.key,Math.floor(node.items.findIndex(e=>e.id===id)/50)*50);limits.set(node.key,50);}nodes=node.children;}
-    render(current,lastItems,id,lastSearching,lastSearchKey,lastGrouping);
+    forceRender=true;render(current,lastItems,id,lastSearching,lastSearchKey,lastGrouping);
   }
   return {render,reveal};
 }

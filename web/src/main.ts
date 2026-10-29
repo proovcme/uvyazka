@@ -1,6 +1,6 @@
 import {sameReadSource,rvtMode} from './browser-rvt-direct';
 import {geometryQuality} from './geometry-quality';
-import {performanceSample,performanceDiagnostics} from './performance-probe';
+import {performanceSample,performanceDiagnostics,individualRendering} from './performance-probe';
 import {isNavisFormat,onlyNavisSources} from './navis-format.ts';
 import {installWindowControls} from './window-controls';
 import './window-controls.css';
@@ -126,7 +126,7 @@ function selectElement(id: string | null,additive=false) {
   if(!additive)selection.clear();if(id){if(additive&&selection.has(id))selection.delete(id);else selection.add(id);}updateSelection();
   if(additive&&id&&!selection.has(id))id=[...selection].at(-1)??null;selectedId=id;engineering.open(id);el('resources').innerHTML='';
   el('selected-visibility-actions').hidden=!id;
-  if(id){tree.reveal(id);el<HTMLButtonElement>('show-selected').disabled=false;el<HTMLButtonElement>('hide-selected').disabled=[...selection].every(id=>!visibility.visible(id));}
+  tree.reveal(id);if(id){el<HTMLButtonElement>('show-selected').disabled=false;el<HTMLButtonElement>('hide-selected').disabled=[...selection].every(id=>!visibility.visible(id));}
   viewer?.select(id);document.querySelectorAll<HTMLElement>('.element-item').forEach(row=>row.setAttribute('aria-pressed',String(selection.has(row.dataset.id??''))));if(id)setPanel('inspector',true); const e = model?.elements.find(e => e.id === id);
   el('selected-visibility-actions').hidden=!selection.size||!e||e.role!=='element';
   if (!e) { renderState(); return; }
@@ -249,7 +249,7 @@ async function loadProject(id:string,skipModel=false) {
   el<HTMLAnchorElement>('back').href=DEMO?'https://locia.work/':'/?project='+encodeURIComponent(id); if(DEMO)el('back').textContent='locia.work ↗'; if(!DEMO)el<HTMLAnchorElement>('memory-link').href=el<HTMLAnchorElement>('back').href;
   el('measurement-link').hidden=DEMO;
   if(!DEMO)el<HTMLAnchorElement>('measurement-link').href='/measurements/?project='+encodeURIComponent(id);
-  history.replaceState(null,'','?project='+encodeURIComponent(id)+(performanceDiagnostics?'&diagnostics=performance':''));
+  history.replaceState(null,'','?project='+encodeURIComponent(id)+(performanceDiagnostics?'&diagnostics=performance':'')+(individualRendering?'&rendering=individual':''));
   const key=project; const [models,runs]=await Promise.all([api<{items:{model_id:string;name:string}[]}>('models'),api<{items:{run_id:string;scenario_id:string;scenario_revision:number;duration_minutes:number;name?:string}[]}>('runs')]); if(key!==project)return;
   el<HTMLSelectElement>('models').innerHTML='<option value="">Без геометрии</option>'+models.items.map(m=>`<option value="${esc(m.model_id)}">${esc(m.name)}</option>`).join('');
   el<HTMLSelectElement>('runs').innerHTML='<option value="">Выберите расчёт</option>'+runs.items.map(r=>`<option value="${esc(r.run_id)}">${esc(r.name||r.scenario_id)} · ревизия ${r.scenario_revision} · ${r.duration_minutes} мин</option>`).join('');
@@ -390,13 +390,16 @@ function renderSystemSummary(){
 }
 function parameterDraft():ParameterFilter{return {name:el<HTMLInputElement>('parameter-name').value,value:el<HTMLInputElement>('parameter-value').value,operator:el<HTMLSelectElement>('parameter-operator').value as ParameterOperator};}
 function renderParameterFilters(){const host=el('parameter-active');host.replaceChildren();parameterFilters.forEach((filter,index)=>{const row=document.createElement('div');row.className='parameter-chip';const text=document.createElement('span');const operator=[...el<HTMLSelectElement>('parameter-operator').options].find(o=>o.value===filter.operator)?.textContent??filter.operator;text.textContent=filter.name+' · '+operator+' '+filter.value;const remove=document.createElement('button');remove.textContent='×';remove.setAttribute('aria-label','Убрать условие '+filter.name);remove.onclick=()=>{parameterFilters.splice(index,1);renderParameterFilters();applySceneVisibility();};row.append(text,remove);host.append(row);});}
+let filterCache:{model:ModelPackage|null;key:string;items:BimElement[]}|undefined;
 function renderElements() {
   const start=performance.now();
   if(cadFrame)return;
   const query=el<HTMLInputElement>('element-search').value.trim(),levels=levelFacet.selected(),categories=categoryFacet.selected();
   const system=el<HTMLSelectElement>('system-filter').value,members=systemMembers(model,system),filters=[...parameterFilters,parameterDraft()];
   const combine=el<HTMLSelectElement>('parameter-combine').value as 'all'|'any';
-  sceneFilterItems=(model?.elements??[]).filter(e=>(e.role==='element'||e.semantic_kind==='source_node')&&(!system||members.has(e.id))&&(!levels.size||levels.has(JSON.stringify(e.storey_id??null)))&&(!categories.size||categories.has(elementCategory(e,model!).key))&&elementLabelMatches(e,query)&&parametersMatch(e,filters,combine));
+  const filterKey=JSON.stringify([query,filters,combine,[...levels],[...categories],system]);
+  if(filterCache?.model!==model||filterCache.key!==filterKey)filterCache={model,key:filterKey,items:(model?.elements??[]).filter(e=>(e.role==='element'||e.semantic_kind==='source_node')&&(!system||members.has(e.id))&&(!levels.size||levels.has(JSON.stringify(e.storey_id??null)))&&(!categories.size||categories.has(elementCategory(e,model!).key))&&elementLabelMatches(e,query)&&parametersMatch(e,filters,combine))};
+  sceneFilterItems=filterCache.items;
   const hiddenItems=(model?.elements??[]).filter(e=>e.role==='element'&&!visibility.visible(e.id));
   treeItems=hiddenOnly?hiddenItems:sceneFilterItems;
   el('hidden-count').textContent=`Скрыто: ${hiddenItems.length}`;

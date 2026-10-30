@@ -37,6 +37,35 @@ test('unknown family slot types and formula fields are not guessed or evaluated'
  const {record,doc,a}=fixture([{id:777},{id:-1152353,source:2,extra:{m_pExpression:{pointer_token:1}}}]);a.saved_metadata!.family_parameter_slots=[{parameter_id:777,double_slot:12,integer_slot:0,string_slot:'',element_id_slot:-1}];
  const p=reconstructSchedule(record,doc,true);assert.equal(p.rows[0].cells[0].state,'unsupported');assert.notEqual(p.rows[0].cells[1].state,'value');
 });
+
+test('absent saved parameter keeps binding evidence without claiming an evaluated empty or zero value',()=>{
+ const {record,doc,a}=fixture([{id:71},{id:72}]);a.saved_metadata!.parameter_sets=[];
+ a.saved_metadata!.declared_custom_parameters=[{parameter_id:71,storage_type:'String',has_value:false,has_value_evidence:'matched_category_binding_absent_owner_value'}];
+ const cells=reconstructSchedule(record,doc).rows[0].cells;
+ assert.equal(cells[0].state,'missing');assert.match(cells[0].reason!,/Сохранённое значение/);assert.equal(cells[0].evidence[0].path[1],'declared_custom_parameters');assert.equal(previewValue(cells[0]),'Нет сохранённого значения');assert.equal(cells[0].value,undefined);
+ assert.equal(cells[1].reason,'Значение не прочитано');assert.equal(cells[1].evidence.length,0);
+});
+
+test('dual typed and family representations agree or expose a conflict while retaining provenance',()=>{
+ for(const text of ['same','different']){const {record,doc,a}=fixture([{id:71}]);a.saved_metadata!.parameter_sets=[];value(a,71,'same');
+ a.saved_metadata!.resolved_family_parameters=[{parameter_id:71,storage_type:'String',has_value:true,raw_value:text}];
+ const cell=reconstructSchedule(record,doc).rows[0].cells[0];assert.equal(cell.state,text==='same'?'value':'conflict');assert.equal(cell.evidence.length,2);}
+});
+
+test('type labels use an explicit native reference and analytical feet retain evidence and conversion',()=>{
+ const {record,doc,a,t}=fixture([{id:-1002052},{id:-1004005}]);value(t,-1002001,'Synthetic pipe type');
+ a.saved_metadata!.raw_field_parameters.push({parameter_id:-1002052,storage_type:'ElementId',raw_value:100,projection_rule:'qualified_mep_owner_type_reference'},{parameter_id:-1004005,storage_type:'Double',raw_value:2,projection_rule:'derived_saved_line_length_feet'});
+ const cells=reconstructSchedule(record,doc).rows[0].cells;assert.equal(cells[0].value,100);assert.equal(previewValue(cells[0]),'Synthetic pipe type');assert.equal(cells[0].evidence.length,2);assert.equal(cells[1].unit,'ft');assert.equal(previewValue(cells[1]),'609,6 мм');assert.equal(cells[1].evidence[0].rule,'derived_saved_line_length_feet');
+});
+
+test('saved Totals sums grouped numeric fields, preserves unknowns, and does not change manual grouping',()=>{
+ const {record,doc,a,b}=fixture([{id:71,extra:{m_displayType:1,m_assemblyTotalsByType:false}}]);const schema=record.graph!.objects[1].fields;schema.m_bInstanceSchedule=false;
+ value(a,71,2,'Double');value(b,71,3,'Double');
+ let p=reconstructSchedule(record,doc);assert.equal(p.rows.length,1);assert.equal(p.rows[0].cells[0].value,5);assert.equal(p.rows[0].cells[0].evidence.length,2);assert.equal(p.rule_audit.native_totals[0].field_id,'0');
+ assert.equal(reconstructSchedule(record,doc,{grouping:'type'}).rows[0].cells[0].state,'mixed');
+ b.saved_metadata!.parameter_sets=[];p=reconstructSchedule(record,doc);assert.equal(p.rows[0].cells[0].state,'unsupported');assert.equal(p.rows[0].cells[0].value,undefined);
+ record.graph!.objects[2].fields.m_displayType=0;assert.equal(reconstructSchedule(record,doc).rows[0].cells[0].state,'missing');
+});
 test('narrow builtin projection retains native feet and source path; display converts to mm',()=>{
  const {record,doc,t}=fixture([{id:-1001301,source:1}]);t.saved_metadata!.family_parameter_slots=[{parameter_id:-1001301,double_slot:1,integer_slot:99,string_slot:'wrong',element_id_slot:0}];
  const c=reconstructSchedule(record,doc).rows[0].cells[0];assert.equal(c.value,1);assert.equal(c.unit,'ft');assert.equal(previewValue(c),'304,8 мм');assert.match(c.evidence[0].rule! ,/RE-77\/RE-93/);

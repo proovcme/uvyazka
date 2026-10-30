@@ -4,7 +4,7 @@ import type {RvtDocument} from './rvt-document.ts';
 import type {RvtMode} from './browser-rvt-direct.ts';
 
 // Advance with native reader patches, bridge output or IFC interpretation changes.
-export const RVT_CACHE_REVISION='b6086d41/mep1-bounds1-2021v1/direct1/web-ifc-0.0.78-v2/cache2-native-identity';
+export const RVT_CACHE_REVISION='b6086d41/mep1-bounds1-2021v1/parameters3/direct1/web-ifc-0.0.78-v2/cache4-native-mep';
 export interface CachedRvtModel {model:ModelPackage;binary:ArrayBuffer;document:RvtDocument|null;conversion?:unknown;convertedIfc?:ArrayBuffer|null}
 export const rvtCacheKey=(hash:string,mode:RvtMode)=>`${RVT_CACHE_REVISION}:${mode}:${hash}`;
 export function validateCachedRvt(value:CachedRvtModel,hash:string,mode:RvtMode){

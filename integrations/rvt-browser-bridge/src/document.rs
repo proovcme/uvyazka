@@ -30,7 +30,7 @@ pub fn extract_document(bytes: Vec<u8>) -> Result<Value, String> {
     // accidentally turn a missing schema into a whole-document extraction.
     if kinds.is_empty() {return Err("No supported view/table classes in this schema".into());}
     let options = native_document::Options {selected_classes:kinds.keys().cloned().collect(),
-        max_graph_values:100_000,max_graph_objects:20_000,..Default::default()};
+        max_graph_values:1_000_000,max_graph_objects:20_000,..Default::default()};
     let mut records=Vec::new();let mut output_bytes=0usize;let mut clipped=0;
     let result=native_document::extract_graphs(&mut file,&options,|record| {
         let mut row=serde_json::to_value(&record)?;

@@ -487,7 +487,7 @@
     },
     {
       "path": "src/native_metadata.rs",
-      "sha256": "d06290aedb2db736536ffaa63733fa6cc802ef2389160c3b2d864127360d3587"
+      "sha256": "f9443ef1188aec6fe3c74e0d02a61f37a883e07af842c8879d037eab24ee3c8a"
     },
     {
       "path": "src/native_parameter_definitions.rs",
@@ -763,6 +763,13 @@
         "src/native_document.rs",
         "src/partition_mep_systems.rs",
         "src/partition_schema_mvp.rs"
+      ]
+    },
+    {
+      "id": "uvyazka-native-metadata-evidence-v1",
+      "description": "Preserve dual owner typed/family-slot evidence and disagreements; qualified MEP category/type references and bounded analytical GLine length with explicit derived/native-feet provenance. Synthetic bridge regressions.",
+      "files": [
+        "src/native_metadata.rs"
       ]
     }
   ]

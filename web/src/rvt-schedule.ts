@@ -10,7 +10,7 @@ export interface ParameterRecord {
 }
 export interface ScheduleData {source_sha256:string;status:string;error?:string;scope:string[];records:ParameterRecord[];summary?:any;clipped_records?:number;workset_error?:string|null}
 export interface Evidence {owner_id:string;path:(string|number)[];value:unknown;storage_type:string;location:unknown;rule?:string}
-export interface ValueCell {state:'value'|'missing'|'conflict'|'unsupported'|'mixed';value?:string|number;storage_type?:string;unit?:string;reason?:string;evidence:Evidence[]}
+export interface ValueCell {state:'value'|'missing'|'conflict'|'unsupported'|'mixed';value?:string|number;display_value?:string;storage_type?:string;unit?:string;reason?:string;evidence:Evidence[]}
 export interface PreviewRow {element_ids:string[];type_id:string|null;cells:ValueCell[];membership:'pass'|'unknown'}
 export interface ScheduleOptions {grouping?:'instances'|'type'|'schedule';filters?:ReviewFilter[];sum_fields?:string[]}
 export interface SelectionDecision {element_id:string;state:'pass'|'fail'|'unknown';filters:FilterDecision[];native_filters_unresolved:boolean;native_filters?:FilterDecision[]}
@@ -33,17 +33,25 @@ export function parameter(owner:ParameterRecord|undefined,id:string):ValueCell {
  const slots=(m.family_parameter_slots??[]).map((p:any,i:number)=>({p,i})).filter(({p}:any)=>String(p.parameter_id)===id);
  const profile=builtinSlots[id];
  if(profile)for(const {p,i} of slots){const field=profile.storage==='Double'?'double_slot':'string_slot';add(p[field],profile.storage,['family_parameter_slots',i,field],'pinned-rvt-rs/partition_type_parameters.rs:RE-77/RE-93');}
- if(!evidence.length)return {state:slots.length?'unsupported':'missing',reason:slots.length?'Тип хранения слота не подтверждён':'Значение не прочитано',evidence:slots.map(({p,i}:any)=>({owner_id:String(owner.identity.element_id),path:['saved_metadata','family_parameter_slots',i],value:p,storage_type:'unresolved',location:owner.source}))};
+ if(!evidence.length){
+  const absent=(m.declared_custom_parameters??[]).map((p:any,i:number)=>({p,i})).filter(({p}:any)=>String(p.parameter_id)===id&&p.has_value===false);
+  return {state:slots.length?'unsupported':'missing',reason:slots.length?'Тип хранения слота не подтверждён':absent.length?'Сохранённое значение параметра отсутствует':'Значение не прочитано',evidence:slots.length?slots.map(({p,i}:any)=>({owner_id:String(owner.identity.element_id),path:['saved_metadata','family_parameter_slots',i],value:p,storage_type:'unresolved',location:owner.source})):absent.map(({p,i}:any)=>({owner_id:String(owner.identity.element_id),path:['saved_metadata','declared_custom_parameters',i],value:p,storage_type:p.storage_type,location:owner.source,rule:p.has_value_evidence}))};
+ }
  if((m.declared_custom_parameters??[]).some((p:any)=>String(p.parameter_id)===id&&p.has_value===false))return {state:'conflict',reason:'Значение противоречит сохранённому признаку HasValue',evidence};
  const valid=evidence.every(e=>e.storage_type==='String'?typeof e.value==='string':['Double','Integer','ElementId'].includes(e.storage_type)&&typeof e.value==='number'&&Number.isFinite(e.value)&&(e.storage_type==='Double'||Number.isSafeInteger(e.value)));
  if(!valid)return {state:'unsupported',reason:'Неподдержанное представление значения',evidence};
  if(new Set(evidence.map(e=>JSON.stringify([e.storage_type,e.value]))).size>1)return {state:'conflict',reason:'Несколько разных значений одного параметра',evidence};
- return {state:'value',value:evidence[0].value as string|number,storage_type:evidence[0].storage_type,unit:profile?.unit??(evidence[0].storage_type==='Double'?'native':undefined),evidence};
+ const derivedFeet=evidence.some(e=>e.rule==='derived_saved_line_length_feet');
+ return {state:'value',value:evidence[0].value as string|number,storage_type:evidence[0].storage_type,unit:derivedFeet?'ft':profile?.unit??(evidence[0].storage_type==='Double'?'native':undefined),evidence};
 }
 export const nativeInstanceClasses=new Set(['FamilyInstance','RbsPipeCurve','RbsDuctCurve','RbsFlexPipeCurve','RbsFlexDuctCurve','CableTray','RbsConduitCurve','RbsPipeInsulation','RbsDuctInsulation','RbsDuctLining']);
 export function nativeTypeId(owner:ParameterRecord):string|null{return identifier(owner.saved_metadata?.root_references?.m_masterSymbolId??owner.root_fields?.m_masterSymbolId??owner.root_fields?.m_idType);}
 export function effectiveParameter(owner:ParameterRecord|undefined,type:ParameterRecord|undefined,id:string):ValueCell{
- const cell=parameter(owner,id);if(cell.state!=='missing')return cell;
+ const cell=parameter(owner,id);if(cell.state!=='missing'){
+  if(id==='-1002052'&&cell.state==='value'&&cell.storage_type==='ElementId'&&type&&String(cell.value)===String(type.identity.element_id)){
+   const name=parameter(type,'-1002001');if(name.state==='value'&&name.storage_type==='String'&&typeof name.value==='string'&&name.value.trim())return {...cell,display_value:name.value,evidence:[...cell.evidence,...name.evidence.map(e=>({...e,rule:[e.rule,'display_name_of_explicit_referenced_type'].filter(Boolean).join(';')}))]};
+  }return cell;
+ }
  const inherited=parameter(type,id);if(inherited.state!=='value')return cell;
  return {...inherited,evidence:inherited.evidence.map(e=>({...e,rule:[e.rule,'explicit_instance_type_reference_fallback'].filter(Boolean).join(';')}))};
 }
@@ -77,7 +85,7 @@ export function reconstructSchedule(record:NativeRecord,document:RvtDocument,opt
  const fieldIndex=(id:string|null)=>id===null?-1:allColumns.filter(c=>c.id===id).length===1?allColumns.findIndex(c=>c.id===id):-1;
  const sortKeys=sortRules.map(r=>{const p=r.properties as Record<string,any>;return {index:fieldIndex(identifier(p.m_fieldId)),direction:p.m_sortOrder===0?1 as const:p.m_sortOrder===1?-1 as const:null,path:r.path,properties:p};});
  const sortComplete=Array.isArray(s?.m_sortFieldArr)&&sortKeys.length===s.m_sortFieldArr.length&&sortKeys.every(k=>k.index>=0&&k.direction!==null);
- const ruleAudit={profile:'uvyazka-schedule-review-v1',native_filters:{state:nativeFiltersUnresolved?'unsupported':nativeFilterCount?'interpreted_requires_review':'none',count:nativeFilterCount,rules:definition.rules.filter(r=>r.field==='m_filterArr')},sorting:{state:sortComplete?'interpreted_requires_review':'unsupported',keys:sortKeys},grouping,review_filters:settings.filters??[],sum_fields:settings.sum_fields??[]};
+ const ruleAudit={profile:'uvyazka-schedule-review-v2',native_filters:{state:nativeFiltersUnresolved?'unsupported':nativeFilterCount?'interpreted_requires_review':'none',count:nativeFilterCount,rules:definition.rules.filter(r=>r.field==='m_filterArr')},sorting:{state:sortComplete?'interpreted_requires_review':'unsupported',keys:sortKeys},native_totals:allColumns.filter(c=>c.properties.m_displayType===1).map(c=>({field_id:c.id,display_type:1,interpretation:'Revit ScheduleFieldDisplayType.Totals; saved field mapping requires review'})),grouping,review_filters:settings.filters??[],sum_fields:settings.sum_fields??[]};
  const result=()=>({status:'partial' as const,rows,columns,all_columns:allColumns,issues,selection,totals,rule_audit:ruleAudit,unresolved_instances:unresolved,source:document.source,schedule_id:record.identity.element_id,category_id:identifier(s?.m_categoryId),group_by_type:groupByType,instance_count:rows.reduce((n,r)=>n+r.element_ids.length,0),passed_instances:selection.filter(d=>d.state==='pass').length,unknown_instances:selection.filter(d=>d.state==='unknown').length,excluded_instances:selection.filter(d=>d.state==='fail').length});
  if(!data){issues.push('Параметры элементов пока не прочитаны.');return result();}
  if(!document.source?.sha256||data.source_sha256!==document.source.sha256){issues.push('SHA-256 параметров не совпадает с исходным RVT.');return result();}
@@ -128,7 +136,12 @@ export function reconstructSchedule(record:NativeRecord,document:RvtDocument,opt
   key=row.membership+':'+key;
   const members=groupMap.get(key);if(members)members.push(row);else groupMap.set(key,[row]);
  }
- for(const group of groupMap.values())rows.push({element_ids:group.flatMap(r=>r.element_ids),type_id:group.every(r=>r.type_id===group[0].type_id)?group[0].type_id:null,membership:group[0].membership,cells:visible.map(i=>allColumns[i].properties.m_sourceType===2&&identifier(allColumns[i].properties.m_paramElemId)==='-1152353'&&group.every(r=>r.cells[i].state==='value')?{state:'value',value:group.length,storage_type:'Integer',evidence:group.flatMap(r=>r.cells[i].evidence)}:mergeCells(group.map(r=>r.cells[i])))});
+ for(const group of groupMap.values())rows.push({element_ids:group.flatMap(r=>r.element_ids),type_id:group.every(r=>r.type_id===group[0].type_id)?group[0].type_id:null,membership:group[0].membership,cells:visible.map(i=>{
+  const field=allColumns[i].properties,cells=group.map(r=>r.cells[i]);
+  if(field.m_sourceType===2&&identifier(field.m_paramElemId)==='-1152353'&&cells.every(c=>c.state==='value'))return {state:'value',value:group.length,storage_type:'Integer',evidence:cells.flatMap(c=>c.evidence)};
+  if(grouping==='schedule'&&s.m_bInstanceSchedule===false&&field.m_displayType===1&&field.m_assemblyTotalsByType!==true)return sumCells(cells);
+  return mergeCells(cells);
+ })});
  const passed=candidates.filter(r=>r.membership==='pass');
  for(const id of new Set(settings.sum_fields??[])){const i=fieldIndex(id);totals.push({field_id:id,cell:i<0?{state:'unsupported',reason:'Поле суммы не разрешено.',evidence:[]}:sumCells(passed.map(r=>r.cells[i])),scope:'passed_review_filters_only_before_grouping',instance_count:passed.length});}
  if(selection.some(d=>d.state==='unknown'))issues.push('Неопределённые строки показаны отдельно и не включены в контрольные суммы. Причина отбора каждого элемента сохранена в JSON.');
@@ -137,8 +150,10 @@ export function reconstructSchedule(record:NativeRecord,document:RvtDocument,opt
  return result();
 }
 export function previewValue(cell:ValueCell):string {
+ if(cell.state==='missing'&&cell.reason==='Сохранённое значение параметра отсутствует')return 'Нет сохранённого значения';
  if(cell.state!=='value')return ({missing:'Не прочитано',conflict:'Конфликт',unsupported:'Не поддержано',mixed:'Разные значения'})[cell.state];
  if(cell.value==='')return 'Пустая строка';
+ if(cell.display_value)return cell.display_value;
  if(cell.unit==='ft'&&typeof cell.value==='number')return `${Number((cell.value*304.8).toFixed(6)).toLocaleString('ru-RU')} мм`;
  return cell.storage_type==='ElementId'?`ID ${cell.value}`:`${cell.value}${cell.unit==='ft'?' ft':cell.unit==='native'?' (исх. ед.)':''}`;
 }

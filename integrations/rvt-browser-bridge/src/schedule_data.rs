@@ -28,14 +28,14 @@ pub fn extract(bytes: Vec<u8>) -> Result<Value, String> {
     let schema=native_document::read_single(&mut file,"Formats/Latest").map_err(|e|e.to_string())?;
     let registry=schema_registry::parse(&schema).map_err(|e|e.to_string())?;
     let (worksets,workset_error)=match partition_names(&mut file,&registry){Ok(v)=>(v,None),Err(e)=>(json!({}),Some(e))};
-    let mut selected:BTreeSet<String>=["FamilyInstance","FamilySymbol","RbsPipeCurve","RbsDuctCurve","RbsFlexPipeCurve","RbsFlexDuctCurve","CableTray","RbsConduitCurve","RbsPipeInsulation","RbsDuctInsulation","RbsDuctLining","RbsPipeType","AbsDuctType","AbsFlexDuctType","RbsFlexPipeType","RbsCableTrayType","RbsConduitType"].into_iter().map(str::to_string).collect();
+    let mut selected:BTreeSet<String>=["FamilyInstance","FamilySymbol","RbsPipeCurve","RbsDuctCurve","RbsFlexPipeCurve","RbsFlexDuctCurve","CableTray","RbsConduitCurve","RbsPipeInsulation","RbsDuctInsulation","RbsDuctLining","RbsPipeType","AbsDuctType","AbsFlexDuctType","RbsFlexPipeType","RbsCableTrayType","RbsConduitType","RbsPipeInsulationType","RbsDuctInsulationType","RbsDuctLiningType"].into_iter().map(str::to_string).collect();
     for class in &registry.classes {
         let mut parent=registry.class(class.parent_reference.tag);let mut seen=BTreeSet::new();
         while let Some(p)=parent {if !seen.insert(p.tag){break}if selected.contains(&p.name){selected.insert(class.name.clone());break}parent=registry.class(p.parent_reference.tag);}
     }
     let options=native_document::Options {
         selected_classes:selected,
-        max_graph_values:100_000,max_graph_objects:100_000,..Default::default()
+        max_graph_values:1_000_000,max_graph_objects:100_000,..Default::default()
     };
     let mut records=Vec::new();let mut size=0usize;let mut clipped=0usize;
     let result=native_document::extract(&mut file,&options,|record| {

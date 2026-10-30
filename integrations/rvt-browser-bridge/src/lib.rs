@@ -7,6 +7,8 @@ mod document;
 mod schedule_data;
 mod engineering;
 mod direct;
+#[cfg(test)]
+mod metadata_regressions;
 pub use document::extract_document;
 
 // Match the reader's technical limit rather than imposing the former demo cap.

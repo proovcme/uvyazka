@@ -109,6 +109,54 @@ pub fn project(graph: &ObjectGraph) -> Result<SavedMetadata> {
         resolved_family_parameters: Vec::new(),
     };
     let mut direct_fields = Vec::new();
+    // Qualified native MEP classes have fixed built-in categories. This is a
+    // class-to-category projection, not a serialized category field or a guess
+    // from an element/family name. Values independently checked against the
+    // Revit 2024 BuiltInCategory enum; unknown classes stay unresolved.
+    let mep_category = match root.class_name.as_str() {
+        "RbsDuctCurve" => Some(-2_008_000),
+        "RbsFlexDuctCurve" => Some(-2_008_020),
+        "RbsPipeCurve" => Some(-2_008_044),
+        "RbsFlexPipeCurve" => Some(-2_008_050),
+        "RbsPipeInsulation" => Some(-2_008_122),
+        "RbsDuctInsulation" => Some(-2_008_123),
+        "RbsDuctLining" => Some(-2_008_124),
+        "CableTray" => Some(-2_008_130),
+        "RbsConduitCurve" => Some(-2_008_132),
+        _ => None,
+    };
+    if let Some(category) = mep_category {
+        for parameter_id in [-1140362, -1140363] {
+            result.raw_field_parameters.push(RawFieldParameter {
+                parameter_id, source_object: 0, source_field: "@schema_class".into(),
+                source_element_id: None, projection_rule: "qualified_mep_class_to_builtin_category",
+                storage_type: "ElementId".into(), raw_value: category.into(),
+                value_semantics: "serialized_class_projection_not_evaluated",
+            });
+        }
+        if let Some(id) = root.fields.get("m_idType").and_then(|v| identifier(v).ok()).filter(|id|*id>0) {
+            result.raw_field_parameters.push(RawFieldParameter {
+                parameter_id: -1002052, source_object: 0, source_field: "m_idType".into(),
+                source_element_id: Some(id), projection_rule: "qualified_mep_owner_type_reference",
+                storage_type: "ElementId".into(), raw_value: id.into(),
+                value_semantics: "serialized_not_evaluated",
+            });
+        }
+    }
+    // Only an exact owner -> curve driver -> GLine route qualifies. The
+    // analytical length is derived in native feet; it is not Revit's evaluated
+    // CURVE_ELEM_LENGTH, a tessellated body length, or a flexible-curve estimate.
+    if matches!(root.class_name.as_str(), "RbsPipeCurve" | "RbsDuctCurve" | "CableTray" | "RbsConduitCurve") {
+        if let Some((index,length)) = saved_line_length(graph) {
+            result.raw_field_parameters.push(RawFieldParameter {
+                parameter_id: -1004005, source_object: index,
+                source_field: "m_pCurveDriver.m_pCrv.{m_dirVec,m_endParams}".into(),
+                source_element_id: None, projection_rule: "derived_saved_line_length_feet",
+                storage_type: "Double".into(), raw_value: length.into(),
+                value_semantics: "derived_analytical_curve_not_evaluated",
+            });
+        }
+    }
     if matches!(
         root.class_name.as_str(),
         "FamilyInstance" | "RbsPipeCurve" | "SWall"
@@ -452,7 +500,31 @@ pub fn project(graph: &ObjectGraph) -> Result<SavedMetadata> {
             });
         }
     }
+    // An explicitly stored parameter wins over an analytical fallback, which
+    // may legitimately differ from Revit's evaluated definition of length.
+    if result.parameter_sets.iter().flat_map(|set|&set.parameters).any(|p|p.serialized_parameter_id == -1004005) {
+        result.raw_field_parameters.retain(|p|p.projection_rule!="derived_saved_line_length_feet");
+    }
     Ok(result)
+}
+
+fn saved_line_length(graph:&ObjectGraph)->Option<(usize,f64)> {
+    let target=|source:usize,field:&str|->Option<usize>{
+        let pointer=graph.objects.get(source)?.fields.get(field)?;
+        if pointer["pointer_token"].as_u64()?==0{return None}
+        let offset=usize::try_from(pointer["offset"].as_u64()?).ok()?;
+        let mut edges=graph.edges.iter().filter(|e|e.source_object_index==source&&e.pointer_offset==offset);
+        let edge=edges.next()?;if edges.next().is_some(){return None}graph.objects.get(edge.target_object_index)?;Some(edge.target_object_index)
+    };
+    let driver=target(0,"m_pCurveDriver")?;
+    if graph.objects[driver].class_name!="RbsCurveDriver"{return None}
+    let index=target(driver,"m_pCrv")?;let line=&graph.objects[index];
+    if line.class_name!="GLine"{return None}
+    let dir=line.fields["m_dirVec"].as_array()?;let range=line.fields["m_endParams"].as_array()?;
+    if dir.len()!=3||range.len()!=2{return None}
+    let mut square=0.0;for v in dir{let v=v.as_f64()?;if !v.is_finite(){return None}square+=v*v;}
+    let length=(range[1].as_f64()?-range[0].as_f64()?).abs()*square.sqrt();
+    if !length.is_finite()||square<=0.0{return None}Some((index,length))
 }
 
 fn append_fields(
@@ -604,10 +676,15 @@ pub fn project_with_definitions(graph: &ObjectGraph, registry: &Registry) -> Res
         }
         for parameter in &result.resolved_family_parameters {
             if parameter.parameter_id > 0 {
-                ensure!(
-                    !states.contains_key(&parameter.parameter_id),
-                    "custom parameter present in both owner typed set and family slots"
-                );
+                if let Some(state) = states.get_mut(&parameter.parameter_id) {
+                    // Both representations remain in parameter_sets and
+                    // resolved_family_parameters. Do not discard the owner's
+                    // entire metadata, select a winner, or assert equality.
+                    // Consumers must compare the typed values and retain a
+                    // conflict when they disagree (including storage type).
+                    state.has_value_evidence = "present_owner_typed_parameter_and_family_slot";
+                    continue;
+                }
                 states.insert(
                     parameter.parameter_id,
                     DeclaredCustomParameter {

@@ -108,7 +108,7 @@ Wheel без checkout не содержит Node/Rust runtime: использу�
 
 ## Локальный HTTP API
 
-Запустите `uvyazka serve` и используйте его адрес loopback.
+Запустите `uvyazka dashboard` и используйте его адрес loopback.
 
 | Метод | Маршрут | Содержание |
 |---|---|---|

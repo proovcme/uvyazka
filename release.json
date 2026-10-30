@@ -1,6 +1,6 @@
 {
   "version": "0.4.0a1",
-  "revision": "0e47e83319cf0ce4422f61227a8ebefdc1732748",
+  "revision": "6a5905c1c0ac410f74ee65b2455e4fa9dc75d381",
   "mode": "browser-compute-and-public-examples",
   "server_file_upload": false,
   "browser_file_open": true,
@@ -84,7 +84,7 @@
     "cad/sources/jsmn-source.tar.gz": "715610f7fdbaf6aa2d90b1f3d10cc6b9e89cfb58eab74fb4c057b12fd913f993",
     "cad/sources/libredwg-web-source.tar.gz": "0f48a8234cfa4e4bf8a3f88beae96ccece45bcbb0c6c8a3ef0e620557f5cc279",
     "cad/sources/realdwg-web-source.tar.gz": "b650c1c9fa85a145c0d5874517bd11a7081b955a39d413f3b3bbc38cc4b824b7",
-    "cad/sources/uvyazka-cad-host.zip": "ba50e02f7aeb2d22875854220e72ab36452a5202f12c37896b637ebd2c0d62c8",
+    "cad/sources/uvyazka-cad-host.zip": "d7a85e9b821889c15b5d00dcdf6f91819d93a6484aa89936bd5a0031be0c104a",
     "cad/sources.html": "58379ddb707ccb2c2363918fac218f231efd4c88ceebd73dfd470afa094c02d9",
     "demo/ATTRIBUTION.txt": "399c15967f8425d4e8a4da71e2157191bf8f34f00114225b2c9f0ab15f83c0ec",
     "demo/examples.json": "f9fe10ed55577f5432dc47d4d52fdedccd4230a0904d2d306601a4dba36b9026",
@@ -126,10 +126,10 @@
     "demo/schedule-857b13c30c39b340e3074df9c03d40dfb55e81ea9703d69b5ab71a3da3d05c62.csv": "3eb13468a646c274fb93161afc7778b73138f3233c756353402c2b729e236425",
     "demo/sources.json": "68fd6a9ab93fb69f852c8beea66ceb4164620a478c8fb5d15a1edab4f2a7c185",
     "demo/sources.json.gz": "2eed0011e93f206b6c2c96f84a26419965bc4872228da885afd56cfbbe45f8e5",
-    "downloads/index.html": "ea848452dc5483ce34a402fc2a415ea72e60741f38b4ca2cfb56937e6e011ebb",
-    "downloads/SHA256SUMS.txt": "e60a2d822b0f6cefbf2c74db046881364d0e8e4b34eafe2ee889faa11304aac8",
-    "downloads/uvyazka-0.4.0a1-py3-none-any.whl": "41453cf8682c34e2c63ce02dd0165949216c29e3bd9efaedeef9778f688444c7",
-    "downloads/uvyazka-0.4.0a1.tar.gz": "c0b801f4c7013484d986d4b2009c1cb1e30b8d3ffb008bbfb2d4c717d6315394",
+    "downloads/index.html": "da94080a1070b23784299a90010b06eb541d73d3a9683e6516c77ae8769eeff6",
+    "downloads/SHA256SUMS.txt": "be8f830c7aeca4c4c4c82d93b5fc3ca64ae693b91a1016d47a28ceba76790291",
+    "downloads/uvyazka-0.4.0a1-py3-none-any.whl": "98a68d5be1d1b7894f189e3645df05f99304813ed43dfe0c656dc1874515dcec",
+    "downloads/uvyazka-0.4.0a1.tar.gz": "2cc6010707a1751f22ab0b1ad928249bd1172e175c13c38a014f2140a4016cf5",
     "FONT-LICENSES.txt": "502d5acce7fbbe2e331f6076cdfd6c3cc376be6748c769308730ce529ad5dfb6",
     "index.html": "c435c3a179281bafd33dab9cf212b7c2d4a2144143621f4f632c273f6b483b3e",
     "runtime/ifc-hierarchy.json": "41eb60736f25eb60ae093aaa85b42efba47100e0da7a71d6f21cffa8f71184f1",
@@ -169,6 +169,6 @@
     "THREE-LICENSE.txt": "3c6a7c89527e939f738cb908ab2580df0bbf32da8a0a0fed932917be51579225",
     "updates/beta.json": "d5321aede89240389714b69adc5fcc8e3776a31a0d7d5287cb8c6dc5c294c232",
     "UVYAZKA-LICENSE.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
-    "UVYAZKA-NOTICE.txt": "38115db12bc76fa6f75ec5eb1c56cc7e2205b27918951f8666cfc3117528dd3f"
+    "UVYAZKA-NOTICE.txt": "02bd43e3816a7e688d4257eb2ee83cf6125f95b58a4868582b8d219728631490"
   }
 }

@@ -14,7 +14,7 @@ import subprocess
 from .core import digest, default_home
 
 ROOT = Path(__file__).resolve().parents[2]
-REVISION = 'model-data-v2'
+REVISION = 'model-data-v3'
 SECTIONS = ('elements', 'types', 'systems', 'levels', 'layers', 'blocks', 'layouts', 'views', 'schedules', 'relationships')
 
 
@@ -61,11 +61,16 @@ def reader_status(workspace):
         row['revision'] = digest(binary) if binary and binary.is_file() else REVISION
         if fmt == 'dwg' and cad_deps.is_file():
             row['revision'] += ':'+digest(cad_deps)
+            # Package version alone does not identify a locally patched decoder.
+            for artifact in ('lib/libredwg.js', 'wasm/libredwg-web.js', 'wasm/libredwg-web.wasm'):
+                path = cad_deps.parent/artifact
+                if path.is_file():
+                    row['revision'] += ':'+digest(path)
         if fmt in ('ifc', 'dxf') and row['available']:
             from importlib.metadata import version
             row['revision'] += ':'+version('ifcopenshell' if fmt == 'ifc' else 'ezdxf')
         row['scope'] = 'saved metadata; no evaluated application views or engineering approval'
-    return {'contract': 'UvyazkaModelData', 'version': 1, 'readers': rows, 'sections': list(SECTIONS), 'geometry_vertices_returned': False, 'original_files_modified': False}
+    return {'contract': 'UvyazkaModelData', 'version': 1, 'readers': rows, 'sections': list(SECTIONS), 'mesh_buffers_returned': False, 'original_files_modified': False}
 
 
 def obj(section, native_id, name='', category='', properties=None, **extra):

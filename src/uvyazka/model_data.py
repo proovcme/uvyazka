@@ -208,7 +208,7 @@ class ModelData:
                 records.append((dataset_id, oid, index, row['section'], payload))
             data = {'dataset_id': dataset_id, 'contract': 'UvyazkaModelData', 'version': 1, 'source': origin, 'reader': engine,
                     'created_at': now(), 'counts': dict(counts), 'object_count': len(rows), 'coverage': report,
-                    'original_files_modified': False, 'geometry_vertices_returned': False}
+                    'original_files_modified': False, 'mesh_buffers_returned': False}
             with connection(db_path) as db:
                 db.execute('begin immediate')
                 if doc_id:

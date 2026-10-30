@@ -4,7 +4,7 @@ export interface NativeRecord {identity:{element_id:number|string;unique_id?:str
 export interface RvtDocument {shared_store?:{project_id:string;extraction_id:string;origin:string;source_verification?:string};schedule_data?:ScheduleData;schema_version:number;schema_sha256:string;status:string;error?:string;clipped_records:number;records:NativeRecord[];summary:any;source?:{filename:string;sha256:string;size_bytes:number};evaluated_schedule_body_available:false}
 export const fields=(r:NativeRecord)=>r.graph?.objects[0]?.fields??{};
 export function identifier(v:any):string|null {if(typeof v==='number'&&Number.isSafeInteger(v)||typeof v==='string')return String(v);if(v&&typeof v==='object')return identifier(v.m_id64??v.m_id);return null;}
-export function recordName(r:NativeRecord):string {const f=fields(r);return String(f.m_viewName||f.m_viewDescription||`${r.class_name} #${r.identity.element_id}`);}
+export function recordName(r:NativeRecord):string {const f=fields(r),label=r.kind==='schedule'?'Спецификация':r.kind==='placement'?'Размещение':f.m_sheetNumber?'Лист':'Вид';return String(f.m_viewName||f.m_viewDescription||`${label} · Revit ${r.identity.element_id}`);}
 export function category(r:NativeRecord):string {const f=fields(r);if(r.kind==='placement')return 'placements';if(f.m_isTemplate===true)return 'templates';if(r.kind==='schedule')return 'schedules';if(r.class_name==='DBViewDrafting'&&typeof f.m_sheetNumber==='string'&&f.m_sheetNumber.trim())return 'sheets';if(r.class_name==='DBView3d')return '3d';return ['DBViewPlan','DBViewSection'].includes(r.class_name)?'views':'other';}
 export function linked(r:NativeRecord,index:number,p:any):number|null {
   if(!p||typeof p!=='object'||p.pointer_token===0||!Number.isInteger(p.offset))return null;

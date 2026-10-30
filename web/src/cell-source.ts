@@ -1,4 +1,5 @@
 import type {ValueCell} from './rvt-schedule';
+import {userMessage} from './ui-language.ts';
 
 const node=<K extends keyof HTMLElementTagNameMap>(tag:K,text?:string)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
 const states:Record<ValueCell['state'],string>={value:'Значение получено',missing:'Значение не прочитано',conflict:'Найдены противоречащие значения',unsupported:'Правило чтения или расчёта не поддержано',mixed:'В группе разные значения'};
@@ -12,7 +13,7 @@ export function renderCellSource(host:HTMLElement,options:CellSourceOptions){
  host.replaceChildren();host.classList.add('cell-source');host.setAttribute('aria-label','Источник: '+options.field);
  if(options.cell.state==='value'){const value=node('p',options.value);value.className='cell-source-value';host.append(value);}
  const status=node('p',states[options.cell.state]+(options.confirmed===false?' · требуется подтверждение':''));status.dataset.sourceState=options.cell.state;host.append(status);
- if(options.cell.reason&&options.cell.reason!==states[options.cell.state])host.append(node('p',options.cell.reason));
+ if(options.cell.reason&&options.cell.reason!==states[options.cell.state])host.append(node('p',userMessage(options.cell.reason,'Причину пропуска можно посмотреть в диагностике.')));
  if(options.cell.state==='conflict'||options.cell.state==='mixed'){
   const values=[...new Set(options.cell.evidence.flatMap(e=>typeof e.value==='string'?[e.value===''?'пустая строка':e.value]:typeof e.value==='number'&&Number.isFinite(e.value)?[String(e.value)]:[]))];
   if(values.length)host.append(node('p','Прочитанные варианты (исходные значения): '+values.slice(0,8).join('; ')+(values.length>8?`; ещё ${values.length-8}`:'')));

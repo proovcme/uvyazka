@@ -16,6 +16,7 @@ test('prepared workspace download remains accessible and export failure is visib
  document.querySelector('#open-workspace').click();await wait(()=>document.querySelector('dialog')?.open);
  const button=[...document.querySelectorAll('button')].find(button=>button.textContent==='Скачать проект .uvz');button.click();await wait(()=>document.querySelector('.workspace-project-download')?.hidden===false);
  const link=document.querySelector('.workspace-project-download');assert.equal(link.download,'uvyazka-project.uvz');assert.match(link.href,/^blob:/);assert.equal((await fetch(link.href)).status,200);
- globalThis.__archiveFailure=true;button.click();await wait(()=>document.querySelector('dialog [role=status]').textContent==='Synthetic archive failure');
+ globalThis.__archiveFailure=true;button.click();await wait(()=>document.querySelector('dialog [role=status]').textContent==='Не удалось выполнить действие. Подробности доступны в диагностике.');
  assert.equal(link.hidden,true);assert.equal(button.disabled,false);assert.equal(errors.length,1);
+ const diagnostics=document.querySelector('.workspace-error-diagnostics');assert.equal(diagnostics.open,false);diagnostics.open=true;diagnostics.dispatchEvent(new win.Event('toggle'));assert.equal(diagnostics.querySelector('pre').textContent,'Synthetic archive failure');
 });

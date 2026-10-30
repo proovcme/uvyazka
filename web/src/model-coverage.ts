@@ -1,5 +1,6 @@
 import type {ModelPackage} from './model';
 import {onlyNavisSources} from './navis-format.ts';
+import {addDiagnostics} from './ui-language.ts';
 export type CoverageItem={key:string;label:string;status:'read'|'partial'|'unknown'|'unsupported';detail:string};
 export function modelCoverage(model:ModelPackage):CoverageItem[]{
  const navis=onlyNavisSources(model),n=model.nwd,s=model.statistics;
@@ -21,5 +22,5 @@ export function renderCoverage(host:HTMLElement,model:ModelPackage){
 export function renderCoverageItems(host:HTMLElement,items:CoverageItem[]){
  host.replaceChildren();const list=document.createElement('dl');list.className='model-coverage';
  const labels={read:'Прочитано',partial:'Частично',unknown:'Не установлено',unsupported:'Пока не поддерживается'};
- for(const item of items){const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=item.label;dd.textContent=labels[item.status];dd.dataset.coverage=item.status;dd.title=item.detail;const detail=document.createElement('small');detail.textContent=item.detail;dd.append(detail);list.append(dt,dd);}host.append(list);
+ for(const item of items){const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=item.label;dd.textContent=labels[item.status];dd.dataset.coverage=item.status;list.append(dt,dd);}host.append(list);addDiagnostics(host,()=>items);
 }

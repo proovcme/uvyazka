@@ -1,3 +1,4 @@
+import {userMessage,addDiagnostics} from './ui-language.ts';
 import {defaultSpecification,validateSpecification} from './model-specification.ts';
 import type {SpecDataset,SpecDefinition} from './model-specification.ts';
 import {gostColumns,mappedFields,drawingFields} from './gost-settings.ts';
@@ -30,7 +31,7 @@ export function gostPanel(host:HTMLElement,actions:{close:()=>void;back:()=>void
  function draftDrawing(input:HTMLInputElement,change:(value:string)=>void){const update=()=>{change(input.value);drawingDirty=true;ticket++;prepared=null;const status=host.querySelector('[data-gost-message]');if(status)status.textContent='Реквизиты изменены — листы обновятся после завершения ввода.';};input.oninput=update;input.onchange=()=>{update();flushDrawing();};}
  let prepared:Awaited<ReturnType<typeof prepareGost>>|null=null;const statistics=new Map<string,ReturnType<typeof fieldStats>>();
  const config=()=>definition.gost!;
- function fail(error:unknown){const message=host.querySelector<HTMLElement>('[data-gost-message]');if(message){message.textContent=String(error);message.classList.add('error');}}
+ function fail(error:unknown){const message=host.querySelector<HTMLElement>('[data-gost-message]');if(message){message.textContent=userMessage(error);message.classList.add('error');host.querySelector('.error-diagnostics')?.remove();if(message.textContent!==String(error))addDiagnostics(host,String(error)).classList.add('error-diagnostics');}}
  function download(data:string|Uint8Array,name:string,type:string){const bytes=typeof data==='string'?data:new Uint8Array(data).buffer;const url=URL.createObjectURL(new Blob([bytes],{type}));const a=el('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
  function summary(){return `${counted(report.coverage.included,['экземпляр','экземпляра','экземпляров'])} → ${counted(report.coverage.positions,['строка','строки','строк'])} · ${report.coverage.unknown} с неподтверждённым отбором · ${report.release_ready?'реквизиты и привязки заполнены':'черновик'}`;}
  function recalculate(keepDrawing=false){ticket++;prepared=null;statistics.clear();if(drawer==='source'){drawer=null;sourceRow=null;}try{report=buildGost(dataset,definition,definition.scope==='matches'?actions.matches():definition.scope==='selection'?actions.selection():undefined,actions.project());

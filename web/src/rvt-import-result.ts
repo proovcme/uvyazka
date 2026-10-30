@@ -1,4 +1,5 @@
 import type {RvtDocument} from './rvt-document.ts';
+import {userMessage} from './ui-language.ts';
 
 export const RVT_CONTAINER_ERROR='RVT: файл не содержит ожидаемый контейнер CFB. Проверьте формат и целостность файла; переименование расширения не превращает другой файл в RVT.';
 /** Only the outer signature. Passing is not validation of a Revit document. */
@@ -18,7 +19,7 @@ export function rvtDocumentIncomplete(document:RvtDocument|null):boolean {
 }
 export function documentErrorMessage(error:string):string {
  const version=/native record framing is unvalidated for Revit (\d{4})/.exec(error)?.[1];
- return version?`Чтение записей RVT ${version} текущим декодером не поддерживается.`:error;
+ return version?`Чтение RVT ${version} пока не поддерживается.`:userMessage(error,'Часть данных RVT не удалось прочитать.');
 }
 export function rvtImportFailure(rawMessage:string,document:RvtDocument|null,conversion:any){
  const readable=hasReadableDocument(document);

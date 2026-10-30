@@ -9,6 +9,7 @@ import {chooseNwdUnits} from './nwd-unit-dialog';
 import {processingPanel} from './processing-panel';
 import {geometryCache} from './geometry-cache';
 import {rvtModelCache} from './rvt-model-cache';
+import {progressMessage,userMessage} from './ui-language.ts';
 import type { ModelPackage } from './model';
 import type { RunPackage } from './simulation';
 import { journalPanel } from './import-journal-panel';
@@ -27,13 +28,13 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSou
 <input id="browser-rvt-file" type="file" accept=".rvt" multiple hidden>
 <p>Файл остаётся на вашем устройстве. Для RVT и IFC прежний порог размера снят; большие модели требуют больше памяти. DWG/DXF до 64 MiB. Чтение RVT экспериментальное; Revit и агент не нужны.</p>
 <div class="browser-actions"><label>DWG / RVT / IFC / NWD / NWC<input id="browser-file" type="file" accept=".dwg,.dxf,.rvt,.ifc,.nwd,.nwc" multiple></label><button id="browser-cancel" disabled>Отменить</button><button id="browser-demo">Учебный пример</button><button id="browser-log">Журнал обработки</button><button id="browser-document">Виды и таблицы</button></div>
-<label class="check"><input id="browser-append" type="checkbox">Добавить IFC / RVT / NWD к открытой сцене</label><button id="browser-clear-cache">Очистить кеш моделей</button>
+<label class="check"><input id="browser-append" type="checkbox">Добавить к текущей сцене</label><button id="browser-clear-cache">Очистить кеш моделей</button>
 <p id="browser-status" role="status" aria-live="polite">Выберите файл или изучите готовый пример ниже.</p>
 <details><summary>Память и большие модели</summary><label>Бюджет IFC-декодера<select id="browser-memory"><option value="512">512 MiB</option><option value="1024" selected>1 GiB</option><option value="2048">2 GiB</option></select></label><p>Это бюджет IFC-движка, а не всей вкладки. RVT, промежуточный IFC и 3D требуют дополнительной памяти. Технический предел RVT-читателя — 2 GiB входного файла; успешное чтение такого размера не гарантируется.</p></details>
 <div class="browser-actions simulation-only"><label>Ресурсы<select id="browser-variant"><option value="base">Базовые</option><option value="reinforced">Усиленные</option></select></label><label>Доступность ресурсов<select id="browser-capacity"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option></select></label><label>Выдержка бетона, суток<input id="browser-curing" type="number" min="1" max="365" value="28"></label><button id="browser-plan" disabled>Рассчитать сценарий</button></div>
 <p class="simulation-only">Работы, технология, выработка и связи — предварительные допущения IFCCS. Стадии RVT в браузере пока не читаются; существующие и демонтируемые элементы автоматически не исключаются.</p>
-<div class="browser-actions"><a id="browser-ifc" hidden>Скачать IFC</a><a id="browser-report" hidden>Диагностика JSON</a></div><details id="browser-diagnostics" hidden><summary>Покрытие и вопросы</summary><pre></pre></details>`;
-  document.getElementById('import-host')!.append(section);
+<div class="browser-actions"><a id="browser-ifc" hidden>Скачать IFC</a></div><details id="browser-diagnostics" hidden><summary>Диагностика обработки</summary><a id="browser-report" hidden>Скачать исходный отчёт JSON</a><pre></pre></details>`;
+  document.getElementById('import-host')!.append(section);const advanced=document.createElement('details'),advancedTitle=document.createElement('summary');advancedTitle.textContent='Дополнительные параметры открытия';advanced.append(advancedTitle);section.querySelector('h2')!.after(advanced);const mode=section.querySelector('#browser-rvt-mode')!.closest('label')!,explanation=mode.nextElementSibling;advanced.append(mode);if(explanation)advanced.append(explanation);for(const p of [...section.querySelectorAll(':scope > p')])if(p.textContent?.includes('GiB')||p.textContent?.includes('прежний порог'))advanced.append(p);advanced.append(section.querySelector('#browser-clear-cache')!);const privacy=document.createElement('p');privacy.textContent='Файл обрабатывается на вашем устройстве.';advanced.before(privacy);
   if(callbacks.publicDemo===false){section.querySelector<HTMLElement>('#browser-demo')!.hidden=true;const note=document.createElement('p');note.textContent='Модель сохраняется в локальной базе выбранного проекта и становится доступна MCP. Исходный файл не заменяется.';section.querySelector('h2')!.after(note);}
   const el=<T extends HTMLElement=HTMLElement>(id:string)=>section.querySelector<T>('#'+id)!;
   const log=journalPanel(),journal=log.journal;
@@ -56,14 +57,14 @@ export function browserPanel(callbacks:{reset:(append:boolean)=>void;containsSou
   const probe=setInterval(()=>{if(run?.state==='running'){importer?.postMessage({kind:'ping',job:active});planner?.postMessage({kind:'ping',job:active});}},2000);
   addEventListener('pagehide',()=>clearInterval(probe));
 
-  const status=(text:string)=>{el('browser-status').textContent=text;const footer=document.getElementById('workspace-status')!;footer.textContent=text;footer.title=text;};
+  const status=(text:string)=>{const message=run?.state==='running'?progressMessage(run.stage,text):/сеток|фрагмент|владельц|узлов дерева/i.test(text)?(run?.state==='partial'?'Модель открыта частично.':'Модель открыта.'):userMessage(text);el('browser-status').textContent=message;const footer=document.getElementById('workspace-status')!;footer.textContent=message;footer.title=message;};
   const busy=(yes:boolean)=>{document.body.classList.toggle('is-busy',yes);el<HTMLButtonElement>('browser-cancel').disabled=!yes;el<HTMLButtonElement>('browser-plan').disabled=yes||!current||!!current.rvt_direct||isNavisFormat(current.source.format);for(const id of ['open-file','empty-add-model','replace-model']){const button=document.getElementById(id) as HTMLButtonElement|null;if(button)button.disabled=yes;}};
   const stop=(reason='Обработка отменена: выбран другой файл или режим.',keepPlanner=false)=>{
     callbacks.cancelPreparation?.();
     if(run?.state==='running')finishRun(run,'cancelled',reason);
     active++;importer?.terminate();importer=null;if(!keepPlanner){planner?.terminate();planner=null;}busy(false);
   };
-  const fail=(message:string,details?:unknown)=>{current=fallback;if(run)finishRun(run,'failed',message,details);stop();status(message+' · подробности в журнале');};
+  const fail=(message:string,details?:unknown)=>{current=fallback;if(run)finishRun(run,'failed',message,details);stop();status(userMessage(message)+' · подробности в журнале');};
   const download=(id:string,data:Blob,name:string)=>{const old=urls.get(id);if(old)URL.revokeObjectURL(old);const url=URL.createObjectURL(data);urls.set(id,url);const a=el<HTMLAnchorElement>(id);a.href=url;a.download=name;a.hidden=false;};
   const clearIfcDownload=()=>{const old=urls.get('browser-ifc');if(old)URL.revokeObjectURL(old);urls.delete('browser-ifc');el('browser-ifc').hidden=true;};
   const diagnosticReport=(report:unknown)=>{el('browser-diagnostics').hidden=false;section.querySelector('pre')!.textContent=JSON.stringify(report,null,2);download('browser-report',new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),'uvyazka-diagnostics.json');};

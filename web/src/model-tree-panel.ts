@@ -1,5 +1,6 @@
 import type {BimElement,ModelPackage} from './model';
 import {elementIdentity} from './element-identity.ts';
+import {displayClass,displayElementName} from './ui-language.ts';
 import type {ModelVisibility} from './model-visibility';
 import {elementCategory} from './element-category.ts';
 import {documentBranches} from './rvt-navigation.ts';
@@ -69,7 +70,7 @@ export function modelTreePanel(host:HTMLElement,visibility:ModelVisibility,actio
       const ids=node.items.map(e=>e.id),state=visibility.count(ids);check.checked=state.checked;check.indeterminate=state.mixed;
       check.disabled=!ids.length;
       check.setAttribute('aria-label','Показывать '+node.name);check.onclick=e=>e.stopPropagation();check.onchange=()=>actions.show(ids,check.checked);
-      const name=document.createElement('span');name.textContent=node.name;name.className='tree-node-name';
+      const name=document.createElement('span');name.textContent=node.kind==='class'?displayClass(node.name):node.name;name.className='tree-node-name';
       const count=document.createElement('small');count.textContent=String(node.items.length);count.title=`Включено ${state.shown} из ${state.total}`;
       checks.set(check,{ids,count});
       const only=document.createElement('button');only.className='tree-isolate';only.textContent='Только';only.title='Оставить только '+node.name;only.setAttribute('aria-label',only.title);only.onclick=e=>{e.stopPropagation();actions.isolate(ids);};
@@ -104,7 +105,7 @@ export function modelTreePanel(host:HTMLElement,visibility:ModelVisibility,actio
             const toggle=document.createElement('input');toggle.type='checkbox';toggle.checked=visibility.visible(element.id);toggle.disabled=!element.mesh;toggle.setAttribute('aria-label','Показывать '+(element.name||element.id));toggle.title=element.mesh?'Показать / скрыть элемент':'Геометрия не прочитана';toggle.onchange=()=>actions.show([element.id],toggle.checked);
             rowChecks.set(toggle,element.id);
             const select=document.createElement('button');select.className='element-item';select.dataset.id=element.id;select.setAttribute('aria-pressed',String(lastSelected===element.id));
-            const text=document.createElement('span'),title=document.createElement('strong'),identity=document.createElement('small');title.textContent=element.name||element.id;const revit=elementIdentity(element).element_id;identity.textContent=(revit?'Revit '+revit:'#'+element.id)+(element.mesh?'':' · без геометрии');text.append(title,identity);select.append(text);select.onclick=event=>actions.select(element.id,event.ctrlKey||event.metaKey||event.shiftKey);
+            const text=document.createElement('span'),title=document.createElement('strong'),identity=document.createElement('small');const revit=elementIdentity(element).element_id;title.textContent=displayElementName(element.name||'Элемент модели',element.class,revit);identity.textContent=(revit?'Revit '+revit:'')+(element.mesh?'':' · без отображения');text.append(title,identity);select.append(text);select.onclick=event=>actions.select(element.id,event.ctrlKey||event.metaKey||event.shiftKey);
             row.append(toggle,select);list.append(row);
           }
           if(rowItems.length>offset+limit){const more=document.createElement('button');more.className='tree-more';more.textContent=`Ещё ${Math.min(50,rowItems.length-offset-limit)} · осталось ${rowItems.length-offset-limit}`;more.onclick=()=>{offsets.set(node.key,offset+limit);limits.set(node.key,50);rows();};list.append(more);}

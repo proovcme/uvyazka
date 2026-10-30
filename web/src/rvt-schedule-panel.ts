@@ -1,5 +1,7 @@
 import {reconstructSchedule,previewValue,previewCsv} from './rvt-schedule';
 import type {NativeRecord,RvtDocument} from './rvt-document';
+import {schedule} from './rvt-document';
+import {userMessage} from './ui-language.ts';
 import type {ScheduleOptions} from './rvt-schedule';
 import {scheduleControls} from './rvt-schedule-controls';
 import {readScheduleSettings,writeScheduleSettings} from './rvt-schedule-session';
@@ -8,8 +10,9 @@ import {renderCellSource,rowNeedsReview} from './cell-source';
 import type {scheduleSceneSelection} from './schedule-scene';
 const node=<K extends keyof HTMLElementTagNameMap>(tag:K,text?:string)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
 export function schedulePreviewPanel(host:HTMLElement,record:NativeRecord,document:RvtDocument,download:(text:string,type:string,name:string)=>void,actions:{resolve?:(source:string,ids:string[])=>ReturnType<typeof scheduleSceneSelection>;show?:(source:string,ids:string[])=>void}={}){
+ if(!record.graph||!schedule(record).columns.length){host.append(node('p','Не удалось прочитать столбцы этой спецификации.'));return;}
  const panel=node('details');panel.id='rvt-preview';panel.open=true;panel.append(node('summary','Сверочная ведомость по элементам'));host.append(panel);
- const native=nativeFilterSummary(record),conditions=node('details');conditions.className='rvt-notice';conditions.open=native.count!==0;
+ const native=nativeFilterSummary(record),conditions=node('details');conditions.className='rvt-notice';
  conditions.append(node('summary',native.count===0?'Исходные фильтры RVT: нет':`Исходные фильтры RVT · ${native.count??'не прочитаны'}`));
  conditions.append(node('p',native.complete?'Поддержанные исходные условия применяются совместно (И), до группировки. Дополнительные фильтры сверки их не заменяют.':'Не все исходные условия удалось прочитать. Состав оставшихся строк не подтверждён; неизвестные строки не включаются в контрольные суммы.'));
  for(const rule of native.rows)conditions.append(node('p',`${rule.field}${rule.hidden?' (скрытое поле)':''}: ${rule.condition}${rule.value===undefined?'':' '+JSON.stringify(rule.value)}${rule.storage==='Double'?' (исходные единицы)':''}${rule.state==='unknown'?' · требует проверки':''}`));
@@ -30,7 +33,7 @@ export function schedulePreviewPanel(host:HTMLElement,record:NativeRecord,docume
   content.append(node('p',`Элементов: ${report.instance_count} · строк: ${report.rows.length}. ${report.unknown_instances?'Есть строки с неподтверждённым составом; они не входят в контрольные суммы.':'Результат предварительный и требует сверки.'}`));
   const technical=node('details');technical.append(node('summary','Технические данные и ограничения'));
   const note=node('details');note.className='rvt-notice';note.append(node('summary',`Ограничения чтения (${report.issues.length})`));for(const issue of report.issues)note.append(node('p',issue));technical.append(note);
-  if(storageError)content.append(node('p',storageError));
+  if(storageError){content.append(node('p',userMessage(storageError,'Не удалось восстановить настройки таблицы. Задайте их заново.')));technical.append(node('pre',storageError));}
   technical.append(node('p','Настройки сохраняются локально для этой модели и таблицы; синхронизации с базой проекта пока нет.'));
   scheduleControls(content,report,settings,()=>{cached=null;rowPage=0;try{if(!sha)throw new Error('Нет SHA-256 модели');localStorage.setItem(storageKey,writeScheduleSettings(settings,sha,scheduleId));storageError='';}catch(e){storageError=`Настройки действуют до закрытия окна; сохранение не удалось: ${String(e)}`;}render();});
   const questionLabel=node('label'),questionToggle=node('input');questionLabel.className='table-review-filter';questionToggle.type='checkbox';questionToggle.checked=questionsOnly;questionToggle.onchange=()=>{questionsOnly=questionToggle.checked;rowPage=0;render();};questionLabel.append(questionToggle,globalThis.document.createTextNode(' Только строки с вопросами'));content.append(questionLabel);

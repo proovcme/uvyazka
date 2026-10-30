@@ -1,10 +1,11 @@
 import {schedulePreviewPanel} from './rvt-schedule-panel';
 import {category,fields,recordName,schedule,scheduleCsv,sheetPlacements,identifier,viewOrientation,scheduleGrids,savedCellState} from './rvt-document';
 import type {RvtDocument,NativeRecord} from './rvt-document';
-import {hasReadableDocument,documentErrorMessage} from './rvt-import-result';
+import {documentErrorMessage} from './rvt-import-result';
 import type {CatalogSummary} from './rvt-catalog-client';
 import {scheduleSceneSelection} from './schedule-scene';
 import type {ModelPackage} from './model';
+import {addDiagnostics,userMessage} from './ui-language.ts';
 const labels:Record<string,string>={all:'Всё содержимое',views:'Планы и разрезы','3d':'3D-виды',sheets:'Листы',schedules:'Спецификации',templates:'Шаблоны',placements:'Размещения',other:'Другие виды'};
 const node=<K extends keyof HTMLElementTagNameMap>(tag:K,text?:string)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
 export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>void,options:{model?:()=>ModelPackage|null;showElements?:(ids:string[])=>void;context?:()=>string;importCatalog?:(data:RvtDocument)=>Promise<void>;listCatalogs?:(offset:number)=>Promise<{items:CatalogSummary[];next_offset:number|null}>;loadCatalog?:(id:string)=>Promise<void>}={}){
@@ -34,23 +35,25 @@ export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>vo
  function show(record:NativeRecord){
   selected=record;list();const host=get('rvt-record-detail');host.replaceChildren();const f=fields(record),kind=category(record);
   host.append(node('small',`${labels[kind]} · #${record.identity.element_id}`),node('h2',recordName(record)));
-  if(record.diagnostic)host.append(node('p',record.diagnostic));
-  if(!record.graph)host.append(node('p','Граф этой записи не прочитан. Пустое содержимое не означает отсутствие данных в RVT.'));
-  const sources=node('details');sources.append(node('summary','Источники и технические данные записи'));
+  const sources=node('details');sources.className='ui-diagnostics';sources.append(node('summary','Диагностика и исходная запись'));
+  if(record.diagnostic)sources.append(node('pre',record.diagnostic));
+  if(!record.graph){
+   host.append(node('h3',record.kind==='schedule'?'Не удалось прочитать эту спецификацию':'Содержимое пока недоступно'),node('p',record.kind==='schedule'?'Можно создать новую таблицу по параметрам элементов модели.':'Данные этой записи не удалось получить.'));
+   if(record.kind==='schedule'&&options.model?.()){const create=node('button','Создать таблицу по элементам');create.onclick=()=>{dialog.close();document.getElementById('open-specifications')?.click();};host.append(create);}
+  }else if(record.diagnostic)host.append(node('p','Прочитано не полностью. Проверьте состав и значения таблицы.'));
   const exportButton=node('button','Запись JSON');exportButton.onclick=()=>download(JSON.stringify({source:data?.source,record},null,2),'application/json',`rvt-${record.identity.element_id}.json`);sources.append(exportButton);
   const copy=node('button','Копировать запись');copy.dataset.copy=JSON.stringify({source:data?.source,record},null,2);sources.append(copy);
-  if(record.kind==='schedule'){
+  if(record.kind==='schedule'&&record.graph){
    if(data)schedulePreviewPanel(host,record,data,download,{resolve:(hash,ids)=>scheduleSceneSelection(options.model?.()??null,hash,ids),show:options.showElements?(hash,ids)=>{const found=scheduleSceneSelection(options.model?.()??null,hash,ids);if(found.scene_ids.length){dialog.close();options.showElements!(found.scene_ids);}}:undefined});
-   const s=schedule(record),saved=node('details');saved.append(node('summary',`Сохранённые ячейки из файла · ${s.cells.length}`));host.append(saved);
+   const s=schedule(record),saved=node('details');saved.append(node('summary',`Сохранённые ячейки из файла · ${s.cells.length}`));if(s.cells.length)host.append(saved);
    const note=node('p','Исходные сохранённые ячейки, без пересчёта. Они могут содержать только часть таблицы; пустая ячейка со ссылкой на параметр не означает нулевое значение.');note.className='rvt-notice';saved.append(note);
    const csv=node('button','Ячейки CSV');csv.disabled=!s.cells.length;csv.onclick=()=>download(scheduleCsv(record),'text/csv',`rvt-schedule-${record.identity.element_id}.csv`);saved.append(csv);
    const definition=node('details'),definitionTitle=node('summary',`Поля спецификации · ${s.columns.length}`);definition.append(definitionTitle);sources.append(definition);
    if(s.columns.length)table(definition,['Порядок в RVT','ID','Заголовок','Скрыто','Параметр'],s.columns.map(c=>[c.order,c.id,c.properties.m_columnHeading,typeof c.properties.m_hidden==='boolean'?(c.properties.m_hidden?'Да':'Нет'):null,identifier(c.properties.m_paramElemId)]));
    for(const issue of s.issues)sources.append(node('p',issue));
-   if(!s.cells.length)saved.append(node('p','Сохранённых ячеек не получено. Это не пустая спецификация и не нулевые количества.'));
    for(const grid of scheduleGrids(s.cells)){
     const section=node('section');section.className='rvt-schedule-grid';section.append(node('h4',`Секция ${JSON.stringify(grid.section)??'неизвестна'}`));saved.append(section);
-    const toolbar=node('div');toolbar.className='rvt-grid-controls';const area=node('div');area.className='rvt-table-scroll';const evidence=node('details'),caption=node('summary','Источник выбранной ячейки'),pre=node('pre','Выберите ячейку таблицы.');evidence.append(caption,pre);section.append(toolbar,area,evidence);
+    const toolbar=node('div');toolbar.className='rvt-grid-controls';const area=node('div');area.className='rvt-table-scroll';const evidence=node('details'),caption=node('summary','Источник выбранной ячейки'),pre=node('pre','Выберите ячейку таблицы.');const origin=node('p'),debug=node('details');debug.append(node('summary','Диагностика ячейки'),pre);evidence.append(caption,origin,debug);section.append(toolbar,area,evidence);
     let rowOffset=0,columnOffset=0;
     const controls=()=>{
      toolbar.replaceChildren();toolbar.append(node('small',`Строки ${grid.rows.length?rowOffset+1:0}–${Math.min(rowOffset+50,grid.rows.length)} из ${grid.rows.length}; колонки ${grid.columns.length?columnOffset+1:0}–${Math.min(columnOffset+12,grid.columns.length)} из ${grid.columns.length}`));
@@ -63,7 +66,7 @@ export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>vo
      controls();area.replaceChildren();const t=node('table'),head=node('thead'),header=node('tr'),body=node('tbody');header.append(node('th','Строка / колонка'));const columns=grid.columns.slice(columnOffset,columnOffset+12);for(const col of columns)header.append(node('th',String(col)));head.append(header);
      for(const row of grid.rows.slice(rowOffset,rowOffset+50)){const tr=node('tr'),label=node('th',String(row));label.scope='row';tr.append(label);
       for(const column of columns){const entries=grid.cells.get(`${row}:${column}`)??[],state=savedCellState(entries),td=node('td'),value=state==='text'?entries[0].text!:({missing:'Нет данных',conflict:`Конфликт: ${entries.length} записей`,unreadable:'Значение не прочитано',empty:'Пустая'} as Record<string,string>)[state];
-       const b=node('button',value);b.className='rvt-cell';b.dataset.state=state;b.setAttribute('aria-label',`Строка ${row}, колонка ${column}: ${value}`);b.onclick=()=>{caption.textContent=`Источник: строка ${row}, колонка ${column}`;pre.textContent=JSON.stringify({source:data?.source,element_id:record.identity.element_id,section:grid.section,row,column,status:state,cells:entries},null,2);evidence.open=true;};td.append(b);tr.append(td);
+       const b=node('button',value);b.className='rvt-cell';b.dataset.state=state;b.setAttribute('aria-label',`Строка ${row}, колонка ${column}: ${value}`);b.onclick=()=>{caption.textContent=`Источник: строка ${row}, колонка ${column}`;origin.textContent=`${data?.source?.filename??'RVT'} · Revit ${record.identity.element_id}`;debug.open=false;pre.textContent=JSON.stringify({source:data?.source,element_id:record.identity.element_id,section:grid.section,row,column,status:state,cells:entries},null,2);evidence.open=true;};td.append(b);tr.append(td);
       }body.append(tr);
      }t.append(head,body);area.append(t);
     };render();
@@ -71,19 +74,19 @@ export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>vo
    }
    details(sources,'Определение, фильтры и сортировка (исходные поля)',{definition:s.schema,resolved_rules:s.rules});
    details(sources,'Поля и ячейки с адресами источников',s);
-  }else if(kind==='sheets'){
+  }else if(kind==='sheets'&&record.graph){
    host.append(node('p',`Номер листа: ${f.m_sheetNumber}`),node('p','Состав листа по сохранённым размещениям. Рамка, аннотации и графика листа пока не отрисовываются.'));
    const placements=sheetPlacements(record,data?.records??[]);host.append(node('h3',`Размещения · ${placements.length}`));
    if(!placements.length)host.append(node('p','Явные связи размещений не найдены; полнота листа неизвестна.'));
    for(const p of placements){const pf=fields(p),target=identifier(pf.m_dbViewId??pf.m_scheduleId??pf.m_internalScheduleId),linked=data?.records.find(r=>String(r.identity.element_id)===target);const b=node('button',linked?`${recordName(linked)} · размещение #${p.identity.element_id}`:`Размещение #${p.identity.element_id} · вид ${target??'не прочитан'}`);b.onclick=()=>show(linked??p);host.append(b);}
-  }else{
+  }else if(record.graph){
    const orientation=viewOrientation(record);
    if(orientation){const b=node('button','Показать ориентацию на модели');b.disabled=!geometry;b.onclick=()=>{orient(record);dialog.close();};host.append(b);host.append(node('p','Реконструкция ориентации по направлениям вида. Обрезка, масштаб листа, фильтры видимости, шаблон и аннотации не применяются.'));}
    const names:Record<string,string>={m_viewName:'Имя',m_viewDescription:'Описание',m_scale:'Масштаб (исходный коэффициент)',m_isTemplate:'Шаблон',m_viewTemplateId:'ID шаблона',m_origin:'Начало координат (исходные единицы)',m_viewDir:'Направление взгляда',m_horzDir:'Горизонталь вида',m_vertDir:'Вертикаль вида',m_cutPlaneElev:'Высота сечения (исходные единицы)',m_topClipElev:'Верхняя граница',m_bottomClipElev:'Нижняя граница',m_dbViewId:'ID вида',m_dbDrawingId:'ID чертежа',m_scheduleId:'ID спецификации',m_sheetNumber:'Номер листа'};
    table(host,['Свойство','Сохранённое значение'],Object.entries(f).filter(([k])=>/^m_(viewName|viewDescription|scale|isTemplate|viewTemplateId|origin|viewDir|horzDir|vertDir|cutPlaneElev|topClipElev|bottomClipElev|dbViewId|dbDrawingId|scheduleId|sheetNumber)$/.test(k)).map(([k,v])=>[names[k]||k,typeof v==='boolean'?(v?'Да':'Нет'):/Id$/.test(k)?identifier(v):v]));
   }
   details(sources,'Происхождение записи',{source:data?.source,identity:record.identity,location:record.source,schema_sha256:data?.schema_sha256});
-  details(sources,'Все сохранённые поля и связи',record.graph);host.append(sources);
+  addDiagnostics(sources,()=>({source:data?.source,record}),'Полный отчёт чтения');host.append(sources);
  }
  function list(){const host=get('rvt-records');host.replaceChildren();const query=get<HTMLInputElement>('rvt-search').value.toLocaleLowerCase(),kind=get<HTMLSelectElement>('rvt-kind').value;
   const rows=(data?.records??[]).filter(r=>(rawToggle.checked||category(r)==='schedules')&&(kind==='all'||category(r)===kind)&&`${recordName(r)} ${r.identity.element_id} ${r.class_name}`.toLocaleLowerCase().includes(query));
@@ -91,7 +94,13 @@ export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>vo
   host.append(node('small',`Найдено: ${rows.length}`));for(const r of rows.slice(0,shown)){const b=node('button');b.setAttribute('aria-pressed',String(r===selected));b.append(node('span',recordName(r)),node('small',`${labels[category(r)]} · #${r.identity.element_id}`));b.onclick=()=>show(r);host.append(b);}get('rvt-more').hidden=rows.length<=shown;
  }
  get('rvt-more').onclick=()=>{shown+=100;list();};for(const id of ['rvt-search','rvt-kind'])get(id).oninput=()=>{shown=100;selected=null;get('rvt-record-detail').replaceChildren(node('p','Выберите запись в каталоге.'));list();};
- function set(next:RvtDocument|null,message='Загрузите RVT, чтобы открыть таблицы модели.') {if(!next){panelEpoch++;picker.replaceChildren();picker.hidden=true;more.hidden=true;nextOffset=0;}data=next;button.hidden=!next;selected=null;geometry=false;get<HTMLButtonElement>('rvt-whole').disabled=true;get<HTMLButtonElement>('rvt-export').disabled=!data;get('rvt-record-detail').replaceChildren(node('p',hasReadableDocument(data)?'Выберите спецификацию в списке.':'Таблицы пока недоступны. Полнота чтения файла не подтверждена.'));get('rvt-document-status').textContent=data?`${data.source?.filename??'RVT'} · ${data.records.length} записей · ${!hasReadableDocument(data)?'Каталог недоступен':data.status==='partial'?'Прочитано частично':'Каталог прочитан'}${data.error?' · '+documentErrorMessage(data.error):''} · Полнота документа не подтверждена.`:message;list();}
+ function set(next:RvtDocument|null,message='Загрузите RVT, чтобы открыть таблицы модели.') {
+  if(!next){panelEpoch++;picker.replaceChildren();picker.hidden=true;more.hidden=true;nextOffset=0;}
+  data=next;button.hidden=!next;selected=null;geometry=false;get<HTMLButtonElement>('rvt-whole').disabled=true;get<HTMLButtonElement>('rvt-export').disabled=!data;
+  const schedules=data?.records.filter(r=>category(r)==='schedules')??[];
+  get('rvt-record-detail').replaceChildren(node('p',schedules.length?'Выберите спецификацию в списке.':'Спецификации пока недоступны.'));
+  get('rvt-document-status').textContent=data?`${data.source?.filename??'RVT'} · спецификаций: ${schedules.length}${data.status==='partial'?' · прочитано не всё':''}${data.error?' · '+userMessage(documentErrorMessage(data.error),'Часть данных файла недоступна.'):''}`:userMessage(message);list();
+ }
  const updateStorage=()=>{storage.textContent=data?.shared_store?`Общая база проекта · ${data.shared_store.project_id} · снимок ${data.shared_store.extraction_id.slice(0,12)} · ${data.shared_store.source_verification==='declared_sha256_not_reopened'?'Хеш RVT заявлен в каталоге; исходный файл не перепроверен.':'Источник зарегистрирован при извлечении; актуальность файла требует отдельной проверки.'}`:options.importCatalog?'Каталог ещё не сохранён в базу проекта. Импортируйте JSON или откройте подготовленную RVT-модель.':'Каталог в этом браузере. Для продолжения в MCP скачайте JSON и импортируйте в локальный проект Увязки.';};
  const setData=(next:RvtDocument|null,message?:string)=>{set(next,message);updateStorage();};
  setData(null);

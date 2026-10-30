@@ -1,4 +1,5 @@
 import type {ModelPackage} from './model';
+import {displayClass,displayElementName} from './ui-language.ts';
 import {engineeringGraph,engineeringNeighbours,engineeringComponent,engineeringPath,linkLabel} from './engineering-graph';
 
 export function engineeringPanel(host:HTMLElement,getModel:()=>ModelPackage|null,actions:{select:(id:string)=>void;highlight:(ids:string[])=>void;isolate:(ids:string[])=>void}){
@@ -14,7 +15,7 @@ export function engineeringPanel(host:HTMLElement,getModel:()=>ModelPackage|null
   const choose=document.createElement('select');choose.setAttribute('aria-label','Тип цепочки');choose.append(new Option('Физические соединения','physical'),new Option('Системы и базовое оборудование','membership'));choose.value=mode;choose.onchange=()=>{mode=choose.value as typeof mode;render();};host.append(choose);
   if(!item){node('p','Выберите оборудование или элемент модели.');}
   else{
-   node('h3',item.name);node('p',`${item.class} · ${item.id}${item.geometry?'':' · без геометрии'}`);
+   node('h3',displayElementName(item.name,item.class));node('p',`${displayClass(item.class)}${item.geometry?'':' · без отображения на модели'}`);
    const tools=node('div','');tools.className='network-actions';
    button('Начало пути',()=>{anchor=item.id;render();},tools);
    button('Подсветить сеть',()=>{const c=engineeringComponent(graph,item.id,mode);actions.highlight(c.ids);status.textContent=c.truncated?'Достигнут лимит обхода: показана часть сети.':`В прочитанном графе: ${c.ids.length} узлов`;},tools);
@@ -28,7 +29,7 @@ export function engineeringPanel(host:HTMLElement,getModel:()=>ModelPackage|null
    for(const {node:n,link}of rows.slice(0,150)){
     const row=node('div','');row.className='network-row';
     const b=button(n.name,()=>{if(n.role==='element'||n.role==='port')actions.select(n.id);open(n.id);},row);b.disabled=n.role==='unread';
-    node('small',`${linkLabel[link.kind]} · ${n.class} · ${n.id}`,row);evidence('Источник связи',link.source,row);
+    node('small',`${linkLabel[link.kind]} · ${displayClass(n.class)}`,row);evidence('Источник связи',{...link.source,from:link.from,to:link.to},row);
    }
    if(rows.length>150)node('p','Показаны первые 150 связей. Экспорт содержит полный граф.');
    if(!rows.length)node('p','Связи этого элемента не прочитаны. Подключение не проверено.');
@@ -39,6 +40,6 @@ export function engineeringPanel(host:HTMLElement,getModel:()=>ModelPackage|null
   button('Снять подсветку',()=>actions.highlight([]));
   button('Скачать граф JSON',()=>{const url=URL.createObjectURL(new Blob([JSON.stringify({model_id:model.model_id,source:model.source,nodes:[...graph.nodes.values()],links:graph.links,issues:graph.issues},null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='engineering-graph.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
  }
- function evidence(label:string,source:{sha256:string;relation_id:string;relation_class:string;locator?:string},parent:HTMLElement=host){const d=node('details','',parent);node('summary',label,d);node('pre',JSON.stringify(source,null,2),d);}
+ function evidence(label:string,source:unknown,parent:HTMLElement=host){const d=node('details','',parent);node('summary',label,d);node('pre',JSON.stringify(source,null,2),d);}
  return {open,reset:()=>{anchor=null;current=null;render();}};
 }

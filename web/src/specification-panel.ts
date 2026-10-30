@@ -1,3 +1,4 @@
+import {userMessage,addDiagnostics} from './ui-language.ts';
 import {gostPanel} from './gost-panel';
 import type {ModelPackage} from './model';
 import type {RvtDocument} from './rvt-document';
@@ -19,7 +20,7 @@ export function specificationPanel(actions:{model:()=>ModelPackage|null;document
  let dataset:SpecDataset=specificationDataset(null),definition=defaultSpecification(dataset),report:SpecReport|null=null,page=0,presets:SpecDefinition[]=[],questionsOnly=false;
  const reviewLabel=node('label'),reviewToggle=node('input');reviewLabel.className='table-review-filter';reviewToggle.type='checkbox';reviewLabel.append(reviewToggle,document.createTextNode(' Только строки с вопросами'));$('[data-table]').before(reviewLabel);
  const reviewNote=node('p');reviewNote.hidden=true;reviewNote.textContent='Фильтр меняет только показ строк. Экспорт и итоги сохраняют весь состав таблицы.';reviewLabel.after(reviewNote);reviewToggle.onchange=()=>{questionsOnly=reviewToggle.checked;reviewNote.hidden=!questionsOnly;page=0;renderTable();};
- const message=(text:string,error=false)=>{$('.spec-message').textContent=text;$('.spec-message').classList.toggle('error',error);};
+ const message=(text:string,error=false)=>{const readable=error?userMessage(text):text;$('.spec-message').textContent=readable;$('.spec-message').classList.toggle('error',error);dialog.querySelector('.error-diagnostics')?.remove();if(readable!==text)addDiagnostics(dialog,text).classList.add('error-diagnostics');};
  const invalidate=()=>{report=null;$('[data-table]').replaceChildren();$<HTMLDetailsElement>('[data-evidence]').open=false;$('[data-evidence]').lastElementChild?.replaceChildren();$('[data-page]').textContent='';$<HTMLButtonElement>('[data-prev]').disabled=true;$<HTMLButtonElement>('[data-next]').disabled=true;$<HTMLButtonElement>('[data-csv]').disabled=true;$<HTMLButtonElement>('[data-json]').disabled=true;$('[data-summary]').textContent='Настройки изменились — постройте таблицу заново';};
  const storageKey=()=> 'uvyazka-specifications:'+actions.project();
  const readPresets=()=>{try{const raw=JSON.parse(localStorage.getItem(storageKey())??'[]');presets=Array.isArray(raw)?raw.slice(0,30).map(validateSpecification):[];}catch(e){presets=[];message('Шаблоны не восстановлены: '+String(e),true);}renderPresets();};

@@ -1,3 +1,4 @@
+import {userMessage,addDiagnostics} from './ui-language.ts';
 import {ReviewRepository} from './review-client';
 import {newRule} from './review-model';
 import type {ClashRule,ClashReport,ClashIssue,ReviewObject,ReviewSelector,IssueView} from './review-model';
@@ -20,7 +21,7 @@ export function reviewPanel(actions:Actions){
  let jobs:{job_id:string;status:string;heartbeat:string}[]=[];
  const button=e('button');button.id='open-review';button.setAttribute('aria-label','Проверки модели и сохранённые виды');button.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h10v10H3zM11 10h10v10H11zM8 8l8 8"/></svg><span>Проверки</span>';document.getElementById('open-network')!.after(button);
  const act=(parent:HTMLElement,name:string,fn:()=>unknown,primary=false)=>{const b=e('button',name);b.type='button';if(primary)b.className='review-primary';b.onclick=()=>{Promise.resolve().then(fn).catch(fail);};parent.append(b);return b;};
- function fail(error:unknown){message=error instanceof Error?error.message:String(error);const p=panel.querySelector('[role=status]');if(p)p.textContent=message;}
+ function fail(error:unknown){const raw=error instanceof Error?error.message:String(error);message=userMessage(raw);const p=panel.querySelector('[role=status]');if(p)p.textContent=message;panel.querySelector('.error-diagnostics')?.remove();if(message!==raw)addDiagnostics(panel,raw).classList.add('error-diagnostics');}
  function notify(text:string){message=text;const p=panel.querySelector('[role=status]');if(p)p.textContent=text;}
  async function refresh(){const project=actions.project();const data=await Promise.all(['clash_template','clash_run','view','view_template','issue'].map(k=>repo.list(k)));const history=actions.shared?await repo.request('jobs'):{items:[]};if(project!==actions.project())return;[savedRules,runs,views,templates,decisions]=data;jobs=history.items;render();}
  button.onclick=()=>{panel.hidden=!panel.hidden;if(!panel.hidden){if(activeProject!==actions.project()){activeProject=actions.project();rule=newRule();ruleRevision=0;report=null;runId='';}render();void refresh().catch(fail);}};

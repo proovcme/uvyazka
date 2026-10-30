@@ -148,6 +148,8 @@ def build_server(workspace: Workspace | None = None):
     register_structure(mcp, memory)
     from .semantic_tools import register_tools as register_semantic
     register_semantic(mcp,memory)
+    from .model_data_tools import register_tools as register_model_data
+    register_model_data(mcp,memory)
     return mcp
 
 

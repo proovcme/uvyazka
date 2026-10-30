@@ -25,7 +25,7 @@ def register_tools(mcp,workspace):
 
     @mcp.tool(annotations={'readOnlyHint':False,'destructiveHint':False,'idempotentHint':True})
     def extract_rvt_data(project_id:str,doc_id:str,request_id:str,profile:str='all') -> dict:
-        """Extract and cache saved native RVT data without IFC conversion or Revit. Requires built runtime. Profiles: all; views (also schedules/placements); schedules; engineering (family instances, MEP curves/systems, levels, RoomElem and schema descendants; excludes family types); systems (HVAC/piping/electrical). Use focused profiles when all hits its output budget. Returns extraction_id, SHA, counts and partial/unsupported diagnostics. Values are saved, not evaluated; repeat inputs reuse the snapshot. No source modification."""
+        """Extract and cache saved native RVT data without IFC conversion or Revit. Requires built runtime. Profiles: all; views (also schedules/placements); schedules; engineering (family instances, MEP curves/systems, levels, rooms and schema descendants; excludes family types); types (supported family/MEP types); objects (engineering/types plus HostObj, openings, grids and supported physical roots); systems (HVAC/piping/electrical). Use focused profiles when all hits its output budget. Returns extraction_id, SHA, counts and partial/unsupported diagnostics. Values are saved, not evaluated; repeat inputs reuse the snapshot. No source modification."""
         return RvtData(workspace).extract(project_id,doc_id,request_id,profile)
 
     @mcp.tool(annotations=read)

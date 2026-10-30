@@ -38,6 +38,10 @@ class DataTests(unittest.TestCase):
         self.assertIn('RoomElem',engineering);self.assertIn('RbsPipeCurve',engineering)
         self.assertNotIn('FamilySymbol',engineering);self.assertNotIn('RoomTag',engineering)
         self.assertEqual(selected_classes('systems',classes),['RbsPipingSystem'])
+        classes.update({'Wall':{'parent':'HostObj'},'HostObj':{'parent':'Element'},'FakeWall':{'parent':'Element'}})
+        self.assertIn('Wall', selected_classes('objects',classes))
+        self.assertIn('FamilySymbol', selected_classes('objects',classes))
+        self.assertNotIn('FakeWall', selected_classes('objects',classes))
 
     def test_mep_evidence_is_addressable_and_older_snapshots_remain_unknown(self):
         row=fixture()

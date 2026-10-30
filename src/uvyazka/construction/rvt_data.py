@@ -14,9 +14,11 @@ from .planning import Planning, bounded
 from .rvt_runtime import binary_path, sha256
 from .simulation import canonical_hash
 
-VERSION = '0.3.0'
+VERSION = '0.3.1'
 SYSTEM_CLASSES = {'RbsHvacSystem', 'RbsPipingSystem', 'RbsElectricalSystem'}
-ENGINEERING_ROOTS = {'FamilyInstance', 'RbsCurve', 'RbsSystem', 'Level', 'RoomElem'}
+ENGINEERING_ROOTS = {'FamilyInstance', 'RbsCurve', 'RbsSystem', 'Level', 'RoomElem', 'Room'}
+TYPE_ROOTS = {'FamilySymbol', 'RbsPipeType', 'RbsFlexPipeType', 'RbsPipeInsulationType', 'AbsDuctType', 'AbsFlexDuctType', 'RbsDuctInsulationType', 'RbsDuctLiningType'}
+OBJECT_ROOTS = ENGINEERING_ROOTS | TYPE_ROOTS | {'HostObj', 'Opening', 'Grid', 'DirectShape', 'ImportInstance', 'GenericForm'}
 SQL = [
     'create table if not exists rvt_extractions(extraction_id text primary key,payload text not null)',
     'create table if not exists rvt_native_records(extraction_id text,record_id integer,element_id text,class_name text,kind text,name text,status text,payload text,primary key(extraction_id,record_id))',
@@ -42,8 +44,8 @@ def kind_for(name, classes):
 def selected_classes(profile,classes):
     """Choose by schema ancestry, not by substrings or guessed equipment names."""
     if profile=='all':return []
-    if profile in {'engineering','systems'}:
-        roots=ENGINEERING_ROOTS if profile=='engineering' else SYSTEM_CLASSES
+    if profile in {'engineering','systems','types','objects'}:
+        roots=ENGINEERING_ROOTS if profile=='engineering' else TYPE_ROOTS if profile=='types' else OBJECT_ROOTS if profile=='objects' else SYSTEM_CLASSES
         return [name for name in classes if set(ancestry(name,classes)) & roots]
     kinds={'view','schedule','placement'} if profile=='views' else {'schedule'}
     return [name for name in classes if kind_for(name,classes) in kinds]
@@ -199,7 +201,7 @@ class RvtData:
         return path
 
     def extract(self,project_id,doc_id,request_id,profile='all'):
-        if profile not in {'all','views','schedules','engineering','systems'}:raise ValueError('profile: all, views, schedules, engineering or systems')
+        if profile not in {'all','views','schedules','engineering','systems','types','objects'}:raise ValueError('profile: all, views, schedules, engineering, types, objects or systems')
         if not request_id or len(request_id)>128:raise ValueError('request_id: 1–128 characters')
         document,source=self.workspace.source_record(project_id,doc_id)
         if source.suffix.lower()!='.rvt' or not 0<source.stat().st_size<=512*1024*1024:raise ValueError('Choose a registered RVT <=512 MiB')
@@ -296,7 +298,7 @@ class RvtData:
         snapshot=self.snapshot(project_id,extraction_id)
         scope={'project_id':project_id,'extraction_id':extraction_id,'source':snapshot['source'],'snapshot_status':snapshot['status'],'profile':snapshot['profile']}
         if section=='systems':
-            if snapshot['profile'] not in {'all','engineering','systems'}:raise ValueError('System inventory requires an all-profile, engineering or systems extraction; a views/schedules snapshot cannot establish system absence')
+            if snapshot['profile'] not in {'all','engineering','systems','objects'}:raise ValueError('System inventory requires an all-profile, engineering, objects or systems extraction; a views/schedules snapshot cannot establish system absence')
             scope['engineering_connectivity_verified']=False
             scope['absence_verified']=False
         if section=='summary':return snapshot

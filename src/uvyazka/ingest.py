@@ -52,7 +52,10 @@ def scan(workspace: Workspace, project_id: str, limit: int = 100, *, retry_faile
             # Hash every supported source, even when timestamp/size are unchanged.
             supported = path.suffix.lower() in SUPPORTED
             revision = revision_for(path.suffix.lower())
-            sha = digest(path) if supported and stat.st_size <= 64 * 1024 * 1024 else None
+            # Explicit model reads pin deferred binary hashes. Preserve/refresh those
+            # anchors on later scans, without hashing every untouched BIM file.
+            pinned_model = path.suffix.lower() in {'.rvt', '.ifc', '.dwg', '.dxf', '.nwd', '.nwc'} and row and row['sha256']
+            sha = digest(path) if (supported and stat.st_size <= 64 * 1024 * 1024) or pinned_model else None
             same_content = row and row["sha256"] == sha and (sha is not None or (row["size_bytes"], row["mtime_ns"]) == (stat.st_size, stat.st_mtime_ns))
             stable_status = row and (row["index_status"] == "text_indexed" or not retry_failed and row["index_status"] in {"parse_failed", "empty_text", "unsupported"})
             unchanged = same_content and (row["parser_revision"] == revision or (row["parser_revision"] or "").startswith(revision + ".ocr.")) and stable_status

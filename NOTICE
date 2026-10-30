@@ -12,7 +12,8 @@ In particular:
 - integrations/rvt-rs: Apache-2.0; retain its LICENSE and NOTICE, including
   upstream copyright and local modification notices.
 - src/uvyazka/_vendor/les_list: MIT; see LICENSE.txt and provenance.json there.
-- integrations/cad-viewer: separate GPL-3.0-or-later browser application;
+- integrations/cad-viewer: separate GPL-3.0-or-later browser application
+  and standalone read-data.mjs Node metadata adapter;
   see its LICENSE, README.md, package.json and sources.lock.json.
 - integrations/nwd-browser-bridge: retain NOTICE.txt and
   THIRD_PARTY_LICENSES.txt for its dependencies.

@@ -51,6 +51,8 @@ def make_handler(workspace: Workspace):
                 if clash_get(self,workspace,uploads.token,request.path,q):return
                 from .semantic_http import serve_get as semantic_get
                 if semantic_get(self,workspace,request.path,q):return
+                from .model_data_http import serve_get as model_data_get
+                if model_data_get(self,workspace,uploads.token,request.path,q):return
                 from .intake_http import serve_get as intake_get
                 if intake_get(self, intake, uploads.token, request.path, q):return
                 from .measurement_http import serve_get as measurement_get
@@ -146,15 +148,20 @@ def make_handler(workspace: Workspace):
             catalogue = request.path == '/api/rvt/catalog'
             structure = request.path.startswith('/api/structure/')
             semantic = request.path=='/api/semantic/build'
+            model_data = request.path=='/api/models/read'
             review3d = request.path.startswith('/api/review3d/')
             desktop = request.path=='/api/desktop/backup' and getattr(self.server,'desktop_embed',False)
-            if request.path!='/api/rvt/upload' and not measurement and not intake_request and not catalogue and not structure and not semantic and not viewer_workspace and not review3d and not desktop:
+            if request.path!='/api/rvt/upload' and not measurement and not intake_request and not catalogue and not structure and not semantic and not viewer_workspace and not review3d and not desktop and not model_data:
                 return self.send({"error": "Use explicit MCP tools for observations"}, status=405)
             origin=self.headers.get('Origin')
             from .desktop_http import ORIGINS
             if (origin and origin!='http://'+self.headers['Host'] and not (desktop and origin in ORIGINS)) or not hmac.compare_digest(self.headers.get('X-Uvyazka-Token',''),uploads.token):
                 return self.send({'error':'Open the local dashboard before writing'},status=403)
             try:
+                if model_data:
+                    from .model_data_http import serve_post as model_data_post
+                    query={k:v[0] for k,v in parse_qs(request.query).items()}
+                    return model_data_post(self,workspace,query)
                 if desktop:
                     from .desktop_http import backup
                     with update_lock:

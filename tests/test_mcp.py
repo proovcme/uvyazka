@@ -32,10 +32,11 @@ from uvyazka.core import Workspace
 from uvyazka.server import build_server
 with tempfile.TemporaryDirectory() as directory:
     server = build_server(Workspace(Path(directory)/'state'))
-    assert len(asyncio.run(server.list_tools())) == 97
+    assert len(asyncio.run(server.list_tools())) == 102
     asyncio.run(server.call_tool('construction_schema', {}))
     asyncio.run(server.call_tool('get_unit_catalog', {'dimension': 'flow'}))
     asyncio.run(server.call_tool('rvt_converter_status', {}))
+    asyncio.run(server.call_tool('model_reader_status', {}))
 '''
         result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -281,7 +282,7 @@ with tempfile.TemporaryDirectory() as directory:
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    self.assertEqual(len(listed.tools), 97)
+                    self.assertEqual(len(listed.tools), 102)
                     parameters = next(tool for tool in listed.tools if tool.name == 'find_rvt_parameters')
                     self.assertIn('cursor', parameters.inputSchema['properties'])
                     self.assertIn('extraction_id', parameters.inputSchema['required'])
@@ -290,6 +291,30 @@ with tempfile.TemporaryDirectory() as directory:
                     self.assertTrue(by_name["get_unit_catalog"].annotations.readOnlyHint)
                     self.assertTrue(by_name['search_project_memory'].annotations.readOnlyHint)
                     self.assertFalse(by_name['build_semantic_index'].annotations.readOnlyHint)
+                    self.assertFalse(by_name['read_model_data'].annotations.readOnlyHint)
+                    self.assertTrue(by_name['get_model_object'].annotations.readOnlyHint)
+                    from uvyazka.construction.geometry import box_model
+                    from uvyazka.construction.coordination_store import CoordinationStore
+                    import hashlib
+                    model,binary=box_model('Synthetic MCP model',[{'id':'pump','name':'Pump','class':'IfcPump',
+                        'bbox_min_m':[0,0,0],'bbox_max_m':[1,1,1],'geometry_basis':'synthetic'}],[],[])
+                    store=CoordinationStore(workspace)
+                    scene=store.begin_scene('demo-a',model,hashlib.sha256(binary).hexdigest())
+                    store.scene_chunk('demo-a',scene['scene_id'],0,binary)
+                    async def model_call(name, **args):
+                        reply=await session.call_tool(name,dict(project_id='demo-a',**args))
+                        self.assertFalse(reply.isError,reply)
+                        return json.loads(next(c.text for c in reply.content if c.type=='text'))
+                    snapshot=await model_call('read_model_data',scene_id=scene['scene_id'],request_id='model-protocol')
+                    key=snapshot['dataset_id']
+                    self.assertFalse(snapshot['source']['original_file_reopened'])
+                    inventory=await model_call('list_model_data')
+                    self.assertEqual(inventory['items'][0]['dataset_id'],key)
+                    found=await model_call('query_model_data',dataset_id=key,query='pump')
+                    detail=await model_call('get_model_object',dataset_id=key,object_id=found['items'][0]['object_id'],json_path=['native_id'])
+                    self.assertEqual(json.loads(detail['text']),'pump')
+                    report=await model_call('get_model_object',dataset_id=key,object_id='@dataset',json_path=['coverage','status'])
+                    self.assertEqual(json.loads(report['text']),'partial')
                     from test_viewer_workspace import state as viewer_state
                     state=viewer_state()
                     saved=await session.call_tool('save_viewer_workspace',{'project_id':'demo-a','state':state,'expected_revision':0,'request_id':'workspace-protocol'})

@@ -64,16 +64,17 @@ export function modelTreePanel(host:HTMLElement,visibility:ModelVisibility,actio
     const rootDocuments=new Map<string,RvtDocument>();
     for(const source of sources){const data=documents.find(d=>d.source?.sha256===source.hash);if(!data)continue;matched.add(data);rootDocuments.set(source.key,data);if(!roots.some(r=>r.key===source.key))roots.push({key:source.key,name:source.name,kind:'model',items:[],children:[]});}
     const branch=(node:Node):HTMLDetailsElement=>{
+      const caption=node.kind==='class'?displayClass(node.name):node.name;
       const details=document.createElement('details');details.className='model-branch branch-'+node.kind;
       details.open=expanded.get(node.key)??(node.kind==='model'||node.kind==='storey'||node.kind==='class'&&searching||node.nativeId===lastSelected||node.items.some(e=>e.id===lastSelected));
       const summary=document.createElement('summary'),check=document.createElement('input');check.type='checkbox';
       const ids=node.items.map(e=>e.id),state=visibility.count(ids);check.checked=state.checked;check.indeterminate=state.mixed;
       check.disabled=!ids.length;
-      check.setAttribute('aria-label','Показывать '+node.name);check.onclick=e=>e.stopPropagation();check.onchange=()=>actions.show(ids,check.checked);
-      const name=document.createElement('span');name.textContent=node.kind==='class'?displayClass(node.name):node.name;name.className='tree-node-name';
+      check.setAttribute('aria-label','Показывать '+caption);check.onclick=e=>e.stopPropagation();check.onchange=()=>actions.show(ids,check.checked);
+      const name=document.createElement('span');name.textContent=caption;name.className='tree-node-name';
       const count=document.createElement('small');count.textContent=String(node.items.length);count.title=`Включено ${state.shown} из ${state.total}`;
       checks.set(check,{ids,count});
-      const only=document.createElement('button');only.className='tree-isolate';only.textContent='Только';only.title='Оставить только '+node.name;only.setAttribute('aria-label',only.title);only.onclick=e=>{e.stopPropagation();actions.isolate(ids);};
+      const only=document.createElement('button');only.className='tree-isolate';only.textContent='Только';only.title='Оставить только '+caption;only.setAttribute('aria-label',only.title);only.onclick=e=>{e.stopPropagation();actions.isolate(ids);};
       only.disabled=!ids.length;
       summary.append(check,name,count);
       if(node.nativeId){

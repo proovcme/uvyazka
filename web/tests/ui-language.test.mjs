@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {build} from 'esbuild';import {Window} from 'happy-dom';
-import {userMessage,progressMessage,displayClass,addDiagnostics} from '../src/ui-language.ts';
+import {userMessage,progressMessage,displayClass,addDiagnostics,sourceFormatLabel} from '../src/ui-language.ts';
 import {propertySections} from '../src/property-sections.ts';
 import {fixture} from './reliability-fixture.ts';
 const raw='graph TableCellStyle starts12345: TableCellStyle.m_borderRightLineStyle: native field value budget exceeded (100000)';
@@ -9,6 +9,7 @@ async function moduleAt(entry){const result=await build({entryPoints:[entry],bun
 test('technical failures become concise messages without changing meaningful engineering text',()=>{
  assert.doesNotMatch(userMessage(raw),/graph|TableCellStyle|100000|m_border/);assert.equal(userMessage('Выберите два элемента.'),'Выберите два элемента.');assert.equal(userMessage('Мощность: 0 кВт'),'Мощность: 0 кВт');
  assert.equal(progressMessage('Данные NWD','Поток m_table: обработано 200 фрагментов'),'Чтение данных модели…');assert.equal(displayClass('Класс RVT: FamilyInstance'),'Элемент Revit');
+ assert.equal(sourceFormatLabel({schema:'DocumentSpatialModel'}),'Условная модель по документации');assert.equal(displayClass('DocumentElement'),'Элемент по документации');
 });
 test('diagnostics stay collapsed and preserve the exact original error on explicit expansion',t=>{
  const win=dom(t),host=document.createElement('div');document.body.append(host);const detail=addDiagnostics(host,raw);assert.equal(detail.open,false);assert.equal(host.querySelector('pre'),null);assert.doesNotMatch(surface(host),/TableCellStyle/);detail.open=true;detail.dispatchEvent(new win.Event('toggle'));assert.equal(host.querySelector('pre').textContent,raw);
@@ -18,6 +19,32 @@ test('property cards retain copyable engineering values and hide serialized fiel
  const before=JSON.stringify(sets),host=document.createElement('div');host.innerHTML=propertySections(sets);document.body.append(host);const shown=surface(host);assert.match(shown,/Мощность, кВт/);assert.match(shown,/7.5/);assert.doesNotMatch(shown,/m_pointer|internal|schema_sha256|synthetic-hash|Параметр -123/);assert(host.querySelector('button[data-copy="7.5"]'));assert.equal(JSON.stringify(sets),before);
  assert.match(shown,/Номинальный диаметр/);assert(host.querySelector('button[data-copy="0.02"]'));assert.doesNotMatch(shown,/saved_graphics_mesh|Partitions\/test|BodySource/);
  host.innerHTML=propertySections({'<img src=x>':{'<script>':'<b>unsafe</b>'}});assert.equal(host.querySelector('img,script,b'),null);
+});
+
+test('native category labels are readable while copied identifiers and source values stay exact',t=>{
+ dom(t);const sets={Other:{Category:'Ducts','Type Id':'9007199254740993'},Constraints:{'Reference Level':'Этаж 01'},Pset_DuctSegmentTypeCommon:{Reference:'Тестовый тип'}};
+ const before=JSON.stringify(sets),host=document.createElement('div');host.innerHTML=propertySections(sets);
+ assert.match(surface(host),/Воздуховоды|Привязки|Опорный уровень|Свойства: Воздуховод/);
+ assert.doesNotMatch(surface(host),/Constraints|Reference Level|Pset_Duct/);
+ assert(host.querySelector('button[data-copy="Ducts"]'));assert(host.querySelector('button[data-copy="9007199254740993"]'));
+ assert.equal(JSON.stringify(sets),before);
+});
+
+test('legacy panel uses the same error policy, escapes diagnostics and preserves a useful engineering message',t=>{
+ dom(t);const host=document.createElement('div');document.body.append(host);
+ globalThis.UvyazkaLanguage.showError(host,raw+' <img src=x onerror=alert(1)>');
+ assert.doesNotMatch(surface(host),/TableCellStyle|100000|onerror/);assert.equal(host.querySelector('img'),null);
+ assert.equal(host.querySelector('details').open,false);assert.match(host.querySelector('pre').textContent,/TableCellStyle/);
+ globalThis.UvyazkaLanguage.showError(host,new Error('Укажите длину в миллиметрах.'));
+ assert.equal(surface(host),'Укажите длину в миллиметрах.');assert.equal(host.querySelector('details'),null);
+});
+
+test('schedule filter captions keep native field IDs and operators out of normal text without changing the rule',async t=>{
+ dom(t);const {scheduleControls}=await moduleAt('src/rvt-schedule-controls.ts');
+ const host=document.createElement('div'),settings={grouping:'instances',filters:[{field_id:'7',operator:'not_equal',value:'Насос',value_type:'string'}],sum_fields:[]};
+ const before=JSON.stringify(settings);scheduleControls(host,{all_columns:[{id:'7',properties:{m_columnHeading:'Наименование'}}],totals:[],selection:[],rule_audit:[]},settings,()=>{});
+ const line=[...host.querySelectorAll('p')].find(p=>p.textContent.includes('Насос'));
+ assert.match(line.textContent,/Наименование: не равно Насос/);assert.doesNotMatch(line.textContent,/not_equal|Поле 7/);assert.equal(JSON.stringify(settings),before);
 });
 test('unreadable schedule has a useful status and fallback, no raw graph or phantom zero-row table',async t=>{
  dom(t);document.body.innerHTML='<button id="reset-visibility"></button><button id="open-specifications"></button>';let created=0;document.getElementById('open-specifications').onclick=()=>created++;

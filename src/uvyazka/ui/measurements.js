@@ -1,3 +1,4 @@
+import './language.js';
 import {pagePoint, imagePoint, parsePoints} from '/measurement-coordinates.js';
 
 const $ = id => document.getElementById(id);
@@ -16,7 +17,7 @@ function endpoint(key, params={}) {
   return u.pathname+u.search;
 }
 async function read(key, params={}) { const r=await fetch(endpoint(key,params));const d=await r.json();if(!r.ok)throw Error(d.error||'Ошибка чтения проекта');return d; }
-function message(text,error=false){$('message').textContent=text;$('message').dataset.error=String(error);}
+function message(text,error=false){if(error)UvyazkaLanguage.showError($('message'),text);else $('message').textContent=text;$('message').dataset.error=String(error);}
 function controls(){
   document.querySelectorAll('button,input,select,textarea').forEach(e=>e.disabled=busy || !!pending);
   $('retry').hidden=!pending;$('retry').disabled=busy;
@@ -85,10 +86,10 @@ async function loadRecords(){
 function recordHTML(r, actions=false){
   return `<article class="record"><h3>${esc(r.name)}</h3><strong>${Number(r.value).toLocaleString('ru-RU',{maximumFractionDigits:4})} ${r.unit==='m2'?'м²':'м'}</strong>
   <small>Ревизия ${r.revision} · ${r.created_by==='user'?'из браузера':'от агента'} · калибровка ${r.calibration_revision}</small>
-  <small>${esc(statusText[r.status]||r.status)}</small>${r.stale_reasons.length?`<p class="stale">${esc(r.stale_reasons.map(s=>staleText[s]||s).join('; '))}</p>`:''}
+  <small>${esc(statusText[r.status]||"Требует проверки")}</small>${r.stale_reasons.length?`<p class="stale">${esc(r.stale_reasons.map(s=>staleText[s]||"Основания требуют перепроверки").join('; '))}</p>`:''}
   <small>${esc(r.basis)} · ${esc(r.reason)}</small>
   ${actions?`<div class="row"><button data-history="${esc(r.id)}">История</button><button data-edit="${esc(r.id)}">Править контур</button>${r.stale_reasons.length===1&&r.stale_reasons[0]==='calibration_changed'?`<button data-recalculate="${esc(r.id)}">Пересчитать</button>`:''}</div>`:''}
-  <details><summary>Источник и координаты</summary><pre>${esc(JSON.stringify({id:r.id,source:r.source,view_id:r.view_id,view_revision:r.view_revision,points:r.points,review:r.review},null,2))}</pre></details></article>`;
+  <details><summary>Источник и координаты</summary><pre>${esc(JSON.stringify({id:r.id,status:r.status,stale_reasons:r.stale_reasons,source:r.source,view_id:r.view_id,view_revision:r.view_revision,points:r.points,review:r.review},null,2))}</pre></details></article>`;
 }
 async function render(){
   metadata=null;$('paper').hidden=true;$('blank').hidden=false;

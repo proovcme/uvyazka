@@ -43,7 +43,10 @@ class DashboardTests(unittest.TestCase):
                     urlopen(Request(base + "/api/projects", headers={"Host": "unexpected.invalid"}))
                 self.assertEqual(error.exception.code, 403)
                 with urlopen(base + "/") as response:
-                    self.assertIn("Увязка", response.read().decode())
+                    html=response.read().decode();self.assertIn("Увязка", html)
+                    self.assertLess(html.index('/language.js'),html.index('/rvt.js'))
+                with urlopen(base + '/language.js') as response:
+                    self.assertIn('userMessage',response.read().decode())
                 run=Planning(workspace).list_runs("demo-a")["items"][0]
                 with urlopen(base + "/api/construction/run?project_id=demo-a&run_id="+run["run_id"]) as response:
                     self.assertEqual(json.load(response)["duration"],600)

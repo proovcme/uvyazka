@@ -47,7 +47,7 @@ export function workspacePanel(actions:{project:()=>string;capture:()=>Omit<Save
   function saveSet(kind:'explicit'|'rule'){const state=actions.capture().state,ids=kind==='explicit'?actions.selection():actions.matches();if(kind==='explicit'&&!ids.length)throw Error('Выберите элементы через Ctrl + щелчок');const row:SelectionSet={id:crypto.randomUUID(),name:setName.value.trim()||'Подборка',kind,ids:kind==='explicit'?ids:[],model_id:state.model_id,source_sha256:state.source_sha256,created_at:new Date().toISOString(),...(kind==='rule'?{filters:state.filters}:{})};putSets([...sets(),row]);void render();}
   click(groups,'Сохранить выбранные',()=>saveSet('explicit'));click(groups,'Сохранить условия поиска',()=>saveSet('rule'));
   for(const set of sets()){
-   const row=add(groups,'div','');row.className='workspace-snapshot';add(row,'strong',set.name+' · '+(set.kind==='rule'?'условия':'элементы'));add(row,'small','Источник '+set.source_sha256.slice(0,12));
+   const row=add(groups,'div','');row.className='workspace-snapshot';add(row,'strong',set.name+' · '+(set.kind==='rule'?'условия':'элементы'));addDiagnostics(row,{model_id:set.model_id,source_sha256:set.source_sha256},'Источник подборки');
    click(row,'Открыть подборку',()=>{const state=actions.capture().state;if(set.model_id!==state.model_id||set.source_sha256!==state.source_sha256)throw Error('Подборка относится к другой модели / ревизии. Автоматическое сопоставление не выполнено.');if(set.kind==='rule'&&set.filters){actions.apply({...state,filters:set.filters});actions.show(actions.matches());}else actions.show(set.ids);dialog.close();});
    click(row,'Удалить подборку',()=>{putSets(sets().filter(s=>s.id!==set.id));void render();});
   }

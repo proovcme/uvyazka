@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {Window} from 'happy-dom';
 
-const code=await readFile(new URL('../../src/uvyazka/ui/structure.js',import.meta.url),'utf8');
+const code=await readFile(new URL('../../src/uvyazka/ui/language.js',import.meta.url),'utf8')+'\n'+await readFile(new URL('../../src/uvyazka/ui/structure.js',import.meta.url),'utf8');
 const tick=()=>new Promise(r=>setTimeout(r,10));
 const counts={indexed_documents:1,partial_documents:0,pending_documents:0,failed_documents:0,unsupported_documents:0,unhashed_documents:0,indexed_units:1,total_known_units:1,tables:1,stored_rows:2};
 const source={doc_id:'doc',sha256:'a'.repeat(64),relative_path:'АР.xlsx'};

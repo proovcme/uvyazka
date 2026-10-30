@@ -1,6 +1,6 @@
 import {sameReadSource,rvtMode} from './browser-rvt-direct';
 import {geometryQuality} from './geometry-quality';
-import {addDiagnostics,userMessage,displayClass,displayElementName} from './ui-language.ts';
+import {sourceFormatLabel,addDiagnostics,userMessage,displayClass,displayElementName} from './ui-language.ts';
 import {propertySections} from './property-sections.ts';
 import {performanceSample,performanceDiagnostics,individualRendering} from './performance-probe';
 import {isNavisFormat,onlyNavisSources} from './navis-format.ts';
@@ -138,7 +138,7 @@ function selectElement(id: string | null,additive=false) {
   const card={...e,revit_identity:identity,systems,model_source:model?.source};
   el('inspector').innerHTML = `<span class="eyebrow">${esc(displayClass(e.class))}</span><button class="copy-card" data-copy="${esc(JSON.stringify(card,null,2))}">Копировать все свойства</button><dl><dt>Revit ElementId</dt><dd>${identity.element_id?copyValue(identity.element_id):'Не прочитан'}</dd><dt>Revit UniqueId</dt><dd>${identity.unique_id?copyValue(identity.unique_id):'Не прочитан'}</dd><dt>IFC GlobalId</dt><dd>${e.global_id?copyValue(e.global_id):'Не прочитан'}</dd><dt>Этаж</dt><dd>${copyValue(model?.storeys.find(s=>s.id===e.storey_id)?.name||'Не прочитан')}</dd><dt>Материалы</dt><dd>${copyValue(e.materials.join(', ')||'Не прочитаны')}</dd></dl>${renderSets(e.quantity_sets)}${renderSets(e.property_sets)}<details><summary>Диагностика и источник</summary><dl><dt>ID сцены</dt><dd>${copyValue(e.id)}</dd><dt>Внутренний класс</dt><dd>${copyValue(e.class)}</dd><dt>Основание ID</dt><dd>${esc(identity.basis)}</dd><dt>IFC GlobalId</dt><dd>${e.global_id?copyValue(e.global_id):'Не прочитан'}</dd><dt>Исходный Tag</dt><dd>${e.tag?copyValue(e.tag):'Не прочитан'}</dd></dl><pre>${esc(JSON.stringify(e.source,null,2))}</pre></details>`;
   if(quality){const note=document.createElement('p');note.className='geometry-quality';note.dataset.quality=quality.kind;note.textContent=quality.message;el('inspector').querySelector('.copy-card')!.after(note);}
-  el('inspector').innerHTML+=`<details ${systems.length?'open':''}><summary>${systems.length?'Прочитанных систем: '+systems.length:'Системы не прочитаны'}</summary>${systems.map(s=>`<p>${esc(s.name||s.class)} · #${esc(s.id)}</p>`).join('')||'<p>Принадлежность к системе не прочитана.</p>'}<p>Членство не подтверждает физическое подключение.</p></details>`;
+  el('inspector').innerHTML+=`<details ${systems.length?'open':''}><summary>${systems.length?'Прочитанных систем: '+systems.length:'Системы не прочитаны'}</summary>${systems.map(s=>`<p>${esc(s.name||"Система без названия")}</p>`).join('')||'<p>Принадлежность к системе не прочитана.</p>'}<p>Членство не подтверждает физическое подключение.</p></details>`;
 }
 try { viewer = new Viewer(el('canvas'), selectElement); } catch(e) { error('3D недоступно; график и расчёты остаются доступны. ' + String(e)); }
 const spatial=spatialPanel(viewer,()=>model,()=>measurementProject,error,()=>[...selection],()=>loadedBinary);
@@ -219,7 +219,7 @@ function renderState() {
     viewer?.setSite(null);viewer?.setConstruction(null);el('resources').innerHTML='';
     if(selectedId)return;
     el('inspector-title').textContent=cadFrame?'Чертёж':'Свойства модели';
-    el('inspector').innerHTML=cadFrame?'<p>DWG / DXF: просмотр чертежа, масштабирование и слои.</p><p>Для строительной симуляции нужна модель с элементами и объёмами. Чертёж сам по себе их не подтверждает.</p>':model?`<p><strong>${esc(model.source.filename)}</strong></p><dl><dt>Объектов с геометрией</dt><dd>${model.elements.filter(e=>e.role==='element'&&e.mesh).length}</dd><dt>Уровней</dt><dd>${levelSummary(model)}</dd><dt>Источник</dt><dd>${esc(model.source.rvt_read_mode==='direct'?'RVT напрямую · эксперимент':model.source.format==='rvt'?'RVT → '+model.source.schema:model.source.schema)}</dd></dl><p>Выберите элемент на модели или в структуре, чтобы увидеть свойства и количества.</p>`:'<p>Откройте DWG, DXF, RVT, IFC, NWD или NWC.</p>';
+    el('inspector').innerHTML=cadFrame?'<p>DWG / DXF: просмотр чертежа, масштабирование и слои.</p><p>Для строительной симуляции нужна модель с элементами и объёмами. Чертёж сам по себе их не подтверждает.</p>':model?`<p><strong>${esc(model.source.filename)}</strong></p><dl><dt>Объектов с геометрией</dt><dd>${model.elements.filter(e=>e.role==='element'&&e.mesh).length}</dd><dt>Уровней</dt><dd>${levelSummary(model)}</dd><dt>Источник</dt><dd>${esc(sourceFormatLabel(model.source))}</dd></dl><p>Выберите элемент на модели или в структуре, чтобы увидеть свойства и количества.</p>`:'<p>Откройте DWG, DXF, RVT, IFC, NWD или NWC.</p>';
     if(model){const coverage=document.createElement('details');const title=document.createElement('summary');title.textContent='Что удалось прочитать';coverage.append(title);const body=document.createElement('div');coverage.append(body);renderCoverage(body,model);el('inspector').append(coverage);}
     return;
   }
@@ -378,9 +378,9 @@ function renderModelTree() {
   el('parameter-names').replaceChildren(...(model&&(el('parameter-search-details') as HTMLDetailsElement).open?parameterCatalog(model):[]).map(name=>new Option(name,name)));
   el<HTMLInputElement>('parameter-name').value='';el<HTMLInputElement>('parameter-value').value='';
   levelFacet.setChoices([...(model?.storeys??[]).map(s=>({id:JSON.stringify(s.id),name:s.name})),...((model?.elements??[]).some(e=>e.role==='element'&&!e.storey_id)?[{id:'null',name:'Без уровня'}]:[])]);
-  const categories=new Map<string,string>();for(const e of model?.elements??[])if(e.role==='element'){const c=elementCategory(e,model!);categories.set(c.key,c.format+' · '+c.name);}
+  const categories=new Map<string,string>();for(const e of model?.elements??[])if(e.role==='element'){const c=elementCategory(e,model!);categories.set(c.key,c.format+' · '+displayClass(c.name));}
   categoryFacet.setChoices([...categories].map(([id,name])=>({id,name})));parameterFilters=[];renderParameterFilters();
-  const systems=el<HTMLSelectElement>('system-filter');systems.replaceChildren(new Option('Все системы',''),...(model?.systems??[]).map(s=>new Option(`${s.name||s.class} · ${new Set(s.member_ids).size} · #${s.id}`,s.id)));
+  const systems=el<HTMLSelectElement>('system-filter');systems.replaceChildren(new Option('Все системы',''),...(model?.systems??[]).map(s=>new Option(`${s.name||"Система без названия"} · ${new Set(s.member_ids).size} элементов`,s.id)));
   viewer?.highlightElements(new Set());renderSystemSummary();
   renderMembers();renderElements();
 }
@@ -496,7 +496,7 @@ const browser=browserPanel({publicDemo:DEMO,
   containsSource:(sha,mode)=>sceneMembers.some(member=>sameReadSource(member.model,sha,mode))||!!model&&sameReadSource(model,sha,mode),
   persist:DEMO?undefined:async(pkg,binary,progress,cancelled)=>{const target=project,repo=new ReviewRepository(true,()=>target);await repo.registerModel(pkg,binary,progress,()=>cancelled()||target!==project);},
   openDocument:()=>documentPanel?.open(),
-  noGeometry:(filename,message)=>{if(model&&loadedBinary){el('workspace-status').textContent=filename+': геометрия не прочитана; прежняя сцена сохранена.';return;}el('file-title').textContent=filename;el('geometry-kind').textContent='RVT · 3D недоступна';el<HTMLButtonElement>('mode-simulate').disabled=true;el<HTMLSelectElement>('models').innerHTML='<option>Геометрия не прочитана</option>';el('inspector-title').textContent='Результат чтения RVT';el('inspector').innerHTML=`<p><strong>${esc(filename)}</strong></p><p>${esc(message)}</p>`;},
+  noGeometry:(filename,message)=>{if(model&&loadedBinary){el('workspace-status').textContent=filename+': геометрия не прочитана; прежняя сцена сохранена.';return;}el('file-title').textContent=filename;el('geometry-kind').textContent='RVT · 3D недоступна';el<HTMLButtonElement>('mode-simulate').disabled=true;el<HTMLSelectElement>('models').innerHTML='<option>Геометрия не прочитана</option>';el('inspector-title').textContent='Результат чтения RVT';el('inspector').innerHTML=`<p><strong>${esc(filename)}</strong></p><p>${esc(userMessage(message))}</p>`;if(userMessage(message)!==message)addDiagnostics(el('inspector'),message);},
   document:(data,message)=>{if(data)acceptDocument(data);else documentPanel.set(null,message);},
   drawing:openCad, cancelDrawing:closeCad,
   reset:()=>{},cancelPreparation:()=>{scenePreparation?.abort();revisionPreparation?.abort();},
@@ -555,7 +555,7 @@ async function demoExamples(){
       }
       const url=new URL(location.href);url.searchParams.set('example',id);history.replaceState(null,'',url);
       el('demo-status').textContent=item.kind==='rvt'?'RVT: результат и покрытие — в журнале обработки.':'Данные доступны в «Данные модели». Расчёт — в «Симуляции».';
-    }catch(e){error(e);el('demo-status').textContent=String(e);}finally{picker.disabled=false;}
+    }catch(e){error(e);el('demo-status').textContent=userMessage(e);}finally{picker.disabled=false;}
   }
   picker.onchange=()=>void openExample(picker.value);
   if(initialExample&&examples.some(e=>e.id===initialExample))await openExample(initialExample);

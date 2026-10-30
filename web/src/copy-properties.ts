@@ -1,6 +1,6 @@
 const escape=(value:string)=>value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 export const propertyText=(value:unknown)=>value===null||value===undefined?'Не прочитано':typeof value==='object'?JSON.stringify(value):String(value);
-export function copyValue(value:unknown){const text=propertyText(value);return `<span class="property-value">${escape(text)}</span><button class="copy-property" data-copy="${escape(text)}" aria-label="Копировать значение" title="Копировать значение"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="8" y="8" width="12" height="13" rx="1"/><path d="M16 8V3H3v13h5"/></svg></button>`;}
+export function copyValue(value:unknown,display?:string){const text=propertyText(value);return `<span class="property-value">${escape(display??text)}</span><button class="copy-property" data-copy="${escape(text)}" aria-label="Копировать исходное значение" title="Копировать исходное значение"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="8" y="8" width="12" height="13" rx="1"/><path d="M16 8V3H3v13h5"/></svg></button>`;}
 export function installPropertyCopy(){
   const status=document.createElement('span');status.className='copy-status';status.setAttribute('role','status');document.body.append(status);
   document.addEventListener('click',async event=>{

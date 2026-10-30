@@ -12,12 +12,12 @@ window.UvyazkaSearch = (() => {
     let stop=false,busy=false,searchGeneration=0;
     const url=(path,params={})=>'/api/semantic/'+path+'?'+new URLSearchParams({project_id:project,...params});
     async function request(path,params={}){const r=await fetch(url(path,params)),d=await r.json();if(!r.ok)throw Error(d.error);return d;}
-    function error(e){if(alive())$('[data-error]').textContent=e.message;}
+    function error(e){if(alive())UvyazkaLanguage.showError($('[data-error]'),e);}
     function status(s){
       $('[data-status]').textContent=`· готово ${s.counts.ready}, ожидают ${s.counts.pending}, не удалось ${s.counts.failed}`;
       $('[data-coverage]').textContent=`Состав индекса: ${s.prepared_documents??0} источников. В базе доступен кеш ${s.cached_documents??0} файлов (${s.cached_blocks} блоков). Счётчики «ожидают» и «готово» относятся к составу индекса, а не ко всему проекту. Хеш исходника проверяется при выдаче результата.`;
       $('[data-build]').disabled=busy||!s.configured;$('[data-setup]').hidden=s.configured;
-      if(s.configuration_error)$('[data-setup]').textContent=s.configuration_error;
+      if(s.configuration_error)UvyazkaLanguage.showError($('[data-setup]'),s.configuration_error,'Поиск по смыслу пока не настроен. Точный поиск доступен.');
     }
     $('[data-search-form]').onsubmit=async e=>{
       e.preventDefault();const query=$('[data-query]').value.trim();if(!query)return;
@@ -25,7 +25,7 @@ window.UvyazkaSearch = (() => {
       $('[data-error]').textContent='';$('[data-result-status]').textContent='Ищем в подготовленных данных…';$('[data-results]').innerHTML='';
       try{
         const r=await request('search',{q:query,mode:$('[data-mode]').value});if(!alive()||generation!==searchGeneration)return;
-        status(r.status);$('[data-result-status]').textContent=`${modes[r.effective_mode]} поиск · ${r.results.length} фрагментов. ${r.fallback_reason?(reasons[r.fallback_reason]||r.fallback_reason):''}`;
+        status(r.status);$('[data-result-status]').textContent=`${modes[r.effective_mode]} поиск · ${r.results.length} фрагментов. ${r.fallback_reason?(reasons[r.fallback_reason]||'Поиск выполнен в доступном режиме.'):''}`;
         $('[data-results]').innerHTML=r.results.map(x=>`<article class="panel memory-hit"><h2>${esc(x.relative_path)}</h2><div class="memory-address">${esc(address(x))}</div><p class="memory-snippet">${esc(x.snippet)}</p><div class="memory-hit-foot"><button class="source-button" data-source="${esc(JSON.stringify({doc_id:x.doc_id,sha256:x.sha256,parser_revision:x.parser_revision,page_number:x.page_number}))}">Открыть источник ↗</button><span>${x.retrieval_kind==='literal'?'Точное совпадение':'По смыслу'}</span><details><summary>Версия и диагностика</summary><code>SHA-256 ${esc(x.sha256)}</code><p>Читатель: ${esc(x.parser_revision)}${x.similarity==null?'':' · cosine '+esc(x.similarity)+' (не вероятность достоверности)'}</p></details></div></article>`).join('')||'<div class="panel detail-info">В текущем покрытии подходящих фрагментов нет. Это не доказывает отсутствия данных в проекте.</div>';
       }catch(e){error(e);if(alive())$('[data-result-status]').textContent='Поиск не завершён.';}
       finally{if(alive()&&generation===searchGeneration)button.disabled=false;}
@@ -34,7 +34,7 @@ window.UvyazkaSearch = (() => {
     $('[data-build]').onclick=async()=>{
       busy=true;stop=false;$('[data-build]').disabled=true;$('[data-stop]').hidden=false;$('[data-stop]').disabled=false;$('[data-error]').textContent='';
       const start=Date.now();let count=0,failed=false;
-      const progress=()=>{if(alive())$('[data-progress]').textContent=`Обработано в этом запуске: ${count} · ${Math.floor((Date.now()-start)/1000)} с. ${stop?'Останавливаемся после текущей порции.':'Worker готовит порцию до 12 фрагментов; первая загрузка весов занимает время.'}`;};
+      const progress=()=>{if(alive())$('[data-progress]').textContent=`Обработано в этом запуске: ${count} · ${Math.floor((Date.now()-start)/1000)} с. ${stop?'Останавливаемся после текущей порции.':'Готовим следующую порцию; первая подготовка поиска может занять несколько минут.'}`;};
       progress();const timer=setInterval(progress,1000);
       try{
         const cr=await fetch('/api/structure/config'),config=await cr.json();if(!cr.ok)throw Error(config.error);if(!alive())return;

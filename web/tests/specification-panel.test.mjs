@@ -14,11 +14,16 @@ test('specification edits are read before building/saving; selected scope links 
  const name=document.querySelector('[data-name]');name.value='Синтетическая ведомость';
  const label=document.querySelector('input[aria-label="Заголовок поля 1"]');label.value='Новая подпись';
  const scope=document.querySelector('[data-scope]');scope.value='selection';scope.dispatchEvent(new win.Event('change'));
+ document.querySelector('[data-filter-field]').value='category';document.querySelector('[data-filter-op]').value='equal';document.querySelector('[data-filter-value]').value='Насос';document.querySelector('[data-add-filter]').click();
+ assert.match(document.querySelector('[data-filters]').textContent,/Категория равно Насос/);
  document.querySelector('[data-build]').click();assert.match(document.querySelector('[data-summary]').textContent,/В области 1/);
  assert.match(document.querySelector('[data-table] thead').textContent,/Новая подпись/);
+ assert.doesNotMatch(document.querySelector('[data-table]').textContent,/IfcPump/);
  document.querySelector('[data-table] tbody .spec-cell').click();assert.match(document.querySelector('[data-evidence] .cell-source').textContent,/synthetic.ifc/);assert.equal(document.querySelector('[data-evidence] .cell-source pre'),null);
  const review=document.querySelector('.table-review-filter input');review.checked=true;review.dispatchEvent(new win.Event('change'));assert.equal(document.querySelectorAll('[data-table] tbody tr').length,1,'missing IFC identity stays a question without changing the original selected scope');
  document.querySelector('[data-save]').click();assert.equal(panel.definitions()[0].name,'Синтетическая ведомость');assert.equal(panel.definitions()[0].columns[0].label,'Новая подпись');
+ assert.doesNotMatch(document.querySelector('[data-presets]').textContent,/aaaaaaaa/);assert.deepEqual(panel.definitions()[0].source_hashes,[hash]);
+ assert.equal(panel.definitions()[0].filters[0].value,'IfcPump');assert.equal(panel.definitions()[0].filters[0].operator,'equal');
  document.querySelector('[data-table] tbody tr td button').click();assert.deepEqual(shown,['2']);
  name.value='Изменённая таблица';name.dispatchEvent(new win.Event('change'));assert.equal(document.querySelector('[data-table]').children.length,0);assert.equal(document.querySelector('[data-csv]').disabled,true);assert.equal(document.querySelector('[data-evidence]').open,false);
  panel.restore([]);assert.equal(panel.definitions().length,0);
@@ -50,4 +55,21 @@ test('GOST form uses the selected equipment, confirms only clicked bindings and 
  const saved=panel.definitions()[0];assert.equal(saved.gost.bindings.name.confirmed,true);assert.equal(saved.gost.bindings.position.kind,'unmapped');assert.equal(saved.gost.quantity_confirmed,true);
  assert.equal(saved.gost.drawing.designation,'ТЕСТ-ОВ.СО');assert.equal(saved.gost.unit,'шт.');assert.equal(saved.gost.categories[0],'IfcFan');
  button(host,'Сменить шаблон').click();assert.equal(host.hidden,true);assert.match(document.querySelector('.spec-chooser').textContent,/Продолжить сохранённую таблицу/);
+});
+
+test('ambiguous translated categories do not silently create a filter; exact source values remain usable',async t=>{
+ const win=new Window({url:'http://localhost/'});t.after(()=>win.happyDOM.close());
+ for(const k of ['document','localStorage','Option'])Object.defineProperty(globalThis,k,{value:win[k],writable:true,configurable:true});
+ globalThis.Option=function(text,value){const o=document.createElement('option');o.textContent=text;o.value=value;return o;};
+ document.body.innerHTML='<button id="theme-toggle"></button>';
+ const bundle=await build({entryPoints:[fileURLToPath(new URL('../src/specification-panel.ts',import.meta.url))],bundle:true,write:false,format:'esm'});
+ const {specificationPanel}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
+ const hash='a'.repeat(64),model={model_id:hash,source:{sha256:hash,filename:'synthetic.ifc'},storeys:[],elements:['IfcWall','IfcWallStandardCase'].map((type,i)=>({id:String(i),step_id:i+1,name:'Стена '+(i+1),class:type,role:'element',storey_id:null,materials:[],source:{file_sha256:hash},property_sets:{},quantity_sets:{}}))};
+ const panel=specificationPanel({model:()=>model,documents:()=>[],project:()=>'ambiguity',selection:()=>[],matches:()=>[],show:()=>{},shared:false});
+ document.getElementById('open-specifications').click();[...document.querySelectorAll('.spec-template-cards button')].find(b=>b.textContent.includes('Произвольная таблица')).click();
+ document.querySelector('[data-filter-field]').value='category';document.querySelector('[data-filter-op]').value='equal';document.querySelector('[data-filter-value]').value='Стена';document.querySelector('[data-add-filter]').click();
+ assert.match(document.querySelector('.spec-message').textContent,/разные категории/);assert.equal(document.querySelector('[data-filters]').textContent,'');
+ document.querySelector('[data-filter-value]').value='IfcWall';document.querySelector('[data-add-filter]').click();document.querySelector('[data-build]').click();
+ assert.match(document.querySelector('[data-summary]').textContent,/прошли 1/);document.querySelector('[data-save]').click();assert.equal(panel.definitions()[0].filters[0].value,'IfcWall');
+ assert.equal(model.elements[1].class,'IfcWallStandardCase');
 });

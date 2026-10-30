@@ -68,6 +68,7 @@ def make_handler(workspace: Workspace):
                 if serve_route(self, workspace, request.path, q):
                     return
                 static = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"), "/rvt.js": ("rvt.js", "text/javascript"), "/intake.js": ("intake.js", "text/javascript"), "/intake.css": ("intake.css", "text/css"), "/style.css": ("style.css", "text/css")}
+                static['/language.js'] = ('language.js', 'text/javascript')
                 static.update({"/measurements/": ("measurements.html", "text/html"),
                                "/measurements.js": ("measurements.js", "text/javascript"),
                                "/measurement-coordinates.js": ("measurement-coordinates.js", "text/javascript"),

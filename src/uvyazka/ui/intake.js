@@ -34,7 +34,7 @@ window.UvyazkaIntake = (() => {
       const response=await fetch('/api/intake/'+action,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json','X-Uvyazka-Token':token},body:body===undefined?undefined:JSON.stringify(body)});
       const data=await response.json();if(!response.ok)throw Error(data.error);return data;
     }
-    function report(error){message.textContent=error.message;message.setAttribute('role','alert');}
+    function report(error){UvyazkaLanguage.showError(message,error);}
     function upload(action,file,query,onprogress){return new Promise((resolve,reject)=>{
       const xhr=new XMLHttpRequest();xhr.open('POST','/api/intake/'+action+'?'+new URLSearchParams(query));xhr.setRequestHeader('Content-Type','application/octet-stream');xhr.setRequestHeader('X-Uvyazka-Token',token);
       xhr.upload.onprogress=e=>{if(e.lengthComputable)onprogress(e.loaded);};
@@ -56,7 +56,7 @@ window.UvyazkaIntake = (() => {
           ${item.reading_work?.counts?.low_text_blocks?`<p>Мало текста или сканы: ${item.reading_work.counts.low_text_blocks} страниц / блоков. Нужен просмотр и, по задаче, OCR.</p>`:''}
           ${item.automatic_summary?`<p>Найдено числовых фрагментов: ${item.automatic_summary.candidate_count}. Подготовлено блоков: ${item.automatic_summary.indexed_blocks} / ${item.automatic_summary.total_blocks}.</p>`:''}
           ${item.source_structure?`<p>Структура: ${item.source_structure.indexed_units} листов / частей, ${item.source_structure.tables} таблиц, ${item.source_structure.stored_rows} строк. Ожидают: ${item.source_structure.pending_documents} файлов; частично: ${item.source_structure.partial_documents}; не удалось: ${item.source_structure.failed_documents}.</p><a class="source-button" href="?project=${encodeURIComponent(item.project_id)}#structure">Листы и таблицы →</a>`:''}
-          ${item.error?`<p class="error">${esc(item.error)}</p>`:''}
+          ${item.error?`<div class="error">${UvyazkaLanguage.errorHtml(item.error)}</div>`:''}
           ${item.errors?.length?`<details><summary>Документы, которые не удалось прочитать (${item.coverage?.parse_failed||item.errors.length})</summary><ul>${item.errors.map(e=>`<li><strong>${esc(e.relative_path||e.doc_id)}</strong><p>${esc(e.error)}</p></li>`).join('')}</ul><p>Показаны первые 20; полный состав доступен в документах проекта.</p></details>`:''}
           <div class="intake-actions">${item.project_id?`<button type="button" class="rvt-primary" data-open="${esc(item.project_id)}">Смотреть сводку →</button>`:''}
           ${item.can_resume?`<button type="button" class="source-button" data-resume="${esc(item.intake_id)}">${item.status==='ready'||item.status==='partial'?'Обновить чтение':'Продолжить обработку'}</button>`:''}

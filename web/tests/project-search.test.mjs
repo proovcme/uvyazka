@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {Window} from 'happy-dom';
-const code=await readFile(new URL('../../src/uvyazka/ui/search.js',import.meta.url),'utf8');
+const code=await readFile(new URL('../../src/uvyazka/ui/language.js',import.meta.url),'utf8')+'\n'+await readFile(new URL('../../src/uvyazka/ui/search.js',import.meta.url),'utf8');
 const tick=()=>new Promise(r=>setTimeout(r,10));
 const status={configured:true,counts:{ready:2,pending:0,failed:0},cached_blocks:3};
 const json=data=>({ok:true,json:async()=>structuredClone(data)});
@@ -28,7 +28,7 @@ test('preparation uses protected resumable batches and stops after the active ba
   return json(status);
  });
  await w.UvyazkaSearch.mount(w.document.querySelector('#view'),'a');w.document.querySelector('[data-build]').click();await tick();
- assert.match(w.document.body.textContent,/первая загрузка весов/);w.document.querySelector('[data-stop]').click();complete();await tick();
+ assert.match(w.document.body.textContent,/первая подготовка поиска/);w.document.querySelector('[data-stop]').click();complete();await tick();
  assert.equal(posts,1);assert.match(w.document.querySelector('[data-progress]').textContent,/Приостановлено.*Обработано 1/);w.happyDOM.cancelAsync();
 });
 

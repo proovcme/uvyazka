@@ -1,18 +1,22 @@
 /** Presentation only: original records, IDs, diagnostics and exports stay intact. */
-export function userMessage(value:unknown,fallback='Не удалось выполнить действие. Подробности доступны в диагностике.'){
- const text=value instanceof Error?value.message:String(value??'');
- if(/Failed to fetch|NetworkError|Load failed|ECONNREFUSED|HTTP 5\d\d/i.test(text))return 'Не удалось связаться с сервисом. Проверьте подключение и повторите действие.';
- if(/budget|allocation|out of memory|memory access out of bounds|exceeds.*(?:MiB|bytes)/i.test(text))return 'Не удалось прочитать все данные файла. Подробности доступны в диагностике.';
- if(/native record framing is unvalidated for Revit (\d{4})/i.test(text))return `Эта версия RVT пока не поддерживается: Revit ${/Revit (\d{4})/.exec(text)?.[1]}.`;
- if(/(?:\bm_\w+|\bDBView\w*|\bTableCellStyle\b|\bgraph\b|\bschema\b|\bwasm\b|\bworker\b|\bstack\b|\bCFB\b|\bscaffold\b|\bconfidence_level\b|\bbuilding_elements\b|\bSHA-256\b|\b[A-Za-z]*Error\b|Unexpected token|0x[\da-f]{6,}|at \d{5,})/i.test(text)||/^[\x00-\x7f]+$/.test(text)&&/[a-zA-Z]{3}/.test(text))return fallback;
- return text||fallback;
+import '../../src/uvyazka/ui/language.js';
+export const userMessage=(globalThis as unknown as {UvyazkaLanguage:{userMessage:(value:unknown,fallback?:string)=>string}}).UvyazkaLanguage.userMessage;
+const operatorLabels:Record<string,string>={contains:'содержит',equal:'равно',not_equal:'не равно',greater:'больше',greater_equal:'не меньше',less:'меньше',less_equal:'не больше',has_value:'значение прочитано',not_contains:'не содержит',begins:'начинается с',ends:'заканчивается на'};
+export const filterOperatorLabel=(operator:string)=>operatorLabels[operator]??'условие не поддержано';
+export function sourceFormatLabel(source:{schema?:string;format?:string;rvt_read_mode?:string}){
+ if(source.schema==='DocumentSpatialModel')return 'Условная модель по документации';
+ if(source.schema==='SyntheticDemo')return 'Синтетическая учебная модель';
+ if(source.format==='federation')return 'Сводная модель';
+ if(source.rvt_read_mode==='direct')return 'RVT · экспериментальное чтение';
+ if(['rvt','ifc','nwd','nwc','dwg','dxf'].includes(source.format??''))return source.format!.toUpperCase();
+ if(/^IFC(?:2X3|4(?:X3(?:_ADD\d+)?)?)$/.test(source.schema??''))return source.schema!;
+ return 'Модель из файла';
 }
 export function addDiagnostics(host:HTMLElement,value:unknown,label='Диагностика'){
  const details=document.createElement('details'),summary=document.createElement('summary');details.className='ui-diagnostics';summary.textContent=label;details.append(summary);let loaded=false;
  details.addEventListener('toggle',()=>{if(!details.open||loaded)return;loaded=true;const pre=document.createElement('pre'),data=typeof value==='function'?value():value;pre.textContent=typeof data==='string'?data:JSON.stringify(data,null,2);details.append(pre);});host.append(details);return details;
 }
-const classLabels:Record<string,string>={IfcWall:'Стена',IfcWallStandardCase:'Стена',IfcSlab:'Плита',IfcRoof:'Кровля',IfcDoor:'Дверь',IfcWindow:'Окно',IfcColumn:'Колонна',IfcBeam:'Балка',IfcMember:'Элемент конструкции',IfcPlate:'Пластина',IfcCurtainWall:'Витраж',IfcStair:'Лестница',IfcStairFlight:'Лестничный марш',IfcRailing:'Ограждение',IfcCovering:'Отделка',IfcFooting:'Фундамент',IfcPile:'Свая',IfcSpace:'Помещение',IfcPump:'Насос',IfcFan:'Вентилятор',IfcDuctSegment:'Воздуховод',IfcDuctFitting:'Фасонная деталь воздуховода',IfcPipeSegment:'Труба',IfcPipeFitting:'Фасонная деталь трубы',IfcFlowTerminal:'Конечное устройство',IfcFlowController:'Регулирующее устройство',IfcDistributionElement:'Инженерное оборудование',IfcBuildingElementProxy:'Элемент модели',IfcFurnishingElement:'Оборудование и мебель',FamilyInstance:'Элемент Revit',RbsDuctCurve:'Воздуховод',RbsPipeCurve:'Труба',NwdFragment:'Элемент модели',lcatfconsumer_Mesh:'Элемент модели'};
-export function displayClass(value:string){const name=value.replace(/^Класс RVT:\s*/,'');return classLabels[name]??(/^(?:Ifc|DBView|LcOa|LcOp|lcatf)/.test(name)?'Элемент модели':name);}
+export const displayClass=(globalThis as unknown as {UvyazkaLanguage:{displayClass:(value:string)=>string}}).UvyazkaLanguage.displayClass;
 export function displayElementName(name:string,kind:string,id?:string|null){return /^(?:lcatfconsumer_\w+|FamilyInstance(?: · Revit \d+)?|Rbs\w+(?: · Revit \d+)?|Ifc[A-Z]\w*)$/.test(name)?displayClass(kind)+(id?' · Revit '+id:''):name;}
 export function progressStage(stage:string){if(/сигнатур|SHA|хеш|целост/i.test(stage))return 'Проверка файла';if(/геомет|отображ|сцен/i.test(stage))return 'Подготовка 3D-модели';if(/кеш|сохран|баз/i.test(stage))return 'Сохранение результата';if(/параметр|данн|каталог|таблиц/i.test(stage))return 'Чтение данных модели';if(/WASM|движ|модул|worker/i.test(stage))return 'Подготовка к открытию';return userMessage(stage,'Обработка файла');}
 export function progressMessage(stage:string,message:string){return /WASM|worker|декодер|граф|слотов|поток|SHA-256|сеток|фрагмент|владельц|объектов графа|\bm_\w+/i.test(message)?progressStage(stage)+'…':userMessage(message,progressStage(stage)+'…');}

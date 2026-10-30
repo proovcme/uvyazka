@@ -69,7 +69,9 @@ test('ambiguous translated categories do not silently create a filter; exact sou
  document.getElementById('open-specifications').click();[...document.querySelectorAll('.spec-template-cards button')].find(b=>b.textContent.includes('Произвольная таблица')).click();
  document.querySelector('[data-filter-field]').value='category';document.querySelector('[data-filter-op]').value='equal';document.querySelector('[data-filter-value]').value='Стена';document.querySelector('[data-add-filter]').click();
  assert.match(document.querySelector('.spec-message').textContent,/разные категории/);assert.equal(document.querySelector('[data-filters]').textContent,'');
- document.querySelector('[data-filter-value]').value='IfcWall';document.querySelector('[data-add-filter]').click();document.querySelector('[data-build]').click();
+ document.querySelector('[data-filter-op]').value='has_value';document.querySelector('[data-filter-op]').dispatchEvent(new win.Event('change'));assert.equal(document.querySelector('[data-filter-value]').disabled,true);document.querySelector('[data-add-filter]').click();assert.equal(document.querySelectorAll('[data-filters] p').length,1);document.querySelector('[data-filters] button').click();
+ document.querySelector('[data-filter-op]').value='equal';document.querySelector('[data-filter-op]').dispatchEvent(new win.Event('change'));assert.equal(document.querySelector('[data-filter-value]').disabled,false);
+ document.querySelector('[data-filter-value]').value='IfcWall';document.querySelector('[data-add-filter]').click();assert.doesNotMatch(document.querySelector('.spec-message').textContent,/разные категории/);document.querySelector('[data-build]').click();
  assert.match(document.querySelector('[data-summary]').textContent,/прошли 1/);document.querySelector('[data-save]').click();assert.equal(panel.definitions()[0].filters[0].value,'IfcWall');
  assert.equal(model.elements[1].class,'IfcWallStandardCase');
 });

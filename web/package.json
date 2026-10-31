@@ -2,7 +2,7 @@
   "name": "uvyazka-construction-viewer",
   "private": true,
   "license": "Apache-2.0",
-  "version": "0.4.0-alpha.1",
+  "version": "0.4.0-alpha.2",
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && vite build",

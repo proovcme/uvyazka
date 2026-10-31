@@ -1,11 +1,11 @@
 {
-  "version": "0.4.0-alpha.3",
-  "notes": "Ускоренный выбор и поиск в больших сценах, общий движок таблиц MCP и интерфейса, компактные проекты .uvz с отменой обработки. Предварительный выпуск.",
-  "pub_date": "2026-10-31T11:48:36.923656+00:00",
+  "version": "0.4.0-alpha.4",
+  "notes": "RVT-читатель 0.11.0, экспорт всей сцены или видимой части в IFC, обновлённые сохранение и открытие файлов. Предварительный выпуск.",
+  "pub_date": "2026-10-31T18:00:53.690356+00:00",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUSmJOQjNtZU9ocjN1SkVSYVBIVEs3VVdNcFBrR2dyUEdJVVhWbFBtdE16RGcxRExtZVVMZXlCVmJCbHpld2hLOFh3aWtiWVRISUdFWWhFbmxmWDBkRDliMFVkQ3Nlc2c0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNDQ3MjUxCWZpbGU60KPQstGP0LfQutCwXzAuNC4wLWFscGhhLjNfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuNC4wLWFscGhhLjMKZUFQejRUZWcxN0pvZzJ6cExEbXQxLzRSZjAyT2hmS2xJdFlMMnBva2ZtRXRLTnZkNUtUYldyT2ppTWJLeHlwODM1bklQT0gxTWprZkZLK2JXZkJQQ0E9PQo=",
-      "url": "https://github.com/proovcme/uvyazka/releases/download/v0.4.0-alpha.3/uvyazka_0.4.0-alpha.3_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUSmJOQjNtZU9ocjRlTnVyNmgrTGRmTXNuWUlvQzRMTXpEVEJES01mdUJaeVh6OXVDMnBKVDNFVVNNRHJrS0gvNFg1Yk5pK1ZCbnNSMzIyYm9oV1dKWEpnVWZuTXd6NUFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNDY5NTg4CWZpbGU60KPQstGP0LfQutCwXzAuNC4wLWFscGhhLjRfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuNC4wLWFscGhhLjQKUmRGTnJ3Nm1Va2g2TTl5ZU1rV3ArS2N1TFRjREZ0UGNxNlAwMzZOMktwUVpnWkZQczBpMFVhc3pRdWZreVcvU3Zkd0xhUXBzdTdFUEllSGVHY3htQmc9PQo=",
+      "url": "https://github.com/proovcme/uvyazka/releases/download/v0.4.0-alpha.4/uvyazka_0.4.0-alpha.4_x64-setup.exe"
     }
   }
 }

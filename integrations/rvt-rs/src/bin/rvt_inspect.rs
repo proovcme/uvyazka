@@ -19,7 +19,8 @@ const INSPECT_SCHEMA_VERSION: u32 = 1;
     about = "Summarize Revit file health, decoded model coverage, and IFC export readiness",
     after_help = "Examples:\n  \
         rvt-inspect model.rvt\n  \
-        rvt-inspect model.rvt --json > model.inspect.json"
+        rvt-inspect model.rvt --json > model.inspect.json\n  \
+        rvt-inspect model.rvt --json --anonymize > inspect.json   to post publicly"
 )]
 struct Cli {
     /// Path to a `.rvt` / `.rfa` / `.rte` / `.rft` file.
@@ -33,6 +34,12 @@ struct Cli {
     /// so support output is safe to share.
     #[arg(long)]
     no_redact: bool,
+    /// Replace every name the report takes from the project with a
+    /// placeholder: paths and file names, the project name, levels,
+    /// materials and sample element names. Counts and ElementIds stay, so
+    /// the report can be posted publicly.
+    #[arg(long, conflicts_with = "no_redact")]
+    anonymize: bool,
     /// Maximum decompressed Global/Latest / Partitions bytes scanned.
     #[arg(long)]
     max_walker_scan_bytes: Option<usize>,
@@ -119,11 +126,16 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             let failure_mode = corrupt_or_unreadable_failure_mode();
+            let error = if cli.anonymize {
+                anonymize_input_path(&err.to_string(), &cli.file)
+            } else {
+                err.to_string()
+            };
             if cli.json {
                 let report = InspectErrorReport {
                     schema_version: INSPECT_SCHEMA_VERSION,
                     failure_mode,
-                    error: err.to_string(),
+                    error,
                 };
                 match serde_json::to_string_pretty(&report) {
                     Ok(json) => println!("{json}"),
@@ -132,7 +144,7 @@ fn main() -> ExitCode {
             } else {
                 eprintln!("failure mode: {}", failure_mode.title);
                 eprintln!("{}", failure_mode.summary);
-                eprintln!("error: {err}");
+                eprintln!("error: {error}");
             }
             ExitCode::from(1)
         }
@@ -140,7 +152,12 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli) -> anyhow::Result<()> {
-    let report = build_report(&cli.file, !cli.no_redact, walker_limits_from_cli(cli))?;
+    let report = build_report(
+        &cli.file,
+        !cli.no_redact,
+        cli.anonymize,
+        walker_limits_from_cli(cli),
+    )?;
     if cli.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -152,6 +169,7 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
 fn build_report(
     path: &std::path::Path,
     redact: bool,
+    anonymize: bool,
     walker_limits: WalkerLimits,
 ) -> anyhow::Result<InspectReport> {
     let file_size_bytes = std::fs::metadata(path)?.len();
@@ -163,12 +181,23 @@ fn build_report(
     let schema_parsed = rf.schema().is_ok();
     let export_result =
         RvtDocExporter.export_with_diagnostics_and_limits(&mut rf, walker_limits)?;
-    let diagnostics = export_result.diagnostics;
+    let mut diagnostics = export_result.diagnostics;
+    if anonymize {
+        diagnostics.anonymize();
+        summary.original_path = summary
+            .original_path
+            .as_deref()
+            .map(rvt::redact::anonymize_file_name);
+    }
     let warnings = diagnostics.warnings.clone();
-    let input_path = display_path(path, redact);
-    // The releases rvt-rs reads, 2015 to 2022 and 2027 experimentally (RE-179
-    // to RE-181).
-    let supported_revit_version = matches!(summary.version, 2015..=2027);
+    let input_path = if anonymize {
+        rvt::redact::anonymize_file_name(&path.display().to_string())
+    } else {
+        display_path(path, redact)
+    };
+    // The releases rvt-rs reads, 2008 to 2022 and 2027 experimentally (RE-179
+    // to RE-181, RE-259, RE-260).
+    let supported_revit_version = matches!(summary.version, 2008..=2027);
     let decoded = DecodedHealth {
         class_name_count: summary.class_name_count,
         production_elements: diagnostics.decoded.production_walker_elements,
@@ -337,6 +366,23 @@ fn redact_summary(summary: &mut rvt::reader::Summary) {
     }
 }
 
+/// `text` with the input path, its file name and its stem replaced by the
+/// anonymized file name, for an error that names the file it could not read.
+fn anonymize_input_path(text: &str, path: &std::path::Path) -> String {
+    let raw = path.display().to_string();
+    let replacement = rvt::redact::anonymize_file_name(&raw);
+    let mut out = text.replace(&raw, &replacement);
+    for part in [path.file_name(), path.file_stem()]
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part.to_str())
+        .filter(|part| part.chars().count() >= 3)
+    {
+        out = out.replace(part, &replacement);
+    }
+    out
+}
+
 fn display_path(path: &std::path::Path, redact: bool) -> String {
     let raw = path.display().to_string();
     if redact {
@@ -473,10 +519,12 @@ fn print_human_report(report: &InspectReport) {
             rvt::compression::FormatsIntegrityStatus::Ok => "ok",
             rvt::compression::FormatsIntegrityStatus::Uncertain => "uncertain",
             rvt::compression::FormatsIntegrityStatus::Incomplete => "incomplete",
+            _ => "unknown",
         };
         let strip = match fmt.checksum_tail_stripping {
             rvt::compression::ChecksumTailStripping::Disabled => "disabled",
             rvt::compression::ChecksumTailStripping::Enabled => "enabled",
+            _ => "unknown",
         };
         if let Some(code) = &fmt.diagnostic_code {
             println!("    status={status} · strip={strip} · code={code}");

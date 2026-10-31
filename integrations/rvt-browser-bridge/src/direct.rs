@@ -1,5 +1,6 @@
 //! Saved RVT graphics to a viewer buffer. No IFC exporter, entities or STEP.
-use rvt::{RevitFile, native_document, native_saved_scene::SavedScene};
+use rvt::{RevitFile};
+use rvt::research::{native_document, native_saved_scene::SavedScene};
 use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,7 +54,7 @@ pub fn extract(bytes: Vec<u8>) -> Result<DirectScene, String> {
     let mut file = RevitFile::open_bytes(bytes).map_err(|e| e.to_string())?;
     let options = native_document::Options::default();
     let mut scene =
-        rvt::native_saved_scene::extract(&mut file, &options).map_err(|e| e.to_string())?;
+        rvt::research::native_saved_scene::extract(&mut file, &options).map_err(|e| e.to_string())?;
     let ids = scene
         .elements
         .iter()
@@ -123,7 +124,7 @@ pub fn extract(bytes: Vec<u8>) -> Result<DirectScene, String> {
     let metadata_error = result.err().map(|e| e.to_string());
     let schema =
         native_document::read_single(&mut file, "Formats/Latest").map_err(|e| e.to_string())?;
-    let registry = rvt::schema_registry::parse(&schema).map_err(|e| e.to_string())?;
+    let registry = rvt::research::schema_registry::parse(&schema).map_err(|e| e.to_string())?;
     let parents = registry
         .classes
         .iter()
@@ -309,7 +310,7 @@ fn pack(
 mod tests {
     use super::*;
     fn scene() -> SavedScene {
-        let identity = rvt::native_index::Identity {
+        let identity = rvt::research::native_index::Identity {
             element_id: 9_007_199_254_740_993,
             original_id_suffix: 1,
             creation_episode: 0,
@@ -321,7 +322,7 @@ mod tests {
             partition_id: 0,
             unique_id: "synthetic-unique-id".into(),
         };
-        let p = rvt::native_saved_mesh::Primitive {
+        let p = rvt::research::native_saved_mesh::Primitive {
             source_owner_id: None,
             object_index: 0,
             face_tag: 0,
@@ -340,13 +341,13 @@ mod tests {
             detail_level: 3,
             graphics_profile: "synthetic",
             summaries: vec![],
-            elements: vec![rvt::native_saved_scene::SavedElement {
+            elements: vec![rvt::research::native_saved_scene::SavedElement {
                 id: identity.element_id,
                 identity,
                 source: json!({}),
                 referenced_graph_sources: BTreeMap::new(),
                 status: "decoded_saved_graphics".into(),
-                meshes: rvt::native_saved_mesh::GraphicsMeshes {
+                meshes: rvt::research::native_saved_mesh::GraphicsMeshes {
                     primitives: vec![p],
                     ..Default::default()
                 },
@@ -369,6 +370,24 @@ mod tests {
         );
         assert!((result.manifest["bounds_min_m"][0].as_f64().unwrap() - 304.8).abs() < 1e-9);
         assert_eq!(result.manifest["complete_document_geometry"], false);
+    }
+    #[test]
+    fn saved_colors_opacity_and_unresolved_evidence_survive_the_upgrade() {
+        let mut input=scene();
+        input.elements[0].render_materials.insert(0,rvt::research::native_saved_materials::RenderMaterial {
+            material_id:Some(71),name:"Synthetic copper".into(),base_color:[0.8,0.3,0.1,0.4],
+            saved_opacity:Some(0.4),metallic_factor:0.0,roughness_factor:0.7,
+            diagnostics:vec![],provenance:vec![json!({"kind":"synthetic"})],
+        });
+        input.elements[0].unresolved_material_primitives.clear();
+        let result=pack(input,BTreeMap::new(),BTreeMap::new(),None,4096).unwrap();
+        let row=&result.manifest["elements"][0];
+        assert_eq!(row["mesh"]["styles"][0]["color"],json!([0.8,0.3,0.1]));
+        assert_eq!(row["mesh"]["styles"][0]["opacity"],json!(0.4));
+        assert_eq!(row["material_evidence"]["0"]["material_id"],json!(71));
+        assert_eq!(row["unresolved_material_primitives"],json!([]));
+        let unknown=pack(scene(),BTreeMap::new(),BTreeMap::new(),None,4096).unwrap();
+        assert_eq!(unknown.manifest["elements"][0]["unresolved_material_primitives"],json!([0]));
     }
     #[test]
     fn rejects_corruption_empty_and_budget_without_ifc_fallback() {

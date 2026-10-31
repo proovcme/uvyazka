@@ -30,11 +30,13 @@
 //! tail (#152, #553). A 12-byte implicit layout from `0x30` remains only as
 //! the fallback for a table neither record size fits.
 
+use crate::le_bytes;
 use crate::{Error, Result, RevitFile, compression, streams::GLOBAL_ELEM_TABLE};
 use serde::{Deserialize, Serialize};
 
 /// Header extracted from the first bytes of decompressed Global/ElemTable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ElemTableHeader {
     /// Named for what it was assumed to be, but not a count of elements:
     /// the serialization tag of the class `ElemTable` in the file's own
@@ -56,6 +58,7 @@ pub struct ElemTableHeader {
 
 /// How records are framed in this ElemTable stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum RecordFraming {
     /// 12-byte records from `0x30`, no owner field: the fallback for a
     /// table neither record size fits. No corpus file uses it.
@@ -85,6 +88,7 @@ pub struct ElemTableLayout {
 /// On the implicit fallback layout, `id_primary`/`id_secondary` are the first
 /// two `u32`s of the 12-byte record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ElemRecord {
     /// Offset in the decompressed stream where this record begins.
     pub offset: usize,
@@ -117,6 +121,7 @@ pub struct ElemRecord {
 /// Backward-compat record type from the pre-corpus-probe parser. Kept so
 /// existing callers and tests keep compiling; prefer `ElemRecord` for new work.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ElemRecordRough {
     /// Offset in the decompressed stream where this record begins.
     pub offset: usize,
@@ -126,9 +131,10 @@ pub struct ElemRecordRough {
 
 fn parse_header_bytes(d: &[u8]) -> Result<ElemTableHeader> {
     if d.len() < 0x30 {
-        return Err(Error::BasicFileInfo(
-            "Global/ElemTable stream too short for header".into(),
-        ));
+        return Err(Error::Malformed {
+            what: "Global/ElemTable",
+            detail: "shorter than its header".into(),
+        });
     }
     let element_count = u16::from_le_bytes([d[0], d[1]]);
     let record_count = u32::from_le_bytes([d[2], d[3], d[4], d[5]]);
@@ -152,8 +158,7 @@ pub const RECORDS_ORIGIN: usize = 0x06;
 
 /// The record count the table states, the `u32` at `0x02`.
 fn stated_count(d: &[u8]) -> Option<usize> {
-    let bytes = d.get(2..6)?;
-    usize::try_from(u32::from_le_bytes(bytes.try_into().ok()?)).ok()
+    usize::try_from(le_bytes::u32_at(d, 2)?).ok()
 }
 
 /// `(second id, owner, owner width)` offsets of a record of `stride` bytes.
@@ -163,11 +168,6 @@ fn record_fields(stride: usize) -> Option<(usize, usize, usize)> {
         40 => Some((20, 28, 8)),
         _ => None,
     }
-}
-
-fn u32_at(d: &[u8], at: usize) -> Option<u32> {
-    let bytes = d.get(at..at.checked_add(4)?)?;
-    Some(u32::from_le_bytes(bytes.try_into().ok()?))
 }
 
 /// Detect the record layout: the record size (28 or 40 bytes) at which the
@@ -200,7 +200,7 @@ pub fn detect_layout(d: &[u8]) -> ElemTableLayout {
         let mut previous = None;
         let mut rises = 0;
         for k in 0..count {
-            let id = u32_at(d, RECORDS_ORIGIN + k * stride + element_id_at)?;
+            let id = le_bytes::u32_at(d, RECORDS_ORIGIN + k * stride + element_id_at)?;
             if previous.is_some_and(|p| id > p) {
                 rises += 1;
             }
@@ -261,14 +261,18 @@ pub fn parse_records_from_bytes(
         };
         let (id_primary, id_secondary, owner_id) = match layout.framing {
             RecordFraming::Implicit => {
-                let (Some(a), Some(b)) = (u32_at(record, 0), u32_at(record, 4)) else {
+                let (Some(a), Some(b)) = (le_bytes::u32_at(record, 0), le_bytes::u32_at(record, 4))
+                else {
                     break;
                 };
                 (a, b, None)
             }
             RecordFraming::Explicit { marker_len } => {
                 let second_at = record_fields(layout.stride).map_or(4, |(second, _, _)| second);
-                let (Some(a), Some(b)) = (u32_at(record, 0), u32_at(record, second_at)) else {
+                let (Some(a), Some(b)) = (
+                    le_bytes::u32_at(record, 0),
+                    le_bytes::u32_at(record, second_at),
+                ) else {
                     break;
                 };
                 (a, b, owner_field(record, layout.marker_offset, marker_len))
@@ -293,8 +297,8 @@ pub fn parse_records_from_bytes(
 fn owner_field(record: &[u8], at: usize, width: usize) -> Option<u32> {
     let field = record.get(at..at.checked_add(width)?)?;
     let value = match width {
-        4 => u64::from(u32::from_le_bytes(field.try_into().ok()?)),
-        8 => u64::from_le_bytes(field.try_into().ok()?),
+        4 => u64::from(le_bytes::u32_at(field, 0)?),
+        8 => le_bytes::u64_at(field, 0)?,
         _ => return None,
     };
     if field.iter().all(|&b| b == 0xFF) || value == 0 {
@@ -312,6 +316,15 @@ fn inflate(rf: &mut RevitFile) -> Result<Vec<u8>> {
     let raw = rf.read_stream(GLOBAL_ELEM_TABLE)?;
     compression::inflate_stream_at(GLOBAL_ELEM_TABLE, &raw, 8)
         .or_else(|_| compression::inflate_stream_at(GLOBAL_ELEM_TABLE, &raw, 0))
+}
+
+/// The record layout [`detect_layout`] finds in `rf`'s Global/ElemTable. The
+/// implicit fallback ([`RecordFraming::Implicit`]) means neither record size
+/// fits, so the declared ElementIds are unknown (#421).
+pub fn layout(rf: &mut RevitFile) -> Result<ElemTableLayout> {
+    let d = inflate(rf)?;
+    parse_header_bytes(&d)?;
+    Ok(detect_layout(&d))
 }
 
 /// Parse all records from Global/ElemTable: the `u32` count at `0x02`
@@ -343,7 +356,9 @@ pub fn index_by_element_id(records: &[ElemRecord]) -> std::collections::BTreeMap
 
 /// One ElementId that appears in both ElemTable and a decoded
 /// partition ArcWall trailer.
+#[cfg(feature = "unstable-research")]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct LinkedArcWallElement<'a> {
     pub element_id: u32,
     pub elem_record: &'a ElemRecord,
@@ -352,6 +367,7 @@ pub struct LinkedArcWallElement<'a> {
 
 /// Join ArcWall trailer ElementIds to ElemTable rows and partition
 /// record refs. Returns only ids present in **both** maps.
+#[cfg(feature = "unstable-research")]
 pub fn link_arcwall_element_ids<'a>(
     elem_by_id: &std::collections::BTreeMap<u32, &'a ElemRecord>,
     partition_by_id: &std::collections::BTreeMap<
@@ -370,19 +386,6 @@ pub fn link_arcwall_element_ids<'a>(
         }
     }
     out
-}
-
-/// Join generic partition-scanner ElementIds to ElemTable rows.
-///
-/// Thin wrapper around
-/// [`crate::partition_scanner::link_elem_table_to_partitions`] so
-/// ElemTable callers share one import path with the ArcWall-specific
-/// linker above.
-pub fn link_partition_element_ids<'a>(
-    elem_by_id: &std::collections::BTreeMap<u32, &'a ElemRecord>,
-    partition_by_id: &std::collections::BTreeMap<u32, crate::partition_scanner::PartitionRecordRef>,
-) -> Vec<crate::partition_scanner::LinkedPartitionElement<'a>> {
-    crate::partition_scanner::link_elem_table_to_partitions(elem_by_id, partition_by_id)
 }
 
 /// Authoritative set of declared ElementIds from Global/ElemTable.
@@ -413,7 +416,7 @@ pub const RECORD_LEN_40: usize = 40;
 /// (Structural). `id_secondary` is the id the element's partition record
 /// carries (RE-35) and the `Tag` Revit's own IFC export writes, and
 /// `id_primary` is the id the element was created with, which only its
-/// GlobalId still uses ([`crate::revit_global_ids`], RE-48). No element
+/// GlobalId still uses (`research::revit_global_ids`, RE-48). No element
 /// record of either file names a first id that is not also some element's
 /// current id (RE-189), so a first id is no longer declared on its own: 84
 /// ids on Architectural and 20 on Structural that named no element.
@@ -449,43 +452,4 @@ pub fn parse_records_rough(rf: &mut RevitFile, max_records: usize) -> Result<Vec
         i += layout.stride.max(12);
     }
     Ok(records)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn index_by_element_id_keeps_first_duplicate() {
-        let records = vec![
-            ElemRecord {
-                offset: 0,
-                id_primary: 7,
-                id_secondary: 7,
-                owner_id: None,
-                previous_ids: None,
-                raw: vec![1],
-            },
-            ElemRecord {
-                offset: 28,
-                id_primary: 7,
-                id_secondary: 8,
-                owner_id: None,
-                previous_ids: None,
-                raw: vec![2],
-            },
-            ElemRecord {
-                offset: 56,
-                id_primary: 9,
-                id_secondary: 9,
-                owner_id: None,
-                previous_ids: None,
-                raw: vec![3],
-            },
-        ];
-        let index = index_by_element_id(&records);
-        assert_eq!(index.len(), 2);
-        assert_eq!(index.get(&7).map(|r| r.offset), Some(0));
-        assert_eq!(index.get(&9).map(|r| r.id_secondary), Some(9));
-    }
 }

@@ -1,3 +1,4 @@
+import {RVT_READER_REVISION,RVT_DIRECT_IMPORTER} from './rvt-reader-version.ts';
 import type {ModelPackage,BimElement,Vec3} from './model.ts';
 import {validatePackage} from './model.ts';
 import {identifier} from './rvt-document.ts';
@@ -43,8 +44,8 @@ export async function importRvtDirect(result:any,source:{filename:string;sha256:
    revit:{element_id:row.element_id,unique_id:typeof row.unique_id==='string'?row.unique_id:undefined,id_basis:'rvt_native_identity',phase_status:'not_read'}};
  });
  if(!meshes)throw Error('RVT напрямую: пригодная геометрия не получена. IFC автоматически не использовался.');
- const model:ModelPackage={contract:'ModelPackage',contract_version:'0.1.0',importer_version:'uvyazka-rvt-direct-v1',
-  model_id:await hash(source.sha256+':rvt-direct-v1'),source:{...source,format:'rvt',schema:'Revit '+(data.revit_version??'версия не прочитана'),exporter:'rvt-rs native saved graphics',exported_at:'',rvt_read_mode:'direct'},
+ const model:ModelPackage={contract:'ModelPackage',contract_version:'0.1.0',importer_version:RVT_DIRECT_IMPORTER,
+  model_id:await hash(source.sha256+':rvt-direct:'+RVT_READER_REVISION),source:{...source,format:'rvt',schema:'Revit '+(data.revit_version??'версия не прочитана'),exporter:RVT_READER_REVISION+' native saved graphics',exported_at:'',rvt_read_mode:'direct'},
   coordinate_system:{length_to_m:0.3048,up_axis:'Z',render_origin_m:data.render_origin_m,bounds_min_m:data.bounds_min_m,bounds_max_m:data.bounds_max_m},storeys:[],elements,relationships:[],diagnostics,
   statistics:{products:elements.length,physical_elements:0,meshes,triangles,geometry_errors:elements.length-meshes,binary_bytes:binary.byteLength},
   capabilities:{read:true,geometry_ready:true,technology_resolved:false,schedule_ready:false},

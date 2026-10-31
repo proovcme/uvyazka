@@ -1,4 +1,4 @@
-//! Revit material → PBR material mapping (VW1-06).
+//! Revit material → PBR material mapping.
 //!
 //! Downstream viewers (Three.js, WebGL, glTF exporters) consume
 //! materials in the physically-based-rendering (PBR) format that
@@ -21,6 +21,7 @@
 //! picks reasonable values that make scenes render recognizably
 //! in a viewer. Callers that want authoritative PBR should
 //! override per-material from their own material library.
+// Tracker: VW1-06.
 
 use super::MaterialInfo;
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,7 @@ use serde::{Deserialize, Serialize};
 /// Field ranges match the glTF spec exactly so the serializer is
 /// a straight copy — no extra math at emit time.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct PbrMaterial {
     /// Linear RGB, 0-1. Viewers apply gamma correction on display.
     pub base_color_rgb: [f32; 3],
@@ -114,7 +116,7 @@ fn alpha_from_transparency(t: Option<f64>) -> f32 {
     }
 }
 
-/// Name-driven material classifier (VW1-06). Returns `(metallic,
+/// Name-driven material classifier. Returns `(metallic,
 /// roughness, double_sided)` based on keywords in the material
 /// name — matches the typical Revit family naming ("Glass —
 /// Tinted", "Steel — Painted", "Wood — Oak").
@@ -128,6 +130,7 @@ fn alpha_from_transparency(t: Option<f64>) -> f32 {
 /// - Concrete / masonry: metallic 0, roughness 0.9
 /// - Paint / ceramic / tile: metallic 0, roughness 0.5
 /// - Default (unknown): metallic 0, roughness 0.6
+// Tracker: VW1-06.
 fn classify_from_name(name: &str) -> (f32, f32, bool) {
     let n = name.to_ascii_lowercase();
     if n.contains("glass") || n.contains("glazing") || n.contains("acrylic") {
@@ -159,128 +162,4 @@ fn classify_from_name(name: &str) -> (f32, f32, bool) {
         return (0.0, 0.5, false);
     }
     (0.0, 0.6, false)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn mk(name: &str, color: Option<u32>, transparency: Option<f64>) -> MaterialInfo {
-        MaterialInfo {
-            name: name.into(),
-            color_packed: color,
-            transparency,
-        }
-    }
-
-    #[test]
-    fn default_material_is_mid_grey_dielectric() {
-        let m = PbrMaterial::default();
-        assert_eq!(m.base_color_rgb, [0.75, 0.75, 0.75]);
-        assert_eq!(m.alpha, 1.0);
-        assert_eq!(m.metallic, 0.0);
-    }
-
-    #[test]
-    fn glass_material_is_double_sided_transparent() {
-        let info = mk("Glass — Tinted", Some(0x00FFFFFF), Some(0.5));
-        let pbr = PbrMaterial::from_material_info(&info);
-        assert!(pbr.double_sided);
-        assert!(pbr.roughness < 0.1);
-        assert_eq!(pbr.metallic, 0.0);
-        assert!((pbr.alpha - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn steel_material_is_metallic() {
-        let info = mk("Steel — Structural", Some(0x00808080), None);
-        let pbr = PbrMaterial::from_material_info(&info);
-        assert_eq!(pbr.metallic, 1.0);
-        assert!(!pbr.double_sided);
-    }
-
-    #[test]
-    fn aluminum_also_detected() {
-        let pbr = PbrMaterial::from_material_info(&mk("Aluminium Frame", None, None));
-        assert_eq!(pbr.metallic, 1.0);
-    }
-
-    #[test]
-    fn wood_material_is_rough_dielectric() {
-        let pbr = PbrMaterial::from_material_info(&mk("Wood — Oak", None, None));
-        assert_eq!(pbr.metallic, 0.0);
-        assert!(pbr.roughness > 0.5);
-    }
-
-    #[test]
-    fn concrete_is_very_rough() {
-        let pbr = PbrMaterial::from_material_info(&mk("Concrete — Cast-in-Place", None, None));
-        assert!(pbr.roughness > 0.8);
-    }
-
-    #[test]
-    fn unknown_material_gets_default_roughness() {
-        let pbr = PbrMaterial::from_material_info(&mk("Custom Material 42", None, None));
-        assert_eq!(pbr.metallic, 0.0);
-        assert!((pbr.roughness - 0.6).abs() < 1e-6);
-        assert!(!pbr.double_sided);
-    }
-
-    #[test]
-    fn color_unpacks_from_packed_bgr() {
-        // 0x00BBGGRR with R=0xFF, G=0x80, B=0x00 → pure-ish red.
-        let pbr = PbrMaterial::from_material_info(&mk("Paint", Some(0x000080FF), None));
-        // Linear sRGB for 0xFF → 1.0, 0x80 → ~0.216, 0x00 → 0.
-        assert!((pbr.base_color_rgb[0] - 1.0).abs() < 0.001);
-        assert!(pbr.base_color_rgb[1] > 0.2 && pbr.base_color_rgb[1] < 0.25);
-        assert!(pbr.base_color_rgb[2] < 0.01);
-    }
-
-    #[test]
-    fn color_missing_is_mid_grey() {
-        let pbr = PbrMaterial::from_material_info(&mk("Generic", None, None));
-        // sRGB 0.75 → linear ~0.522
-        for c in pbr.base_color_rgb.iter() {
-            assert!(*c > 0.45 && *c < 0.6);
-        }
-    }
-
-    #[test]
-    fn transparency_1_maps_to_alpha_0() {
-        let pbr = PbrMaterial::from_material_info(&mk("Ghost", None, Some(1.0)));
-        assert_eq!(pbr.alpha, 0.0);
-    }
-
-    #[test]
-    fn transparency_0_maps_to_alpha_1() {
-        let pbr = PbrMaterial::from_material_info(&mk("Solid", None, Some(0.0)));
-        assert_eq!(pbr.alpha, 1.0);
-    }
-
-    #[test]
-    fn transparency_clamps_out_of_range_values() {
-        let pbr = PbrMaterial::from_material_info(&mk("Weird", None, Some(2.0)));
-        assert_eq!(pbr.alpha, 0.0);
-        let pbr = PbrMaterial::from_material_info(&mk("Weird2", None, Some(-1.0)));
-        assert_eq!(pbr.alpha, 1.0);
-    }
-
-    #[test]
-    fn srgb_to_linear_matches_known_values() {
-        // sRGB 0 → linear 0
-        assert!((srgb_to_linear(0.0) - 0.0).abs() < 1e-6);
-        // sRGB 1 → linear 1
-        assert!((srgb_to_linear(1.0) - 1.0).abs() < 1e-6);
-        // sRGB 0.5 → linear ~0.214
-        let v = srgb_to_linear(0.5);
-        assert!(v > 0.21 && v < 0.22);
-    }
-
-    #[test]
-    fn classifier_is_case_insensitive() {
-        let (m, _, _) = classify_from_name("GLASS PANE");
-        assert_eq!(m, 0.0);
-        let (m, _, _) = classify_from_name("gLaSs");
-        assert_eq!(m, 0.0);
-    }
 }

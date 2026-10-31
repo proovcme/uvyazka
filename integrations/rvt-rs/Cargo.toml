@@ -1,10 +1,10 @@
 [package]
 name = "rvt"
-version = "0.6.1"
+version = "0.11.0"
 edition = "2024"
 rust-version = "1.87"
 license = "Apache-2.0"
-description = "Apache-2.0 clean-room reader for Autodesk Revit files (.rvt, .rfa, .rte, .rft) without Revit: metadata, previews and the embedded schema of 2016-2026 files, and typed elements with measured geometry from Revit 2023 to 2025 projects (2015 to 2022, 2026 and 2027 experimental), exported as IFC4, glTF and plan SVG."
+description = "Apache-2.0 clean-room reader for Autodesk Revit files (.rvt, .rfa, .rte, .rft) without Revit: metadata, previews and the embedded schema of 2016-2027 files, and typed elements with measured geometry from Revit 2023 to 2025 projects (2015 to 2022, 2026 and 2027 experimental), exported as IFC4, glTF and plan SVG."
 authors = ["Griffin Long <151978260+DrunkOnJava@users.noreply.github.com>"]
 repository = "https://github.com/DrunkOnJava/rvt-rs"
 homepage = "https://github.com/DrunkOnJava/rvt-rs"
@@ -12,16 +12,17 @@ documentation = "https://docs.rs/rvt"
 readme = "README.md"
 keywords = ["revit", "bim", "autodesk", "ifc", "rfa"]
 categories = ["parser-implementations", "compression", "command-line-utilities"]
-exclude = [
-    ".github/*",
-    ".gitignore",
-    "tools/bench.sh",
-    "docs/outreach/*",
-    "docs/announcement-draft.md",
-    "docs/demo/*",
-    # docs/data/*.csv must ship: src/class_tag_map.rs `include_str!`s
-    # docs/data/tag-drift-2016-2026.csv, and excluding it made the packaged
-    # crate fail `cargo publish --dry-run` verification.
+# What the published crate needs: the source, the file it embeds with
+# include_str! (docs/support-matrix.json in src/capability.rs), the README
+# crates.io shows, and the licence files. Examples, tests, benches, reports
+# and tooling stay in the repository, and cargo drops the targets whose files
+# are left out. CI's `crate package` step builds the packaged crate.
+include = [
+    "/src/**/*.rs",
+    "/docs/support-matrix.json",
+    "/README.md",
+    "/LICENSE",
+    "/NOTICE",
 ]
 # Every tests/*.rs file is a module of tests/integration/main.rs, one test
 # binary rather than one per file (C6).
@@ -38,6 +39,14 @@ autotests = false
 # `maturin build --manifest-path rvt-py/Cargo.toml`.
 members = [".", "rvt-py", "rvt-wasm", "tools/stream_evidence"]
 
+# Lints beyond rustc's and clippy's defaults that the workspace keeps, so an
+# editor shows what CI enforces: CI denies every warning (`-D warnings`).
+[workspace.lints.rust]
+unused_qualifications = "warn"
+
+[lints]
+workspace = true
+
 [features]
 # Heap-profiling mode (Q-08). When enabled, binaries built from
 # `examples/dhat_*.rs` install the `dhat` global allocator and
@@ -51,6 +60,12 @@ members = [".", "rvt-py", "rvt-wasm", "tools/stream_evidence"]
 #
 # Then open the produced `dhat-heap.json` in dhat-viewer.
 dhat-heap = ["dep:dhat"]
+# The research modules under `rvt::research`: the partition, native and
+# element-record readers behind the format findings in `reports/`. Their API
+# changes with each finding, so they sit outside the semver promise
+# (RELEASE.md, "What 1.0 keeps stable"). The probes, tests and benches get
+# this feature through the self dev-dependency below.
+unstable-research = []
 
 [dependencies]
 # Microsoft Compound File Binary (OLE) container — reads the outer
@@ -112,13 +127,16 @@ js-sys = "0.3"
 # stays `publish = false` (a regular dependency made `cargo publish -p rvt`
 # fail with "no matching package named `stream-evidence`").
 stream-evidence = { path = "tools/stream_evidence" }
+# Turns on `unstable-research` for every dev target (the probes in examples/,
+# the integration tests, the benches) without turning it on for `cargo build`,
+# `cargo install` or the published crate. Path-only, so `cargo publish`
+# strips it.
+rvt = { path = ".", features = ["unstable-research"] }
 # Statistical benchmarking harness — drives `benches/*` and
 # powers the criterion-based cells in `docs/benchmarks.md` (Q-05).
 # `html_reports` renders per-run HTML + SVG so CI artefacts are
 # browsable. Version 0.7 builds on the MSRV.
 criterion ={ version = "0.8", features = ["html_reports"] }
-# Property-based never-panic / round-trip suites in tests/proptest_parsers.rs.
-proptest = "1"
 # Tier-one corpus health: hex-encode license-sidecar SHA256 checks of
 # committed synthetic fixtures under corpus/tier1/ (`sha2` itself is a
 # regular dependency — `rvt-ifc --observation` hashes its input).

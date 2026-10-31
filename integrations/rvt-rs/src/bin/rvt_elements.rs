@@ -33,13 +33,14 @@ struct Cli {
     #[arg(long)]
     counts: bool,
 
-    /// Omit the Lane Five MVP `typed` projection on each element.
+    /// Omit the `typed` projection (the typed view of the decoded classes) on each element.
     #[arg(long)]
     no_typed: bool,
 
     /// Hide elements whose provenance confidence is below this floor
-    /// (M3-07). Default keeps everything; pass `0.55` to match the
+    ///. Default keeps everything; pass `0.55` to match the
     /// viewer/export low-confidence filter.
+    // Tracker: M3-07.
     #[arg(long, default_value_t = 0.0)]
     min_confidence: f32,
 
@@ -61,10 +62,10 @@ struct ElementOut {
     class_name: String,
     byte_range: ByteRange,
     fields: Vec<serde_json::Value>,
-    /// AProperty* values when this element is a value carrier; empty
-    /// for host elements until host↔parameter joins recover (#35).
+    /// AProperty* values when this element is a value carrier, then the
+    /// saved parameters of its native record and its type's (#35, RE-207).
     parameters: Vec<serde_json::Value>,
-    /// M3-07 decode confidence + provenance.
+    /// Decode confidence and provenance.
     provenance: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     typed: Option<serde_json::Value>,
@@ -119,6 +120,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Revit 2023 to 2027 only; other files keep their AProperty* entries.
+    let saved = rvt::elements::parameters::saved_parameters_lossy(&mut rf, &elements);
+    for warning in &saved.diagnostics.warnings {
+        eprintln!("warning: {}", warning.message);
+    }
+    let saved = saved.value;
+
     let out: Vec<ElementOut> = elements
         .iter()
         .map(|element| {
@@ -142,6 +150,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 parameters: rvt::elements::parameters::parameter_entries_from_decoded(element)
                     .iter()
                     .map(|e| e.to_json_value())
+                    .chain(saved.entries_for(element))
                     .collect(),
                 provenance: element.provenance.to_json_value(),
                 typed,
@@ -215,5 +224,6 @@ fn field_json(name: &str, value: &InstanceField) -> serde_json::Value {
             "kind": "bytes",
             "len": b.len(),
         }),
+        _ => serde_json::json!({ "name": name, "kind": "unknown" }),
     }
 }

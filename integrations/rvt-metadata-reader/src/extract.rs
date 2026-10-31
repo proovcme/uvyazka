@@ -1,5 +1,6 @@
 //! Addressable, paged extraction. Saved fields, never evaluated API values.
-use rvt::{RevitFile, native_document, schema_registry};
+use rvt::{RevitFile};
+use rvt::research::{native_document, schema_registry};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, fs, io::Write, path::Path};
 #[path="../../rvt-shared/metadata_projection.rs"]
@@ -35,8 +36,8 @@ pub fn run(input: &str, request_path: &str, output: &str) -> Result<(), Box<dyn 
         let parameter=compact&&record.class_name.as_ref().is_some_and(|c|parameters.contains(c));
         let mut row=if parameter{projection::compact(&record,&worksets)}else{serde_json::to_value(&record)?};
         if graphs {row.as_object_mut().unwrap().remove("saved_metadata");}
-        if record.class_name.as_deref().is_some_and(|c|rvt::partition_mep_systems::SYSTEM_CLASSES.contains(&c)) {
-            let projected=record.graph.as_ref().ok_or("system graph unavailable".to_string()).and_then(|g|rvt::partition_mep_systems::project_system(record.identity.element_id,g).map_err(|e|e.to_string()));
+        if record.class_name.as_deref().is_some_and(|c|rvt::research::partition_mep_systems::SYSTEM_CLASSES.contains(&c)) {
+            let projected=record.graph.as_ref().ok_or("system graph unavailable".to_string()).and_then(|g|rvt::research::partition_mep_systems::project_system(record.identity.element_id,g).map_err(|e|e.to_string()));
             match projected{Ok(s)=>row["mep_system"]=serde_json::to_value(s)?,Err(e)=>{mep_errors+=1;row["mep_system_diagnostic"]=json!(e);}}
         }
         let mut encoded=serde_json::to_vec(&row)?;

@@ -149,7 +149,7 @@ function refreshHighlights(){viewer?.highlightElements(new Set([...selection,...
 function updateSelection(){el('selection-count').textContent='Выбрано '+selection.size;refreshHighlights();document.querySelectorAll<HTMLElement>('.element-item').forEach(row=>row.setAttribute('aria-pressed',String(selection.has(row.dataset.id??''))));}
 function rememberVisibility(){visibilityHistory.push({hidden:visibility.snapshot(),apply3d:el<HTMLInputElement>('visibility-filter').checked,filters:model&&loadedBinary?captureWorkspace().state.filters:undefined});if(visibilityHistory.length>30)visibilityHistory.shift();el<HTMLButtonElement>('undo-visibility').disabled=false;}
 el('undo-visibility').onclick=()=>{const previous=visibilityHistory.pop();if(!previous)return;visibility.restore(previous.hidden);if(previous.filters)restoreFilters(previous.filters);el<HTMLInputElement>('visibility-filter').checked=previous.apply3d;syncMemberVisibility();applySceneVisibility();renderMembers();el<HTMLButtonElement>('undo-visibility').disabled=!visibilityHistory.length;};
-const savedWorkspace=workspacePanel({project:()=>measurementProject,capture:captureWorkspace,restore:restoreWorkspace,apply:applyWorkspaceState,matches:()=>treeItems.map(e=>e.id),selection:()=>[...selection],show:isolateElements,highlight:ids=>{networkHighlights=new Set(ids);refreshHighlights();},error,shared:!DEMO});
+const savedWorkspace=workspacePanel({project:()=>measurementProject,capture:captureWorkspace,restore:restoreWorkspace,apply:applyWorkspaceState,matches:()=>treeItems.map(e=>e.id),visible:()=>viewer?.visibleElementIds()??[],selection:()=>[...selection],show:isolateElements,highlight:ids=>{networkHighlights=new Set(ids);refreshHighlights();},error,shared:!DEMO});
 const saveStatus=document.createElement('button');saveStatus.className='workspace-save-status';saveStatus.textContent='Работа в браузере';saveStatus.onclick=()=>el('open-workspace').click();document.querySelector('.status-bar')!.append(saveStatus);
 const recovery=autoRecovery({project:()=>measurementProject,capture:captureWorkspace,status:(text,dirty)=>{saveStatus.textContent=dirty?'Не сохранено':'Сохранено';saveStatus.title=text;saveStatus.dataset.dirty=String(dirty);}});
 let initialLoad:Promise<void>=Promise.resolve();
@@ -168,7 +168,7 @@ function captureWorkspace():Omit<SavedScene,'id'|'name'|'created_at'|'project_id
 }
 function applyWorkspaceState(state:ViewerState){
  if(model)validateViewerState(state,model);
- if(state.version!==1||!model||state.model_id!==model.model_id||state.source_sha256!==model.source.sha256)throw Error('Рабочее место относится к другому пакету модели. Сначала откройте соответствующий снимок / модель.');
+ if(state.version!==1||!model||state.model_id!==model.model_id||state.source_sha256!==model.source.sha256)throw Error('Сохранённая сцена относится к другой модели. Сначала откройте соответствующий снимок / модель.');
  const ids=new Set(model.elements.map(e=>e.id));if([...state.hidden,...state.selection].some(id=>!ids.has(id)))throw Error('В рабочем месте есть элементы, не найденные в этой модели');
  viewer?.restoreView(state.view);visibility.restore(state.hidden);selection.clear();for(const id of state.selection)selection.add(id);
  restoreFilters(state.filters);syncMemberVisibility();applySceneVisibility();renderMembers();renderSystemSummary();updateSelection();localStorage.setItem(measurementKey(measurementProject),JSON.stringify(state.measurements));savedWorkspace.putSets(state.sets);specifications.restore(state.specifications??[]);

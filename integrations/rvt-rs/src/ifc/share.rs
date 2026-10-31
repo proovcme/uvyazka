@@ -1,28 +1,22 @@
-//! URL-based viewer state sharing (VW1-24).
+//! URL-based viewer state sharing.
 //!
-//! Ties the VW1 viewer primitives into a single `ViewerState`
-//! struct that can be base64-serialized to fit in a URL fragment.
-//! Typical flow:
+//! Ties the viewer primitives into a single `ViewerState`
+//! struct that a URL fragment carries as base64-encoded JSON.
+//! [`decode_from_fragment`] restores one from the fragment.
 //!
-//! 1. Viewer loads with default state.
-//! 2. User orbits, hides layers, draws a section box.
-//! 3. Frontend calls `encode_to_fragment(&state)` and writes it
-//!    to `window.location.hash`.
-//! 4. Anyone opening the URL calls `decode_from_fragment(hash)`
-//!    and passes the restored state to the viewer.
-//!
-//! The encoding is deterministic base64-of-JSON — no compression
-//! (the state is small enough that the extra dep isn't worth
-//! it), no versioning (a breaking change bumps the JSON schema's
-//! top-level keys so `decode_from_fragment` returns `None`
-//! gracefully).
+//! The encoding is base64-of-JSON — no compression (the state is
+//! small enough that the extra dep isn't worth it), no versioning (a
+//! breaking change bumps the JSON schema's top-level keys so
+//! `decode_from_fragment` returns `None` gracefully).
+// Tracker: VW1-24.
 
 use super::camera::CameraState;
 use super::clipping::{SectionBox, ViewMode};
 use super::scene_graph::CategoryFilter;
 use serde::{Deserialize, Serialize};
 
-/// Complete viewer state bundled for URL sharing (VW1-24).
+/// Complete viewer state bundled for URL sharing.
+// Tracker: VW1-24.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ViewerState {
     /// Optional file hash / identifier — when present, frontends
@@ -48,22 +42,12 @@ pub struct ViewerState {
     pub selected_name: Option<String>,
 }
 
-/// Base64-encode a `ViewerState` to a URL-safe fragment (VW1-24).
-/// The returned string is ready to drop into
-/// `window.location.hash = "#v=" + returned` on the frontend.
-///
-/// Uses the standard base64 alphabet with `=` padding.
-pub fn encode_to_fragment(state: &ViewerState) -> String {
-    let json =
-        serde_json::to_string(state).expect("ViewerState serialization can't fail — pure data");
-    base64_encode(json.as_bytes())
-}
-
-/// Decode a URL fragment back into a `ViewerState` (VW1-24).
+/// Decode a URL fragment back into a `ViewerState`.
 /// Returns `None` when the fragment is invalid base64, produces
 /// invalid UTF-8, or doesn't parse as the current `ViewerState`
 /// JSON schema. Callers should fall back to `ViewerState::default()`
 /// when this returns `None`.
+// Tracker: VW1-24.
 pub fn decode_from_fragment(fragment: &str) -> Option<ViewerState> {
     let trimmed = fragment
         .trim()
@@ -84,30 +68,6 @@ impl CategoryFilter {
 }
 
 // ---- Internal: dep-free base64 ----
-
-fn base64_encode(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        out.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
-        out.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() >= 2 {
-            out.push(ALPHABET[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() == 3 {
-            out.push(ALPHABET[(triple & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
-}
 
 fn base64_decode(s: &str) -> Option<Vec<u8>> {
     fn lookup(c: u8) -> Option<u8> {

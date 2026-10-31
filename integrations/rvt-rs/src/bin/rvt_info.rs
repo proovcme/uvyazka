@@ -132,6 +132,10 @@ struct Report<'a> {
     /// Worksharing, save history and document identity
     /// (`rvt::metadata::FileMetadata`).
     document: Option<&'a FileMetadata>,
+    /// A family's types and type parameters from its `PartAtom` type table
+    /// (`rvt::part_atom::PartAtom::family_types`); absent when it has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    family_types: Option<Vec<rvt::part_atom::FamilyType>>,
 }
 
 fn report_one(cli: &Cli, format: Format) -> anyhow::Result<()> {
@@ -155,10 +159,16 @@ fn report_one(cli: &Cli, format: Format) -> anyhow::Result<()> {
         eprintln!("preview PNG written to {}", preview_path.display());
     }
 
+    let family_types = summary
+        .partatom
+        .as_ref()
+        .and_then(|atom| atom.family_types().ok())
+        .filter(|types| !types.is_empty());
     if format == Format::Json {
         let report = Report {
             summary: &summary,
             document: document.as_ref(),
+            family_types,
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
@@ -167,7 +177,13 @@ fn report_one(cli: &Cli, format: Format) -> anyhow::Result<()> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    print_text(&name, &summary, document.as_ref(), cli.show_classes);
+    print_text(
+        &name,
+        &summary,
+        document.as_ref(),
+        family_types.as_deref(),
+        cli.show_classes,
+    );
     if cli.all_classes {
         let names = rf.class_names()?;
         println!("\n=== all class names ({}) ===", names.len());
@@ -188,6 +204,7 @@ fn print_text(
     name: &str,
     s: &rvt::reader::Summary,
     doc: Option<&FileMetadata>,
+    family_types: Option<&[rvt::part_atom::FamilyType]>,
     show_classes: bool,
 ) {
     println!("Revit file · {name}");
@@ -269,6 +286,12 @@ fn print_text(
             println!("  taxonomies:");
             for t in &pa.taxonomies {
                 println!("    - {} ({})", t.label, t.term);
+            }
+        }
+        if let Some(types) = family_types {
+            println!("  types:     {}", types.len());
+            for t in types {
+                println!("    - {} ({} type parameters)", t.name, t.parameters.len());
             }
         }
     }
@@ -412,32 +435,36 @@ fn inventory_row(path: &Path, redact: bool) -> Row {
 /// Read every file on a small worker pool (network shares are latency-bound)
 /// and return rows in input order.
 fn inventory(files: &[PathBuf], redact: bool) -> Vec<Row> {
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let workers = std::thread::available_parallelism()
         .map_or(4, |n| n.get())
         .clamp(1, 8)
         .min(files.len());
     let next = AtomicUsize::new(0);
-    let slots: Mutex<Vec<Option<Row>>> = Mutex::new(files.iter().map(|_| None).collect());
+    let mut rows: Vec<(usize, Row)> = Vec::with_capacity(files.len());
     std::thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(path) = files.get(i) else { break };
-                    let row = inventory_row(path, redact);
-                    slots.lock().unwrap_or_else(|p| p.into_inner())[i] = Some(row);
-                }
-            });
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(path) = files.get(i) else { break };
+                        done.push((i, inventory_row(path, redact)));
+                    }
+                    done
+                })
+            })
+            .collect();
+        for handle in handles {
+            match handle.join() {
+                Ok(done) => rows.extend(done),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
         }
     });
-    slots
-        .into_inner()
-        .unwrap_or_else(|p| p.into_inner())
-        .into_iter()
-        .flatten()
-        .collect()
+    rows.sort_unstable_by_key(|(i, _)| *i);
+    rows.into_iter().map(|(_, row)| row).collect()
 }
 
 fn human_size(bytes: Option<u64>) -> String {

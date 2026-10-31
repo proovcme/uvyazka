@@ -57,6 +57,7 @@
 //! such as [`BasicFileInfo::worksharing`] and [`BasicFileInfo::username`]
 //! read from it and return `None` for an absent or empty value.
 
+use crate::le_bytes;
 use crate::{Error, Result};
 use encoding_rs::UTF_16LE;
 use serde::{Deserialize, Serialize};
@@ -128,10 +129,13 @@ impl BasicFileInfo {
         let properties = parse_properties(data);
         let prop = |key: &str| lookup(&properties, key);
 
+        let build = extract_build(&raw)
+            .or_else(|| prop("Build").map(str::to_string))
+            .or_else(|| prop("Revit Build").map(str::to_string));
         let version = extract_version(&raw)
             .or_else(|| prop("Format").and_then(parse_release_year))
+            .or_else(|| build.as_deref().and_then(release_from_build))
             .ok_or_else(|| Error::BasicFileInfo("no 4-digit Revit version found".into()))?;
-        let build = extract_build(&raw).or_else(|| prop("Build").map(str::to_string));
         let original_path =
             extract_path(&raw).or_else(|| prop("Last Save Path").map(str::to_string));
         let guid = prop("Unique Document GUID")
@@ -231,7 +235,7 @@ impl BasicFileInfo {
         self.property("ClientAppName")
     }
 
-    /// Encode a `BasicFileInfo` back to UTF-16LE bytes (WRT-07).
+    /// Encode a `BasicFileInfo` back to UTF-16LE bytes.
     /// Inverse of [`Self::from_bytes`].
     ///
     /// Uses the canonical 2019+ pattern:
@@ -251,6 +255,7 @@ impl BasicFileInfo {
     /// `original_path`, `guid`, and `locale` equal the original's.
     /// `raw_text` may differ (it's the decoder's reconstruction,
     /// not a byte-level echo).
+    // Tracker: WRT-07.
     pub fn encode(&self) -> Vec<u8> {
         let mut text = format!("{}", self.version);
         if let Some(build) = self.build.as_deref() {
@@ -334,9 +339,7 @@ pub fn parse_properties(data: &[u8]) -> Vec<FileProperty> {
         let Some(body) = data.get(align..) else {
             return Vec::new();
         };
-        let units = body
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+        let units = le_bytes::u16_units(body);
         let text: String = char::decode_utf16(units)
             .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
             .collect();
@@ -434,11 +437,11 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
-/// Plausible Revit release years. The lower bound is the one the version
-/// scan has always used; the upper bound leaves room for releases newer
-/// than the reference corpus (Revit 2027 shipped in 2026) without accepting
+/// Plausible Revit release years. The lower bound is Revit 2008, the oldest
+/// writer seen; the upper bound leaves room for releases newer than the
+/// reference corpus (Revit 2027 shipped in 2026) without accepting
 /// arbitrary 4-digit numbers.
-const RELEASE_YEARS: std::ops::RangeInclusive<u32> = 2014..=2040;
+const RELEASE_YEARS: std::ops::RangeInclusive<u32> = 2008..=2040;
 
 fn parse_release_year(value: &str) -> Option<u32> {
     value
@@ -452,24 +455,43 @@ fn extract_version(text: &str) -> Option<u32> {
     // Two patterns seen:
     //   "Autodesk Revit 2018 (Build: 20170130_1515(x64))"   <- 2016-2018
     //   "2019  20180123_1515(x64)"                          <- 2019+
-    // Strategy: scan for the first 4-digit number in 2014..2030 range.
-    let mut chars = text.char_indices().peekable();
-    while let Some((_, c)) = chars.next() {
-        if !c.is_ascii_digit() {
+    //   "Autodesk Revit MEP 2010 (Build: 20090317_2115)"    <- 2010-2015
+    // Strategy: the first run of exactly 4 digits in RELEASE_YEARS. A
+    // longer run is a build date: "20080321_1900" must not read as 2008.
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
             continue;
         }
-        // tentative start
-        let start = chars.peek().map(|(i, _)| *i).unwrap_or(text.len()) - c.len_utf8();
-        let slice: String = text[start..].chars().take(4).collect();
-        if slice.len() == 4 && slice.chars().all(|c| c.is_ascii_digit()) {
-            if let Ok(n) = slice.parse::<u32>() {
-                if RELEASE_YEARS.contains(&n) {
-                    return Some(n);
-                }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i - start == 4 {
+            if let Some(n) = parse_release_year(&text[start..i]) {
+                return Some(n);
             }
         }
     }
     None
+}
+
+/// The release of a file that states none, from its build date. Revit 2008
+/// and 2009 write only `Revit Build: 20070324_1700`, with no year anywhere
+/// in the stream. Every file that states both was built in the year before
+/// its release (20090317 for 2010, 20121003 for 2013, 20150110 for 2016),
+/// so the release is the build year plus one.
+fn release_from_build(build: &str) -> Option<u32> {
+    let date = build
+        .get(..8)
+        .filter(|d| d.bytes().all(|b| b.is_ascii_digit()))?;
+    if build.as_bytes().get(8) != Some(&b'_') {
+        return None;
+    }
+    let year: u32 = date[..4].parse().ok()?;
+    Some(year + 1).filter(|y| RELEASE_YEARS.contains(y))
 }
 
 fn extract_build(text: &str) -> Option<String> {
@@ -505,8 +527,7 @@ fn extract_build(text: &str) -> Option<String> {
                 && hm.iter().all(u8::is_ascii_digit)
                 && sfx == suffix.as_bytes();
             if ok {
-                // Safe because window is all ASCII.
-                return Some(std::str::from_utf8(window).unwrap().to_string());
+                return Some(String::from_utf8_lossy(window).into_owned());
             }
         }
     }

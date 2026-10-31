@@ -8,7 +8,7 @@
 //! element's saved mesh.
 //!
 //! On RE1's four models (Revit 2025) 207 of the 214 bodies replaced are
-//! within 0.01 ft of Revit's export (B77, Measure run 37231768480).
+//! within 0.01 ft of Revit's export (Measure run 37231768480).
 //!
 //! On Core Interior the saved meshes coincide with the bodies rvt-rs already
 //! draws exactly (walls 351 of 360, columns 256 of 256, slabs 80 of 80), and
@@ -16,8 +16,13 @@
 //! record box is 3.75 ft deep because it includes the swing: the 2.92 ft
 //! difference #227 measured against Revit's own export.
 //!
-//! Reading saved graphics is slow on large files, so it is opt-in
-//! (`rvt-ifc --saved-meshes`, `rvt-gltf --saved-meshes`).
+//! Doors and windows are drawn from their saved meshes by default
+//! ([`SavedMeshScope::DoorsAndWindows`]: the maintainer, 2026-10-29), where
+//! every vertex is Revit's within 0.001 ft on Core Interior's 132 doors and
+//! 6 windows and the BIM4LCA office's 269 windows (Measure run
+//! 40932136360). Every other class is opt-in ([`SavedMeshScope::All`],
+//! `rvt-ifc --saved-meshes`, `rvt-gltf --saved-meshes`): reading saved
+//! graphics is slow on large files, and some partial meshes record nothing.
 
 use super::IfcModel;
 use super::entities::{BrepTriangle, IfcEntity, PropertyValue, SolidShape};
@@ -29,18 +34,61 @@ pub const SAVED_MESH_BODY_SOURCE: &str = "saved_graphics_mesh";
 
 /// What [`attach`] did.
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
+#[non_exhaustive]
 pub struct SavedMeshReport {
     /// Elements whose body was the record's bounding box.
     pub candidates: usize,
     /// Of those, elements now drawn from their saved mesh.
     pub replaced: usize,
+    /// Of those, elements keeping their box because part of their saved
+    /// graphics did not decode (RE-224).
+    pub partial: usize,
     /// Triangles written in all.
     pub triangles: usize,
 }
 
+/// Which bounding-box bodies [`attach_scoped_with_control`] replaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SavedMeshScope {
+    /// Every element drawn as its record's box (`rvt-ifc --saved-meshes`).
+    All,
+    /// Doors and windows only, as `rvt-ifc` and `rvt-gltf` do by default.
+    DoorsAndWindows,
+}
+
+impl SavedMeshScope {
+    fn includes(self, ifc_type: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::DoorsAndWindows => matches!(ifc_type, "IFCDOOR" | "IFCWINDOW"),
+        }
+    }
+}
+
 /// Replace each bounding-box body with the element's saved mesh, where the
-/// file holds one.
+/// file holds one and all of it decodes.
 pub fn attach(rf: &mut crate::RevitFile, model: &mut IfcModel) -> anyhow::Result<SavedMeshReport> {
+    attach_with_control(rf, model, &crate::control::WalkerControl::default())
+}
+
+/// Same as [`attach`], reading the saved graphics through
+/// `research::native_saved_scene::extract_at_detail_with_control`.
+pub fn attach_with_control(
+    rf: &mut crate::RevitFile,
+    model: &mut IfcModel,
+    control: &crate::control::WalkerControl,
+) -> anyhow::Result<SavedMeshReport> {
+    attach_scoped_with_control(rf, model, SavedMeshScope::All, control)
+}
+
+/// Same as [`attach_with_control`], for the bodies `scope` names only.
+pub fn attach_scoped_with_control(
+    rf: &mut crate::RevitFile,
+    model: &mut IfcModel,
+    scope: SavedMeshScope,
+    control: &crate::control::WalkerControl,
+) -> anyhow::Result<SavedMeshReport> {
     let mut report = SavedMeshReport::default();
     let mut by_id: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
     // A stair or curtain wall is drawn by its parts; its own saved graphics
@@ -58,6 +106,7 @@ pub fn attach(rf: &mut crate::RevitFile, model: &mut IfcModel) -> anyhow::Result
             continue;
         }
         let IfcEntity::BuildingElement {
+            ifc_type,
             type_guid: Some(tag),
             property_set: Some(set),
             location_feet: Some(_),
@@ -66,6 +115,9 @@ pub fn attach(rf: &mut crate::RevitFile, model: &mut IfcModel) -> anyhow::Result
         else {
             continue;
         };
+        if !scope.includes(ifc_type) {
+            continue;
+        }
         let text = |name: &str| {
             set.properties.iter().find_map(|p| match &p.value {
                 PropertyValue::Text(t) if p.name == name => Some(t.as_str()),
@@ -93,7 +145,8 @@ pub fn attach(rf: &mut crate::RevitFile, model: &mut IfcModel) -> anyhow::Result
         max_graph_objects: 1_000_000,
         ..Default::default()
     };
-    let scene = crate::native_saved_scene::extract_at_detail(rf, &options, 3)?;
+    let scene =
+        crate::native_saved_scene::extract_at_detail_with_control(rf, &options, 3, control)?;
     for element in &scene.elements {
         let Some(indices) = by_id.get(&element.identity.element_id) else {
             continue;
@@ -105,6 +158,19 @@ pub fn attach(rf: &mut crate::RevitFile, model: &mut IfcModel) -> anyhow::Result
         };
         let primitives = &element.meshes.primitives;
         if primitives.is_empty() {
+            continue;
+        }
+        // RE-224: a mesh some face or branch of which did not decode is only
+        // part of the body (on the BIM4LCA office 357 such meshes, none of
+        // them Revit's body). Only branches left out for their view semantics
+        // leave it whole.
+        let partial = element.meshes.diagnostics.iter().any(|diagnostic| {
+            !diagnostic.ends_with(crate::native_graphics_traversal::NESTED_DETAIL_FILTER_DIAGNOSTIC)
+                && !diagnostic
+                    .ends_with(crate::native_graphics_traversal::VIEW_COMPONENT_DIAGNOSTIC)
+        });
+        if partial {
+            report.partial += 1;
             continue;
         }
         let IfcEntity::BuildingElement {

@@ -20,6 +20,7 @@
 use super::entities::{
     Extrusion, IfcBooleanOp, IfcEntity, ProfileDef, RepresentationMap, SolidShape,
 };
+use crate::vector_math::{cross as cross3, dot, sub};
 
 /// A profile point, feet.
 pub type Point2 = (f64, f64);
@@ -36,6 +37,7 @@ pub const MAX_TRIANGULATED_POINTS: usize = 2048;
 
 /// A triangle mesh. Triangles wind counter-clockwise seen from outside.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct Mesh {
     pub vertices: Vec<[f64; 3]>,
     pub triangles: Vec<[u32; 3]>,
@@ -71,6 +73,7 @@ impl Mesh {
 
 /// What an element's body is, in the STEP writer's order of precedence.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum Body<'a> {
     Extrusion(&'a Extrusion),
     Solid(&'a SolidShape),
@@ -101,6 +104,7 @@ pub fn element_body<'a>(entity: &'a IfcEntity, maps: &'a [RepresentationMap]) ->
 /// The element placement: `location_feet` (or the origin) turned
 /// `rotation_radians` about +Z.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct Placement {
     pub origin: [f64; 3],
     pub cos: f64,
@@ -330,6 +334,7 @@ fn ear_clip(poly: &[Point2]) -> Option<Vec<[u32; 3]>> {
 /// A profile ready to extrude or sweep: its rings, outer counter-clockwise
 /// and holes clockwise, and a triangulation of the area between them.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Section {
     pub rings: Vec<Ring>,
     pub cap_points: Ring,
@@ -539,8 +544,66 @@ pub fn profile_rings(profile: &ProfileDef) -> Option<(Ring, Vec<Ring>)> {
         }
         ProfileDef::ArbitraryClosed { points } => (points.clone(), Vec::new()),
         ProfileDef::ArbitraryWithVoids { points, voids } => (points.clone(), voids.clone()),
+        ProfileDef::IndexedPolyCurve { points, segments } => {
+            (indexed_poly_curve_ring(points, segments)?, Vec::new())
+        }
+        ProfileDef::IndexedPolyCurveWithVoids { outer, voids } => (
+            indexed_poly_curve_ring(&outer.points, &outer.segments)?,
+            voids
+                .iter()
+                .map(|void| indexed_poly_curve_ring(&void.points, &void.segments))
+                .collect::<Option<Vec<_>>>()?,
+        ),
     };
     Some(rings)
+}
+
+/// An indexed poly-curve's ring: each line's start, and each arc from its
+/// start towards its end in steps of at most a [`CIRCLE_SEGMENTS`]th of a
+/// turn about the circle through its three points.
+fn indexed_poly_curve_ring(
+    points: &[Point2],
+    segments: &[super::entities::CurveSegment],
+) -> Option<Ring> {
+    use super::entities::CurveSegment;
+    let mut ring = Ring::new();
+    for segment in segments {
+        match *segment {
+            CurveSegment::Line([a, _]) => ring.push(*points.get(a)?),
+            CurveSegment::Arc([a, m, b]) => {
+                let (p, q, r) = (*points.get(a)?, *points.get(m)?, *points.get(b)?);
+                // The circle through p, q and r.
+                let d = 2.0 * (p.0 * (q.1 - r.1) + q.0 * (r.1 - p.1) + r.0 * (p.1 - q.1));
+                if d.abs() < 1e-12 {
+                    ring.push(p);
+                    continue;
+                }
+                let n = |v: Point2| v.0 * v.0 + v.1 * v.1;
+                let c = (
+                    (n(p) * (q.1 - r.1) + n(q) * (r.1 - p.1) + n(r) * (p.1 - q.1)) / d,
+                    (n(p) * (r.0 - q.0) + n(q) * (p.0 - r.0) + n(r) * (q.0 - p.0)) / d,
+                );
+                let angle = |v: Point2| (v.1 - c.1).atan2(v.0 - c.0);
+                let radius = (p.0 - c.0).hypot(p.1 - c.1);
+                // Anticlockwise when r lies to the left of p to q.
+                let turn = std::f64::consts::TAU;
+                let anticlockwise = d > 0.0;
+                let sweep = |from: f64, to: f64| {
+                    let s = (to - from).rem_euclid(turn);
+                    if anticlockwise { s } else { s - turn }
+                };
+                let total = sweep(angle(p), angle(r));
+                let steps =
+                    ((total.abs() / (turn / CIRCLE_SEGMENTS as f64)).ceil() as usize).max(1);
+                let start = angle(p);
+                for i in 0..steps {
+                    let a = start + total * i as f64 / steps as f64;
+                    ring.push((c.0 + radius * a.cos(), c.1 + radius * a.sin()));
+                }
+            }
+        }
+    }
+    (ring.len() >= 3).then_some(ring)
 }
 
 /// The rings of an extrusion's profile: its override, else its width ×
@@ -949,22 +1012,6 @@ pub fn layered_extrusion_meshes(
     Some(meshes)
 }
 
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
 fn unit(v: [f64; 3]) -> Option<[f64; 3]> {
     let n = dot(v, v).sqrt();
     (n.is_finite() && n > 1e-12).then(|| [v[0] / n, v[1] / n, v[2] / n])
@@ -1147,6 +1194,14 @@ pub fn solid_mesh(shape: &SolidShape) -> Option<Mesh> {
             axis_direction,
             angle_radians,
         } => revolved_mesh(profile, *axis_origin_feet, *axis_direction, *angle_radians),
+        SolidShape::Compound(items) => {
+            let mut meshes = items.iter().filter_map(solid_mesh);
+            let mut mesh = meshes.next()?;
+            for other in meshes {
+                mesh.append(other);
+            }
+            Some(mesh)
+        }
         SolidShape::BooleanResult {
             op,
             operand_a,
@@ -1230,318 +1285,5 @@ pub fn plan_outline(body: Body<'_>, placement: &Placement) -> Option<(Ring, Vec<
             );
             (hull.len() >= 3).then_some((hull, Vec::new()))
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ifc::entities::BrepTriangle;
-
-    fn area(section: &Section) -> f64 {
-        section
-            .cap_triangles
-            .iter()
-            .map(|&[a, b, c]| {
-                let p = &section.cap_points;
-                cross(p[a as usize], p[b as usize], p[c as usize]) / 2.0
-            })
-            .sum()
-    }
-
-    /// Signed volume of a closed mesh (divergence theorem).
-    fn volume(mesh: &Mesh) -> f64 {
-        mesh.triangles
-            .iter()
-            .map(|&[a, b, c]| {
-                let (a, b, c) = (
-                    mesh.vertices[a as usize],
-                    mesh.vertices[b as usize],
-                    mesh.vertices[c as usize],
-                );
-                dot(a, cross3(b, c)) / 6.0
-            })
-            .sum()
-    }
-
-    #[test]
-    fn a_concave_profile_triangulates_to_its_area() {
-        // An L: 4 x 4 less a 2 x 2 corner.
-        let l = vec![
-            (0.0, 0.0),
-            (4.0, 0.0),
-            (4.0, 2.0),
-            (2.0, 2.0),
-            (2.0, 4.0),
-            (0.0, 4.0),
-        ];
-        let s = section(&l, &[]).expect("section");
-        assert_eq!(s.cap_triangles.len(), 4);
-        assert!((area(&s) - 12.0).abs() < 1e-12);
-        // Clockwise input is turned counter-clockwise.
-        let mut cw = l.clone();
-        cw.reverse();
-        assert!((area(&section(&cw, &[]).expect("section")) - 12.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn holes_are_left_out_of_the_section() {
-        let outer = rectangle(10.0, 10.0);
-        let holes = vec![rectangle(2.0, 2.0), {
-            let r = rectangle(1.0, 1.0);
-            r.iter().map(|&(x, y)| (x + 3.0, y + 3.0)).collect()
-        }];
-        let s = section(&outer, &holes).expect("section");
-        assert_eq!(s.rings.len(), 3);
-        assert!((area(&s) - (100.0 - 4.0 - 1.0)).abs() < 1e-9);
-    }
-
-    #[test]
-    fn a_self_intersecting_profile_draws_its_bounding_rectangle() {
-        // The last edge crosses the first; the ring still encloses area.
-        let crossing = vec![(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (1.0, -1.0)];
-        let s = section(&crossing, &[]).expect("section");
-        assert!((area(&s) - 20.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn degenerate_profiles_have_no_section() {
-        assert!(section(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)], &[]).is_none());
-        assert!(section(&[(0.0, 0.0), (1.0, 0.0)], &[]).is_none());
-        assert!(section(&[(0.0, 0.0), (f64::NAN, 0.0), (1.0, 1.0)], &[]).is_none());
-        assert!(
-            profile_rings(&ProfileDef::Rectangle {
-                width_feet: 0.0,
-                depth_feet: 1.0
-            })
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn an_extrusion_is_a_closed_prism_of_its_profile() {
-        let mesh = extrusion_mesh(&Extrusion::rectangle(4.0, 2.0, 3.0)).expect("mesh");
-        assert!((volume(&mesh) - 24.0).abs() < 1e-9);
-        let hollow = Extrusion {
-            width_feet: 0.0,
-            depth_feet: 0.0,
-            height_feet: 2.0,
-            profile_override: Some(ProfileDef::RectangleHollow {
-                overall_width_feet: 4.0,
-                overall_depth_feet: 4.0,
-                wall_thickness_feet: 1.0,
-            }),
-        };
-        let mesh = extrusion_mesh(&hollow).expect("mesh");
-        assert!((volume(&mesh) - (16.0 - 4.0) * 2.0).abs() < 1e-9);
-        assert!(extrusion_mesh(&Extrusion::rectangle(1.0, 1.0, 0.0)).is_none());
-    }
-
-    #[test]
-    fn steel_profiles_have_their_area() {
-        let cases = [
-            (
-                ProfileDef::IShape {
-                    overall_width_feet: 1.0,
-                    overall_depth_feet: 2.0,
-                    web_thickness_feet: 0.1,
-                    flange_thickness_feet: 0.2,
-                },
-                2.0 * 1.0 * 0.2 + 0.1 * 1.6,
-            ),
-            (
-                ProfileDef::TShape {
-                    overall_depth_feet: 2.0,
-                    flange_width_feet: 1.0,
-                    web_thickness_feet: 0.1,
-                    flange_thickness_feet: 0.2,
-                },
-                1.0 * 0.2 + 0.1 * 1.8,
-            ),
-            (
-                ProfileDef::LShape {
-                    overall_depth_feet: 2.0,
-                    overall_width_feet: 1.0,
-                    thickness_feet: 0.1,
-                },
-                2.0 * 0.1 + 0.9 * 0.1,
-            ),
-            (
-                ProfileDef::UShape {
-                    overall_depth_feet: 2.0,
-                    flange_width_feet: 1.0,
-                    web_thickness_feet: 0.1,
-                    flange_thickness_feet: 0.2,
-                },
-                2.0 * 0.2 * 1.0 + 0.1 * 1.6,
-            ),
-        ];
-        for (profile, expected) in cases {
-            let (outer, holes) = profile_rings(&profile).expect("rings");
-            let (x0, y0, x1, y1) = ring_bounds(&outer);
-            assert!(
-                (x0 + x1).abs() < 1e-12 && (y0 + y1).abs() < 1e-12,
-                "centred on its box"
-            );
-            let s = section(&outer, &holes).expect("section");
-            assert!((area(&s) - expected).abs() < 1e-9, "{profile:?}");
-        }
-    }
-
-    #[test]
-    fn a_circle_is_drawn_around_itself() {
-        let (outer, _) = profile_rings(&ProfileDef::Circle { radius_feet: 1.0 }).expect("rings");
-        let s = section(&outer, &[]).expect("section");
-        assert!(area(&s) > std::f64::consts::PI);
-        assert!(area(&s) < std::f64::consts::PI * 1.02);
-    }
-
-    #[test]
-    fn a_swept_beam_lies_along_its_directrix_with_its_depth_up() {
-        // A 0.3 deep, 0.25 wide section along a 2 degree slope: the fixed
-        // reference +Z sets the profile's X axis, so X is the depth.
-        let slope = 2f64.to_radians();
-        let d = [0.0, slope.cos(), -slope.sin()];
-        let shape = SolidShape::SweptPath {
-            profile: ProfileDef::Rectangle {
-                width_feet: 0.3,
-                depth_feet: 0.25,
-            },
-            directrix_points_feet: vec![[0.0, 0.0, 0.0], [0.0, 20.0 * d[1], 20.0 * d[2]]],
-            fixed_reference: [0.0, 0.0, 1.0],
-        };
-        let mesh = solid_mesh(&shape).expect("mesh");
-        assert!((volume(&mesh) - 20.0 * 0.3 * 0.25).abs() < 1e-9);
-        let across = |axis: [f64; 3]| {
-            let values: Vec<f64> = mesh.vertices.iter().map(|&v| dot(v, axis)).collect();
-            values.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-                - values.iter().copied().fold(f64::INFINITY, f64::min)
-        };
-        assert!((across([1.0, 0.0, 0.0]) - 0.25).abs() < 1e-9);
-        assert!((across([0.0, slope.sin(), slope.cos()]) - 0.3).abs() < 1e-9);
-        assert!((across(d) - 20.0).abs() < 1e-9);
-    }
-
-    /// RE-52: a placed extrusion stands its profile in the plane its axis
-    /// is normal to, X along the reference, Y the axis crossed with X.
-    #[test]
-    fn a_placed_extrusion_stands_its_profile_up() {
-        // An L-shaped step, X up and Y along, extruded 4 ft along -X.
-        let points = vec![
-            (0.0, 0.0),
-            (0.5, 0.0),
-            (0.5, 1.0),
-            (0.25, 1.0),
-            (0.25, 0.5),
-            (0.0, 0.5),
-        ];
-        let shape = SolidShape::PlacedExtrusion {
-            profile: ProfileDef::ArbitraryClosed { points },
-            origin_feet: [1.0, 2.0, 3.0],
-            axis: [-1.0, 0.0, 0.0],
-            ref_direction: [0.0, 0.0, 1.0],
-            depth_feet: 4.0,
-        };
-        let mesh = solid_mesh(&shape).expect("mesh");
-        assert!((volume(&mesh).abs() - 4.0 * 0.375).abs() < 1e-9);
-        // Y is (-1, 0, 0) × (0, 0, 1) = (0, 1, 0): profile (x, y) lands at
-        // origin + x up + y along +Y, swept to x = 1 - 4.
-        for (x, y) in [(0.5, 1.0), (0.25, 0.5)] {
-            for along in [1.0, -3.0] {
-                let want = [along, 2.0 + y, 3.0 + x];
-                assert!(
-                    mesh.vertices
-                        .iter()
-                        .any(|p| (0..3).all(|i| (p[i] - want[i]).abs() < 1e-12)),
-                    "missing {want:?}"
-                );
-            }
-        }
-        // A zero depth draws nothing.
-        let SolidShape::PlacedExtrusion {
-            profile,
-            origin_feet,
-            axis,
-            ref_direction,
-            ..
-        } = shape
-        else {
-            unreachable!()
-        };
-        let flat = SolidShape::PlacedExtrusion {
-            profile,
-            origin_feet,
-            axis,
-            ref_direction,
-            depth_feet: 0.0,
-        };
-        assert!(solid_mesh(&flat).is_none());
-    }
-
-    #[test]
-    fn a_revolution_and_a_brep_are_drawn() {
-        let shape = SolidShape::RevolvedArea {
-            profile: ProfileDef::Rectangle {
-                width_feet: 1.0,
-                depth_feet: 2.0,
-            },
-            axis_origin_feet: [2.0, 0.0, 0.0],
-            axis_direction: [0.0, 1.0, 0.0],
-            angle_radians: std::f64::consts::TAU,
-        };
-        let mesh = solid_mesh(&shape).expect("mesh");
-        assert!(!mesh.is_empty());
-        let brep = SolidShape::FacetedBrep {
-            vertices_feet: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-            triangles: vec![
-                BrepTriangle(0, 2, 1),
-                BrepTriangle(0, 1, 3),
-                BrepTriangle(9, 9, 9),
-            ],
-        };
-        let mesh = solid_mesh(&brep).expect("mesh");
-        assert_eq!(
-            mesh.triangles.len(),
-            4,
-            "the bad triangle is dropped, the rest two-sided"
-        );
-    }
-
-    #[test]
-    fn a_difference_draws_its_first_operand() {
-        let shape = SolidShape::BooleanResult {
-            op: IfcBooleanOp::Difference,
-            operand_a: Box::new(SolidShape::ExtrudedArea(Extrusion::rectangle(
-                2.0, 2.0, 1.0,
-            ))),
-            operand_b: Box::new(SolidShape::ExtrudedArea(Extrusion::rectangle(
-                1.0, 1.0, 1.0,
-            ))),
-        };
-        assert!((volume(&solid_mesh(&shape).expect("mesh")) - 4.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn plan_outlines_turn_with_the_placement() {
-        let extrusion = Extrusion::rectangle(10.0, 1.0, 3.0);
-        let placement = Placement::new(Some([5.0, 5.0, 0.0]), Some(std::f64::consts::FRAC_PI_2));
-        let (outer, holes) =
-            plan_outline(Body::Extrusion(&extrusion), &placement).expect("outline");
-        assert!(holes.is_empty());
-        let (x0, y0, x1, y1) = ring_bounds(&outer);
-        assert!((x1 - x0 - 1.0).abs() < 1e-9 && (y1 - y0 - 10.0).abs() < 1e-9);
-        assert!(((x0 + x1) / 2.0 - 5.0).abs() < 1e-9 && ((y0 + y1) / 2.0 - 5.0).abs() < 1e-9);
-        let swept = SolidShape::SweptPath {
-            profile: ProfileDef::Rectangle {
-                width_feet: 1.0,
-                depth_feet: 1.0,
-            },
-            directrix_points_feet: vec![[0.0, 0.0, 0.0], [3.0, 4.0, 0.0]],
-            fixed_reference: [0.0, 0.0, 1.0],
-        };
-        let (hull, _) =
-            plan_outline(Body::Solid(&swept), &Placement::new(None, None)).expect("outline");
-        assert_eq!(hull.len(), 4);
-        assert!((signed_area(&hull) - 5.0).abs() < 1e-9);
     }
 }

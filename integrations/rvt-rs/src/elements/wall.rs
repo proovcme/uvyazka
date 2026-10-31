@@ -1,7 +1,7 @@
 //! `Wall` + `WallType` — the single highest-leverage element class in
 //! any architectural Revit model. Decoded here into stable typed
 //! views; geometry assembly (extrusion from location curve + layered
-//! compound structure) lives in `src/geometry/` and is task GEO-27.
+//! compound structure) lives in `src/geometry/` and the exporter.
 //!
 //! # Typical Revit field shape (names stable 2016–2026)
 //!
@@ -22,8 +22,7 @@
 //!
 //! The 2D `location curve` (the line in plan view that the wall was
 //! drawn along) is stored by the ADocument walker separately — the
-//! `location_curve_id` here is a handle into that table. Wiring that
-//! up is task L5B-01 + GEO-27.
+//! `location_curve_id` here is a handle into that table.
 //!
 //! WallType:
 //!
@@ -36,17 +35,17 @@
 //! | `m_structural` | Primitive bool | Load-bearing by default? |
 //!
 //! Multi-layer compound structure (`m_compound`) is a nested structure
-//! that the walker's Vector variant (L5B-08) will surface later. For
+//! that the walker's Vector variant will surface later. For
 //! now we capture the scalar fields.
+// Tracker: L5B-08.
 
 use super::level::normalise_field_name;
-use crate::formats;
 use crate::geometry::Point3;
-use crate::walker::{DecodedElement, ElementDecoder, HandleIndex, InstanceField};
-use crate::{Error, Result};
+use crate::walker::{DecodedElement, InstanceField};
 
 /// How a wall's load-bearing role is classified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum StructuralUsage {
     #[default]
     NonBearing,
@@ -69,6 +68,7 @@ impl StructuralUsage {
 /// Which side of the location line represents the "face" Revit shows
 /// in outlines and which side receives finish layers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum LocationLine {
     #[default]
     WallCenterline,
@@ -94,6 +94,7 @@ impl LocationLine {
 
 /// The three wall classifications Revit stores at the type level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum WallKind {
     #[default]
     Basic,
@@ -119,6 +120,7 @@ impl WallKind {
 /// The functional role a wall plays architecturally — drives IFC
 /// predefined-type tagging (`INTERNAL`, `PARTITIONING`, `PARAPET`…).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum WallFunction {
     #[default]
     Interior,
@@ -154,94 +156,22 @@ impl WallFunction {
     }
 }
 
-/// Registered decoder for the `Wall` class.
-pub struct WallDecoder;
-
-impl ElementDecoder for WallDecoder {
-    fn class_name(&self) -> &'static str {
-        "Wall"
-    }
-
-    fn decode(
-        &self,
-        bytes: &[u8],
-        schema: &formats::ClassEntry,
-        index: &HandleIndex,
-    ) -> Result<DecodedElement> {
-        self.decode_with_limits(bytes, schema, index, crate::walker::WalkerLimits::default())
-    }
-
-    fn decode_with_limits(
-        &self,
-        bytes: &[u8],
-        schema: &formats::ClassEntry,
-        _index: &HandleIndex,
-        limits: crate::walker::WalkerLimits,
-    ) -> Result<DecodedElement> {
-        if schema.name != "Wall" {
-            return Err(Error::BasicFileInfo(format!(
-                "WallDecoder received wrong schema: {}",
-                schema.name
-            )));
-        }
-        Ok(crate::walker::decode_instance_with_limits(
-            bytes, 0, schema, limits,
-        ))
-    }
-}
-
-/// Registered decoder for the `WallType` class.
-pub struct WallTypeDecoder;
-
-impl ElementDecoder for WallTypeDecoder {
-    fn class_name(&self) -> &'static str {
-        "WallType"
-    }
-
-    fn decode(
-        &self,
-        bytes: &[u8],
-        schema: &formats::ClassEntry,
-        index: &HandleIndex,
-    ) -> Result<DecodedElement> {
-        self.decode_with_limits(bytes, schema, index, crate::walker::WalkerLimits::default())
-    }
-
-    fn decode_with_limits(
-        &self,
-        bytes: &[u8],
-        schema: &formats::ClassEntry,
-        _index: &HandleIndex,
-        limits: crate::walker::WalkerLimits,
-    ) -> Result<DecodedElement> {
-        if schema.name != "WallType" {
-            return Err(Error::BasicFileInfo(format!(
-                "WallTypeDecoder received wrong schema: {}",
-                schema.name
-            )));
-        }
-        Ok(crate::walker::decode_instance_with_limits(
-            bytes, 0, schema, limits,
-        ))
-    }
-}
-
 /// Typed view of a decoded Wall instance.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Wall {
-    pub base_level_id: Option<u32>,
+    pub base_level_id: Option<crate::ElementId>,
     pub base_offset_feet: Option<f64>,
     /// `0` or `None` means the wall is "unconnected" at the top.
-    pub top_level_id: Option<u32>,
+    pub top_level_id: Option<crate::ElementId>,
     pub top_offset_feet: Option<f64>,
     pub unconnected_height_feet: Option<f64>,
     pub structural_usage: Option<StructuralUsage>,
     pub location_line: Option<LocationLine>,
-    pub type_id: Option<u32>,
-    pub host_id: Option<u32>,
+    pub type_id: Option<crate::ElementId>,
+    pub host_id: Option<crate::ElementId>,
     /// Handle into the document location-curve table when present.
     /// Geometry resolution is [`crate::geometry::recovery`].
-    pub location_curve_id: Option<u32>,
+    pub location_curve_id: Option<crate::ElementId>,
     /// Explicit location-curve start when schema fields carry XYZ/XY.
     pub location_start: Option<Point3>,
     /// Explicit location-curve end when schema fields carry XYZ/XY.
@@ -260,13 +190,13 @@ impl Wall {
         for (field_name, value) in &decoded.fields {
             match (normalise_field_name(field_name).as_str(), value) {
                 ("levelid" | "baselevelid", InstanceField::ElementId { id, .. }) => {
-                    out.base_level_id = Some(*id);
+                    out.base_level_id = Some(crate::ElementId::from(*id));
                 }
                 ("baseoffset", InstanceField::Float { value, .. }) => {
                     out.base_offset_feet = Some(*value);
                 }
                 ("toplevelid", InstanceField::ElementId { id, .. }) => {
-                    out.top_level_id = Some(*id);
+                    out.top_level_id = Some(crate::ElementId::from(*id));
                 }
                 ("topoffset", InstanceField::Float { value, .. }) => {
                     out.top_offset_feet = Some(*value);
@@ -282,14 +212,18 @@ impl Wall {
                 ("locationline", InstanceField::Integer { value, .. }) => {
                     out.location_line = Some(LocationLine::from_code(*value as u32));
                 }
-                ("typeid", InstanceField::ElementId { id, .. }) => out.type_id = Some(*id),
-                ("hostid", InstanceField::ElementId { id, .. }) => out.host_id = Some(*id),
+                ("typeid", InstanceField::ElementId { id, .. }) => {
+                    out.type_id = Some(crate::ElementId::from(*id))
+                }
+                ("hostid", InstanceField::ElementId { id, .. }) => {
+                    out.host_id = Some(crate::ElementId::from(*id))
+                }
                 (
                     "locationcurveid" | "locationcurve" | "curvelineid" | "curveline",
                     InstanceField::ElementId { id, .. },
                 ) => {
                     if *id != 0 {
-                        out.location_curve_id = Some(*id);
+                        out.location_curve_id = Some(crate::ElementId::from(*id));
                     }
                 }
                 (
@@ -334,7 +268,7 @@ impl Wall {
     /// `true` when the wall's top isn't bound to a level — in that case
     /// height comes from `unconnected_height_feet`.
     pub fn is_unconnected(&self) -> bool {
-        matches!(self.top_level_id, None | Some(0))
+        self.top_level_id.is_none_or(|id| id.get() == 0)
     }
 }
 

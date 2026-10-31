@@ -1,5 +1,6 @@
 //! Read bounded native records through the pinned decoder, without editing RVT.
-use rvt::{RevitFile, native_document};
+use rvt::{RevitFile};
+use rvt::research::{native_document};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, fs};
 mod extract;

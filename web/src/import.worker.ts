@@ -1,3 +1,4 @@
+import {RVT_UPSTREAM_REVISION,RVT_READER_REVISION,RVT_LOCAL_PATCHES} from './rvt-reader-version';
 import {importRvtDirect} from './browser-rvt-direct';
 import {attachNativeEngineering} from './native-engineering';
 import {importNwd,nwdNeedsUnits,NWD_READER_REVISION} from './browser-nwd';
@@ -65,8 +66,8 @@ worker.onmessage=async({data})=>{
         }
       }catch(error){progress('Кеш RVT недоступен; читаем исходный файл','Кеш RVT',{warning:String(error)});}finally{cache?.close();}
       progress('Загрузка RVT-декодера · файл остаётся в браузере','RVT-движок');
-      const module=await import(/* @vite-ignore */base+'runtime/rvt/uvyazka_rvt_browser.js?reader=direct-v1-20261029');
-      await module.default({module_or_path:base+'runtime/rvt/uvyazka_rvt_browser_bg.wasm?reader=direct-v1-20261029'});
+      const module=await import(/* @vite-ignore */base+'runtime/rvt/uvyazka_rvt_browser.js?reader='+RVT_READER_REVISION);
+      await module.default({module_or_path:base+'runtime/rvt/uvyazka_rvt_browser_bg.wasm?reader='+RVT_READER_REVISION});
       progress('Чтение видов, листов и спецификаций RVT','Документ RVT');
       try {
         let cache:Awaited<ReturnType<typeof documentCache>>|undefined;
@@ -117,7 +118,7 @@ worker.onmessage=async({data})=>{
     progress('Чтение структуры IFC','Структура IFC');
     const {model,binary}=await importIfc(api,bytes,filename,await digest(bytes),await response.json(),
       text=>progress(text,text.startsWith('Геометрия:')?'Геометрия':'Свойства IFC'),!!conversion,memoryMiB);
-    if(conversion){model.model_id=sourceHash;model.source={...model.source,format:'rvt',sha256:sourceHash,size_bytes:sourceSize,conversion:{engine:'rvt-rs',local_patches:['uvyazka-native-mep-v1','uvyazka-wasm-field-bounds-v1','uvyazka-native-2021-v1'],warnings:conversion.diagnostics.warnings,unsupported_features:conversion.diagnostics.unsupported_features,ifc_sha256:model.source.sha256,confidence:conversion.diagnostics.confidence,source_revision:'b6086d41b9758fd9b92f42f0a47b8345b9c58056'}};}
+    if(conversion){model.model_id=sourceHash;model.source={...model.source,format:'rvt',sha256:sourceHash,size_bytes:sourceSize,conversion:{engine:'rvt-rs',local_patches:RVT_LOCAL_PATCHES,warnings:conversion.diagnostics.warnings,unsupported_features:conversion.diagnostics.unsupported_features,ifc_sha256:model.source.sha256,confidence:conversion.diagnostics.confidence,source_revision:RVT_UPSTREAM_REVISION}};}
     if(conversion?.engineering)attachNativeEngineering(model,conversion.engineering,sourceHash);
     if(conversion)attachNativeIdentities(model,rvtDocument,sourceHash);
     if(conversion)await cacheRvt(model,binary,convertedIfc);

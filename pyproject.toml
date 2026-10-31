@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "uvyazka"
-version = "0.4.0a3"
+version = "0.4.0a4"
 description = "Local project memory, evidence and MCP tools for construction project teams"
 readme = "README.md"
 license = "Apache-2.0"

@@ -1,5 +1,5 @@
-use rvt::native_parameters::ObjectGraph;
-use rvt::partition_mep_systems::project_system;
+use rvt::research::native_parameters::ObjectGraph;
+use rvt::research::partition_mep_systems::project_system;
 use serde_json::{Value, json};
 
 fn eid(id: u64) -> Value {
@@ -24,7 +24,7 @@ fn fixture() -> Value {
         object(3,"Connector",json!({"m_arrRefs":[{"m_id":eid(999),"m_connType":1}],"noise":1200}))
     ],"edges":[edge(0,10,3,1,2),edge(1,20,4,2,3)]})
 }
-fn project(value: Value) -> Result<rvt::partition_mep_systems::MepSystem, String> {
+fn project(value: Value) -> Result<rvt::research::partition_mep_systems::MepSystem, String> {
     let graph: ObjectGraph = serde_json::from_value(value).unwrap();
     project_system(1200, &graph).map_err(|e| e.to_string())
 }

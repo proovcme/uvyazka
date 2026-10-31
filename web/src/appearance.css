@@ -1,3 +1,4 @@
+@import './scene-ifc-panel.css';
 @import './gost-panel.css';
 .ui-diagnostics{margin-block:12px;border-top:1px solid var(--edge);padding-top:8px;font-size:12px;color:var(--secondary)}.ui-diagnostics>summary{cursor:pointer;min-height:32px;align-content:center}.ui-diagnostics pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:40vh;overflow:auto;user-select:text;font-size:11px;line-height:1.5}.ui-diagnostics button{margin:4px 8px 4px 0}
 :root{color-scheme:light;--canvas:#f0f3f6;--panel:#ffffff;--rail:#f7f8fa;--raised:#e7edf2;--field:#f4f6f8;--ink:#1d2d3c;--secondary:#4b5d6d;--muted:#637382;--edge:#20364b1a;--strong-edge:#20364b30;--amber:#925008;--amber-wash:#a9680910;--danger:#b32b24;--accent-ink:#fff;--error-bg:#fff0ed;--backdrop:#17283966;--step-done:#237147;--dialog-shadow:0 16px 64px #17283924}

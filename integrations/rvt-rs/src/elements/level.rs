@@ -1,7 +1,6 @@
 //! `Level` — Revit class representing a floor level (e.g. "Level 1",
-//! "Ground Floor", "Roof"). One of the simplest non-trivial elements
-//! to decode, which makes it the reference example for
-//! [`crate::walker::ElementDecoder`] implementations.
+//! "Ground Floor", "Roof"), and the reference example of a typed view
+//! over a [`DecodedElement`].
 //!
 //! Typical Revit field shape (names stable 2016–2026):
 //!
@@ -18,57 +17,15 @@
 //! underlying `DecodedElement.fields` vector for callers that need
 //! them.
 
-use crate::formats;
-use crate::walker::{DecodedElement, ElementDecoder, HandleIndex, InstanceField};
-use crate::{Error, Result};
+use crate::walker::{DecodedElement, InstanceField};
 
-/// Registered [`ElementDecoder`] for the `Level` class.
-pub struct LevelDecoder;
-
-impl ElementDecoder for LevelDecoder {
-    fn class_name(&self) -> &'static str {
-        "Level"
-    }
-
-    fn decode(
-        &self,
-        bytes: &[u8],
-        schema: &formats::ClassEntry,
-        index: &HandleIndex,
-    ) -> Result<DecodedElement> {
-        self.decode_with_limits(bytes, schema, index, crate::walker::WalkerLimits::default())
-    }
-
-    fn decode_with_limits(
-        &self,
-        bytes: &[u8],
-        schema: &formats::ClassEntry,
-        _index: &HandleIndex,
-        limits: crate::walker::WalkerLimits,
-    ) -> Result<DecodedElement> {
-        if schema.name != "Level" {
-            return Err(Error::BasicFileInfo(format!(
-                "LevelDecoder received wrong schema: {}",
-                schema.name
-            )));
-        }
-        // Use the generic decoder to produce field-by-field
-        // InstanceField values. This handles the byte-level walk +
-        // short-input safety. We then pattern-match into typed
-        // values where we recognise the field names + shapes.
-        let decoded = crate::walker::decode_instance_with_limits(bytes, 0, schema, limits);
-        Ok(decoded)
-    }
-}
-
-/// Typed view of a decoded Level. Convenience wrapper on top of
-/// [`DecodedElement`]; call [`LevelDecoder::decode`] first, then
-/// [`Level::from_decoded`] to project into this struct.
+/// Typed view of a decoded Level: [`Level::from_decoded`] projects a
+/// [`DecodedElement`] into this struct.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Level {
     pub name: Option<String>,
     pub elevation_feet: Option<f64>,
-    pub level_type_id: Option<u32>,
+    pub level_type_id: Option<crate::ElementId>,
     pub is_building_story: Option<bool>,
 }
 
@@ -96,7 +53,7 @@ impl Level {
                     out.elevation_feet = Some(*value);
                 }
                 ("leveltypeid", InstanceField::ElementId { id, .. }) => {
-                    out.level_type_id = Some(*id);
+                    out.level_type_id = Some(crate::ElementId::from(*id));
                 }
                 ("isbuildingstory", InstanceField::Bool(b)) => {
                     out.is_building_story = Some(*b);
@@ -112,10 +69,10 @@ impl Level {
 /// drop underscores. `m_LevelTypeId` / `m_level_type_id` /
 /// `levelTypeId` all collapse to `"leveltypeid"`.
 ///
-/// Exposed pub(crate) so other `ElementDecoder` implementations
-/// in this crate can reuse the canonical form — Revit schema
-/// field-name casing varies across versions, so every decoder
-/// needs this normalisation pass before pattern-matching.
+/// Exposed pub(crate) so the other typed views in this crate can
+/// reuse the canonical form — Revit schema field-name casing varies
+/// across versions, so every view needs this normalisation pass
+/// before pattern-matching.
 pub(crate) fn normalise_field_name(name: &str) -> String {
     let stripped = name.strip_prefix("m_").unwrap_or(name);
     stripped

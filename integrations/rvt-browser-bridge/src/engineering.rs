@@ -1,5 +1,6 @@
 //! Project existing typed MEP graphs without losing the base-equipment role.
-use rvt::{RevitFile,native_document,partition_mep_systems};
+use rvt::{RevitFile};
+use rvt::research::{native_document, partition_mep_systems};
 use serde_json::{Value,json};
 
 pub fn extract(bytes:Vec<u8>)->Result<Value,String>{

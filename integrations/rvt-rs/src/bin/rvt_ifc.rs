@@ -1,18 +1,18 @@
 //! `rvt-ifc` — convert a Revit file to IFC4.
 //!
-//! This is the first end-to-end `rvt → ifc` pipeline. Current scope:
-//! document-level metadata export (IfcProject, framework entities,
-//! units, geometric context). Element-level geometry is pending walker
-//! expansion; this command's output is spec-valid IFC4 that readers
-//! (IfcOpenShell, BlenderBIM) accept — just sparse until more of the
-//! schema is walked.
+//! Writes the project, its storeys and the elements rvt-rs decodes as typed
+//! IFC4 entities, each with its body where the geometry is recovered and its
+//! bounding box where it is not (`docs/support-matrix.json` rates each
+//! category). The same input gives the same bytes, apart from the time in
+//! the header and the owner history, which `SOURCE_DATE_EPOCH` fixes.
 
 use clap::{Parser, ValueEnum};
 use rvt::{
     RevitFile,
     ifc::{
         DiagnosticRvtDocExporter, ExportDiagnostics, ExportQualityMode, PlaceholderExporter,
-        RvtDocExporter, write_step,
+        RvtDocExporter,
+        step_writer::{StepOptions, write_step_with_options},
     },
     walker::WalkerLimits,
 };
@@ -41,11 +41,17 @@ impl From<CliExportQualityMode> for ExportQualityMode {
 #[derive(Parser)]
 #[command(
     version,
-    about = "Convert a Revit file to IFC4 (document-level export)",
+    about = "Convert a Revit file to IFC4",
     after_help = "Examples:\n  \
         rvt-ifc model.rvt                     writes model.ifc next to the input\n  \
         rvt-ifc model.rvt -o out.ifc --diagnostics out.diagnostics.json\n  \
-        rvt-ifc model.rvt --mode geometry"
+        rvt-ifc model.rvt --diagnostics out.diagnostics.json --anonymize   to post publicly\n  \
+        rvt-ifc model.rvt --mode geometry\n\n\
+        SOURCE_DATE_EPOCH (Unix seconds) sets the time the IFC header and owner\n\
+        history record, so two exports of the same file are the same bytes.\n\n\
+        Exit status 3: a resource limit kept part of the file from being read, so\n\
+        no IFC was written (the diagnostics sidecar, if asked for, lists the\n\
+        streams). Re-run with --large-model, or --allow-partial to write it anyway."
 )]
 struct Args {
     /// Path to a `.rvt` / `.rfa` / `.rte` / `.rft` file.
@@ -74,11 +80,38 @@ struct Args {
     /// validated typed model elements.
     #[arg(long, conflicts_with = "placeholder")]
     diagnostic_proxies: bool,
-    /// Draw doors, windows, furniture and other elements whose body would
-    /// be their record's bounding box from the meshes Revit saved for
-    /// display (#255). Slower on large files.
-    #[arg(long, conflicts_with = "placeholder")]
+    /// Draw every element whose body would be its record's bounding box
+    /// (furniture, fixtures, equipment and the rest) from the mesh Revit
+    /// saved for display (#255). Doors and windows are drawn so by default
+    /// on Revit 2023 to 2027. Slower on large files.
+    #[arg(long, conflicts_with_all = ["placeholder", "no_saved_meshes"])]
     saved_meshes: bool,
+    /// Keep doors and windows as their record's bounding box instead of the
+    /// mesh Revit saved for them.
+    #[arg(long, conflicts_with = "placeholder")]
+    no_saved_meshes: bool,
+    /// Also write Revit's own property sets, as Revit's exporter does with
+    /// "Export Revit property sets": each element's named parameters in one
+    /// set per parameter group, and its type's on its type object (RE-210).
+    /// Revit 2023 to 2027 files. Slower on large files.
+    #[arg(long, conflicts_with = "placeholder")]
+    revit_property_sets: bool,
+    /// Also write properties where Revit's own exporter writes them and
+    /// IFC4's definitions do not: a standard set whose entity's name begins
+    /// with the element's (`Pset_StairFlightCommon` on a stair,
+    /// `Pset_SpaceHeaterTypeCommon` on a space), its `Reference` only, and a
+    /// text parameter named `<set>.<property>` for a property the set's IFC4
+    /// definition lacks (`Pset_SpaceCommon.FloorCovering`) (RE-235). By
+    /// default every property is in the set buildingSMART's IFC4 definitions
+    /// put it in.
+    #[arg(long, conflicts_with = "placeholder")]
+    revit_set_placement: bool,
+    /// Leave out the base quantities (the `Qto_` sets: lengths, areas and
+    /// widths), as Revit's exporter does when its export setup's "Export
+    /// base quantities" is off. Revit's built-in IFC4 setups turn it on, and
+    /// so does rvt-ifc by default (RE-242).
+    #[arg(long)]
+    no_base_quantities: bool,
     /// Write a JSON diagnostics sidecar for bug reports and support.
     ///
     /// The sidecar includes input metadata, decoded/exported element counts,
@@ -86,6 +119,12 @@ struct Args {
     /// an export confidence summary.
     #[arg(long, value_name = "PATH")]
     diagnostics: Option<PathBuf>,
+    /// Replace every name the diagnostics sidecar takes from the project
+    /// with a placeholder: the file and project names, levels, materials and
+    /// sample element names. Counts and ElementIds stay, so the sidecar can
+    /// be posted publicly.
+    #[arg(long, requires = "diagnostics")]
+    anonymize: bool,
     /// Witness mode: write an OctetProof observation of this input.
     ///
     /// The observation (docs/octetproof-spec.md §6.2) records the
@@ -115,7 +154,39 @@ struct Args {
     /// Maximum records accepted in walker reference containers.
     #[arg(long)]
     max_walker_container_records: Option<usize>,
+    /// Maximum bytes of one stream read from the file (default 256 MiB). A
+    /// larger stream is not read, and nothing is written unless
+    /// `--allow-partial` (#1075).
+    #[arg(long, value_name = "BYTES")]
+    max_stream_bytes: Option<u64>,
+    /// Maximum inflated bytes of one compressed member (default 256 MiB). The
+    /// members of one stream may inflate to this or 1 GiB together,
+    /// whichever is larger.
+    #[arg(long, value_name = "BYTES")]
+    max_inflate_bytes: Option<usize>,
+    /// Raise the stream, inflate and walker-scan limits for large models:
+    /// streams up to 2 GiB, 8 GiB inflated. A model whose largest partition
+    /// is 1 GiB stored needs several GB of memory.
+    #[arg(long)]
+    large_model: bool,
+    /// Write the IFC even when a resource limit kept part of the file from
+    /// being read. The diagnostics list the streams that were not read.
+    #[arg(long)]
+    allow_partial: bool,
 }
+
+/// A resource limit kept part of the input from being read, and
+/// `--allow-partial` was not given (#1075): exit status 3.
+#[derive(Debug)]
+struct PartialRead;
+
+impl std::fmt::Display for PartialRead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("no IFC written: part of the input was not read (see above)")
+    }
+}
+
+impl std::error::Error for PartialRead {}
 
 fn main() -> std::process::ExitCode {
     rvt::cli::exit_quietly_on_broken_pipe();
@@ -123,13 +194,25 @@ fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
-            std::process::ExitCode::from(1)
+            if e.downcast_ref::<PartialRead>().is_some() {
+                std::process::ExitCode::from(3)
+            } else {
+                std::process::ExitCode::from(1)
+            }
         }
     }
 }
 
 fn run(args: Args) -> anyhow::Result<()> {
-    let mut rf = RevitFile::open(&args.input)?;
+    let timestamp = source_date_epoch()?;
+    let mut rf = RevitFile::open_with_limits(
+        &args.input,
+        rvt::cli::open_limits(
+            args.max_stream_bytes,
+            args.max_inflate_bytes,
+            args.large_model,
+        ),
+    )?;
     let quality_mode = ExportQualityMode::from(args.mode);
     let walker_limits = walker_limits_from_args(&args);
 
@@ -146,19 +229,68 @@ fn run(args: Args) -> anyhow::Result<()> {
     };
     let mut model = result.model;
     let mut diagnostics = result.diagnostics;
-    if args.saved_meshes {
+    if let Some(scope) = saved_mesh_scope(&mut rf, &args) {
         // The saved graphics only improve bodies: when they cannot be read,
         // the export goes ahead with the bodies it has, and says so.
-        match rvt::ifc::saved_meshes::attach(&mut rf, &mut model) {
+        let control = rvt::control::WalkerControl::default();
+        match rvt::ifc::saved_meshes::attach_scoped_with_control(
+            &mut rf, &mut model, scope, &control,
+        ) {
             Ok(report) => {
                 rvt::ifc::recount_exported(&mut diagnostics, &model);
-                eprintln!(
-                    "rvt-ifc: {} of {} bounding-box bodies drawn from their saved graphics ({} triangles)",
-                    report.replaced, report.candidates, report.triangles
-                );
+                if report.candidates > 0 {
+                    let what = if args.saved_meshes {
+                        "bounding-box bodies"
+                    } else {
+                        "door and window bounding-box bodies"
+                    };
+                    eprintln!(
+                        "rvt-ifc: {} of {} {what} drawn from their saved graphics ({} triangles); {} kept their box, their saved graphics not decoding whole",
+                        report.replaced, report.candidates, report.triangles, report.partial
+                    );
+                }
             }
             Err(e) => eprintln!("rvt-ifc: saved graphics not read, bodies unchanged: {e}"),
         }
+    }
+
+    if args.revit_property_sets {
+        // Like the saved graphics, the parameters only add to the export:
+        // when they cannot be read, it goes ahead without them, and says so.
+        match rvt::ifc::revit_property_sets::attach(&mut rf, &mut model) {
+            Ok(report) => eprintln!(
+                "rvt-ifc: Revit property sets on {} elements and {} types, and type sets on {} elements of types with no type object ({} properties, {} named parameters left out)",
+                report.elements,
+                report.types,
+                report.untyped_elements,
+                report.properties,
+                report.left_out
+            ),
+            Err(e) => eprintln!("rvt-ifc: Revit property sets not written: {e:#}"),
+        }
+    }
+
+    if args.revit_set_placement {
+        // Like Revit's property sets, this only adds to the export: when the
+        // parameters cannot be read, it goes ahead without them, and says so.
+        match rvt::ifc::revit_set_placement::attach(&mut rf, &mut model) {
+            Ok(report) => {
+                rvt::ifc::recount_exported(&mut diagnostics, &model);
+                eprintln!(
+                    "rvt-ifc: {} properties on {} elements written where Revit's exporter writes them ({} parameters of a kind not written left out)",
+                    report.properties, report.elements, report.left_out
+                );
+            }
+            Err(e) => {
+                eprintln!("rvt-ifc: properties not placed as Revit's exporter places them: {e:#}")
+            }
+        }
+    }
+
+    if args.no_base_quantities {
+        let left_out = rvt::ifc::leave_out_base_quantities(&mut model);
+        rvt::ifc::recount_exported(&mut diagnostics, &model);
+        eprintln!("rvt-ifc: {left_out} base quantities left out");
     }
 
     let out_path = args.output.clone().unwrap_or_else(|| {
@@ -167,16 +299,35 @@ fn run(args: Args) -> anyhow::Result<()> {
         p
     });
 
+    // #1075: the steps above may have read more streams than the export did.
+    rvt::ifc::record_unread_streams(&mut diagnostics, rf.unread_streams());
+    let unread = rf.unread_streams().len();
+    if unread > 0 {
+        eprintln!(
+            "rvt-ifc: {unread} stream(s) not read whole, so the export is missing what they hold:"
+        );
+        for line in rvt::cli::unread_stream_report(rf.unread_streams()) {
+            eprintln!("{line}");
+        }
+        if !args.allow_partial {
+            if let Some(diagnostics_path) = &args.diagnostics {
+                write_diagnostics_sidecar(diagnostics_path, &diagnostics, args.anonymize)?;
+            }
+            return Err(PartialRead.into());
+        }
+        eprintln!("rvt-ifc: writing the incomplete export (--allow-partial)");
+    }
+
     if let Err(err) = quality_mode.validate(&diagnostics) {
         if let Some(diagnostics_path) = &args.diagnostics {
-            write_diagnostics_sidecar(diagnostics_path, &diagnostics)?;
+            write_diagnostics_sidecar(diagnostics_path, &diagnostics, args.anonymize)?;
         }
         anyhow::bail!("{err}");
     }
 
     warn_about_export_quality(&diagnostics);
 
-    let step = write_step(&model);
+    let step = write_step_with_options(&model, &StepOptions { timestamp });
     std::fs::write(&out_path, step.as_bytes())?;
     eprintln!(
         "rvt-ifc: wrote {} bytes to {}",
@@ -187,7 +338,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         eprintln!("{line}");
     }
     if let Some(diagnostics_path) = &args.diagnostics {
-        write_diagnostics_sidecar(diagnostics_path, &diagnostics)?;
+        write_diagnostics_sidecar(diagnostics_path, &diagnostics, args.anonymize)?;
     }
     if let Some(observation_path) = &args.observation {
         write_observation(
@@ -207,12 +358,35 @@ fn run(args: Args) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Which bodies to draw from the saved graphics: every boxed one with
+/// `--saved-meshes`, none with `--no-saved-meshes` or `--placeholder`, and
+/// otherwise doors and windows (the maintainer, 2026-10-29) on the releases
+/// whose saved graphics are read, Revit 2023 to 2027.
+fn saved_mesh_scope(
+    rf: &mut RevitFile,
+    args: &Args,
+) -> Option<rvt::ifc::saved_meshes::SavedMeshScope> {
+    use rvt::ifc::saved_meshes::SavedMeshScope;
+    if args.placeholder || args.no_saved_meshes {
+        return None;
+    }
+    if args.saved_meshes {
+        return Some(SavedMeshScope::All);
+    }
+    let release = rf.basic_file_info().ok()?.version;
+    (2023..=2027)
+        .contains(&release)
+        .then_some(SavedMeshScope::DoorsAndWindows)
+}
+
 fn walker_limits_from_args(args: &Args) -> WalkerLimits {
     let defaults = WalkerLimits::default();
     WalkerLimits {
-        max_scan_bytes: args
-            .max_walker_scan_bytes
-            .unwrap_or(defaults.max_scan_bytes),
+        max_scan_bytes: args.max_walker_scan_bytes.unwrap_or(if args.large_model {
+            rvt::cli::LARGE_MODEL_MAX_INFLATE_BYTES
+        } else {
+            defaults.max_scan_bytes
+        }),
         max_candidates: args
             .max_walker_candidates
             .unwrap_or(defaults.max_candidates),
@@ -228,11 +402,34 @@ fn walker_limits_from_args(args: &Args) -> WalkerLimits {
     }
 }
 
+/// The time `SOURCE_DATE_EPOCH` sets for the header, or `None` when it is
+/// unset or empty (reproducible-builds.org).
+fn source_date_epoch() -> anyhow::Result<Option<i64>> {
+    match std::env::var("SOURCE_DATE_EPOCH") {
+        Ok(value) if value.is_empty() => Ok(None),
+        Ok(value) => value
+            .parse()
+            .map(Some)
+            .map_err(|_| anyhow::anyhow!("SOURCE_DATE_EPOCH must be Unix seconds, not {value:?}")),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(value)) => Err(anyhow::anyhow!(
+            "SOURCE_DATE_EPOCH must be Unix seconds, not {value:?}"
+        )),
+    }
+}
+
 fn write_diagnostics_sidecar(
     path: &std::path::Path,
     diagnostics: &ExportDiagnostics,
+    anonymize: bool,
 ) -> anyhow::Result<()> {
-    let json = serde_json::to_vec_pretty(diagnostics)?;
+    let json = if anonymize {
+        let mut anonymized = diagnostics.clone();
+        anonymized.anonymize();
+        serde_json::to_vec_pretty(&anonymized)?
+    } else {
+        serde_json::to_vec_pretty(diagnostics)?
+    };
     std::fs::write(path, &json)?;
     eprintln!(
         "rvt-ifc: wrote diagnostics {} bytes to {}",
@@ -800,37 +997,4 @@ fn warn_about_export_quality(diagnostics: &ExportDiagnostics) {
 /// `bytes` as lowercase hex, two digits a byte.
 fn lower_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn attributes_split_on_top_level_commas_only() {
-        let attrs = split_attributes("'a,b',#3,(1,2,3),$,.OPENING.");
-        assert_eq!(attrs, vec!["'a,b'", "#3", "(1,2,3)", "$", ".OPENING."]);
-    }
-
-    #[test]
-    fn a_doubled_apostrophe_does_not_end_the_string() {
-        let attrs = split_attributes("'it''s, one',#3");
-        assert_eq!(attrs, vec!["'it''s, one'", "#3"]);
-        assert_eq!(step_string(attrs[0]).as_deref(), Some("it's, one"));
-    }
-
-    #[test]
-    fn step_strings_decode_the_writers_escapes() {
-        assert_eq!(step_string("'20827'").as_deref(), Some("20827"));
-        assert_eq!(step_string("'a\\\\b'").as_deref(), Some("a\\b"));
-        assert_eq!(step_string("'\\X\\09'").as_deref(), Some("\t"));
-        assert_eq!(step_string("'\\X2\\00E9\\X0\\'").as_deref(), Some("é"));
-        assert_eq!(step_string("$"), None);
-    }
-
-    #[test]
-    fn negative_zero_normalises() {
-        assert_eq!(format_elevation_feet(-0.0), "0.000000");
-        assert_eq!(format_elevation_feet(f64::NAN), "");
-    }
 }

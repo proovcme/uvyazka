@@ -14,10 +14,11 @@
 //!
 //! This module currently exposes `chunks_from_stream` which finds gzip
 //! magic markers and returns the chunk-byte-ranges. It does NOT yet parse
-//! the header's explicit chunk table; that is a Phase 4d task. The
+//! the header's explicit chunk table. The
 //! gzip-magic scanner is conservative enough to work across all 11
 //! releases we have samples for.
 
+use crate::le_bytes;
 use crate::{Result, RevitFile};
 
 /// Size of the Partitions/NN header in bytes. Constant across all Revit
@@ -28,6 +29,7 @@ pub const HEADER_SIZE: usize = 44;
 /// are partially reverse-engineered; see FACT F7/F8 in
 /// `docs/rvt-moat-break-reconnaissance.md` for the evidence trail.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PartitionHeader {
     /// First u32 LE — appears to equal `chunk_count + 1` in most releases.
     pub declared_count_plus_one: u32,
@@ -45,6 +47,7 @@ pub struct PartitionHeader {
 /// caller can pass the slice through `compression::inflate_at` (offset 0)
 /// to get the decompressed payload.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PartitionChunk {
     /// Starting offset of the chunk within the raw Partitions/NN stream.
     pub raw_offset: usize,
@@ -58,14 +61,14 @@ pub fn parse_header(raw: &[u8]) -> Option<PartitionHeader> {
     if raw.len() < HEADER_SIZE {
         return None;
     }
-    let declared_count_plus_one = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
-    let reserved_zero = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]);
+    let declared_count_plus_one = le_bytes::u32_at(raw, 0)?;
+    let reserved_zero = le_bytes::u32_at(raw, 4)?;
     let mut size_block = [0u8; 12];
     size_block.copy_from_slice(&raw[8..20]);
     let mut trailer_u32 = [0u32; 4];
     for (i, slot) in trailer_u32.iter_mut().enumerate() {
         let base = 0x14 + i * 4;
-        *slot = u32::from_le_bytes([raw[base], raw[base + 1], raw[base + 2], raw[base + 3]]);
+        *slot = le_bytes::u32_at(raw, base)?;
     }
     Some(PartitionHeader {
         declared_count_plus_one,

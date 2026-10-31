@@ -56,7 +56,7 @@ ElementId внутри одного SHA-256 источника. Разные н�
 Основной источник — типизированные наборы параметров и слоты, разрешённые
 по определениям из файла. Для пяти встроенных параметров есть отдельный
 ограниченный профиль, основанный на закреплённом коде
-[`partition_type_parameters.rs`](../integrations/rvt-rs/src/partition_type_parameters.rs)
+[`partition_type_parameters.rs`](../integrations/rvt-rs/src/research/partition_type_parameters.rs)
 (RE-77/RE-93, Apache-2.0). Это правило интерпретации Увязки, а не определение,
 прочитанное из файла, и оно явно записывается в происхождение значения.
 

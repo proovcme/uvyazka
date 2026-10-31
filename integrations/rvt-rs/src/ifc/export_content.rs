@@ -1,4 +1,4 @@
-//! Mode-aware IFC content policy (Lane Seven).
+//! Mode-aware IFC content policy.
 //!
 //! [`ExportQualityMode`] is both a *validation gate* (see
 //! [`super::ExportQualityMode::validate`]) and a *content policy*
@@ -8,7 +8,7 @@
 //! |---|---|
 //! | `scaffold` | Framework + production elements; geometry when recovered. No diagnostic proxies. |
 //! | `typed-no-geometry` | Mapped / typed elements only; geometry fields stripped. |
-//! | `geometry` | Mapped / typed elements; attach Lane Six curves / loops / hosts / elevations when present. |
+//! | `geometry` | Mapped / typed elements; attach recovered curves, loops, hosts and elevations when present. |
 //! | `strict` | Same emission as `geometry`; validation then fails closed on incomplete output. |
 //!
 //! `HostObjAttr` and other low-confidence parent-class hits are never
@@ -33,6 +33,7 @@ use std::collections::{BTreeMap, HashMap};
 
 /// Result of folding production walker hits into an IFC draft.
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct TypedProductionAppend {
     /// Revit element id → index in `entities` (for host linking).
     pub id_to_entity: HashMap<u32, usize>,
@@ -56,8 +57,9 @@ pub struct TypedProductionAppend {
     /// Each family instance's original symbol, by ElementId (RE-167).
     pub element_original_symbols: BTreeMap<u32, u32>,
     /// Whether Revit's exporter takes each door's and window's symbol as
-    /// flipped, by ElementId (B72): read in every quality mode, as the flip
-    /// is part of the type's GlobalId (B74).
+    /// flipped, by ElementId: read in every quality mode, as the flip
+    /// is part of the type's GlobalId.
+    // Tracker: B72, B74.
     pub element_flips: BTreeMap<u32, bool>,
     /// The `Pset_PipeSegmentOccurrence` sets whose `InvertElevation` is a
     /// pipe's invert worked out in model height, by index in the entities,
@@ -98,7 +100,7 @@ impl ExportContentPolicy {
 }
 
 /// Property-set name carried by a body recovered from a partition
-/// element record's bounding box (#204 / #211).
+/// element record's bounding box (#204, #211).
 pub const ELEMENT_RECORD_PROPERTY_SET: &str = "RvtElementRecordGeometry";
 
 /// Property naming an element-record element's family (RE-38).
@@ -180,7 +182,8 @@ pub(crate) fn is_distribution_element(ifc_type: &str) -> bool {
         )
 }
 
-/// An element's place in plan, for a door's or window's flip (B72).
+/// An element's place in plan, for a door's or window's flip.
+// Tracker: B72.
 struct PlanFrame {
     location: [f64; 2],
     /// The direction of the element's axis, where it has a body.
@@ -203,7 +206,7 @@ fn plan_axis_turn(rotation_radians: Option<f64>, body: &Extrusion) -> f64 {
 }
 
 /// Whether Revit's exporter takes a door's or window's symbol as flipped
-/// (B72, revit-ifc `DoorWindowInfo.CalculateDoorWindowInformation`): whether
+/// (revit-ifc `DoorWindowInfo.CalculateDoorWindowInformation`): whether
 /// the side of its host wall's axis its box centre lies on differs from the
 /// side its own Y axis (`facing`) points to, a side being +Y of the wall's
 /// direction. The direction's sign cancels out. A door with no host wall, or
@@ -219,8 +222,9 @@ fn door_symbol_flipped(door: [f64; 2], wall: [f64; 2], wall_turn: f64, facing: [
 }
 
 /// The record properties that say what an element is rather than where it
-/// is or how it is drawn, which an export without geometry keeps (B74),
+/// is or how it is drawn, which an export without geometry keeps,
 /// along with the type's text parameters (RE-77).
+// Tracker: B74.
 const IDENTITY_PROPERTIES: [&str; 10] = [
     crate::element_record_level_refs::LEVEL_ELEMENT_ID_PROPERTY,
     "LevelBindSource",
@@ -235,7 +239,8 @@ const IDENTITY_PROPERTIES: [&str; 10] = [
 ];
 
 /// `set` less every property that is not one of [`IDENTITY_PROPERTIES`] or
-/// a type text parameter of `decoded` (B74).
+/// a type text parameter of `decoded`.
+// Tracker: B74.
 fn identity_property_set(mut set: PropertySet, decoded: &DecodedElement) -> PropertySet {
     let type_parameters: Vec<&str> = decoded
         .fields
@@ -376,15 +381,13 @@ pub fn append_typed_production_elements(
     // #847: each pipe's two ends and the connector entry keys at each.
     let mut pipe_ends: BTreeMap<usize, PipeEnds> = BTreeMap::new();
     // RE-162: each MEP system's name and members, by its ElementId.
-    let mut pending_systems: std::collections::BTreeMap<u32, (Option<String>, Vec<usize>)> =
-        Default::default();
+    let mut pending_systems: BTreeMap<u32, (Option<String>, Vec<usize>)> = Default::default();
     // Bodies of aggregate wholes, held back until their parts are known: a
     // whole that no part names keeps its own body.
-    let mut held_bodies: std::collections::BTreeMap<usize, Extrusion> =
-        std::collections::BTreeMap::new();
+    let mut held_bodies: BTreeMap<usize, Extrusion> = BTreeMap::new();
     // B72: each element's plan frame by entity index, and each door's and
     // window's facing and host, for the flip its type's GlobalId hashes.
-    let mut frames: std::collections::HashMap<usize, PlanFrame> = Default::default();
+    let mut frames: HashMap<usize, PlanFrame> = Default::default();
     let mut facings: BTreeMap<u32, [f64; 2]> = BTreeMap::new();
     let mut opening_hosts: Vec<(usize, u32, u32)> = Vec::new();
     let mut level_bind = crate::level_bind::LevelStoreyBind::new();
@@ -551,6 +554,39 @@ pub fn append_typed_production_elements(
                 }
                 _ => None,
             })
+            .or_else(|| {
+                // #323: a flight takes the shape its treads give.
+                (effective.ifc_type == "IFCSTAIRFLIGHT")
+                    .then(|| {
+                        decoded.fields.iter().find_map(|(name, value)| match value {
+                            InstanceField::Integer { value, .. }
+                                if name == crate::partition_schema_mvp::STAIR_RUN_SHAPE_FIELD =>
+                            {
+                                crate::native_stairs::flight_predefined_type(*value)
+                            }
+                            _ => None,
+                        })
+                    })
+                    .flatten()
+            })
+            .or_else(|| {
+                // #323: a stair takes the type its runs and landings give.
+                (effective.ifc_type == "IFCSTAIR")
+                    .then(|| {
+                        decoded.fields.iter().find_map(|(name, value)| match value {
+                            InstanceField::String(text)
+                                if name == crate::partition_schema_mvp::STAIR_TYPE_FIELD =>
+                            {
+                                crate::native_stairs::STAIR_TYPES
+                                    .iter()
+                                    .copied()
+                                    .find(|kind| *kind == text.as_str())
+                            }
+                            _ => None,
+                        })
+                    })
+                    .flatten()
+            })
             .or(effective.predefined_type);
 
         // RE-65: a stair and its parts carry the name Revit gives them.
@@ -590,10 +626,27 @@ pub fn append_typed_production_elements(
             .flatten();
         // The Reference is the type's name however Revit names the element:
         // electrical equipment named by its panel name has one too (B29).
+        // A stair, run or landing named by RE-65 still has its own type's.
+        let run_type = matches!(
+            decoded.class.as_str(),
+            "Stair" | "StairsRun" | "StairsLanding"
+        )
+        .then(|| {
+            decoded.fields.iter().find_map(|(name, value)| match value {
+                InstanceField::String(text)
+                    if name == crate::partition_schema_mvp::TYPE_NAME_FIELD =>
+                {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+        })
+        .flatten();
         let reference_type = family_and_type(&decoded)
             .filter(|_| own_name.is_none() && !opening_only)
             .map(|(_, type_name)| type_name)
-            .or(duct_type);
+            .or(duct_type)
+            .or(run_type);
         let name = match (
             own_name,
             decoded.id,
@@ -691,13 +744,13 @@ pub fn append_typed_production_elements(
                 "Door" => {
                     let door = Door::from_decoded(&decoded);
                     if let Some(host) = recover_door_host(&door).ok() {
-                        pending_host_id = Some(host.host_element_id);
+                        pending_host_id = host.host_element_id.as_u32();
                     }
                 }
                 "Window" => {
                     let window = Window::from_decoded(&decoded);
                     if let Some(host) = recover_window_host(&window).ok() {
-                        pending_host_id = Some(host.host_element_id);
+                        pending_host_id = host.host_element_id.as_u32();
                     }
                 }
                 _ => {}
@@ -713,6 +766,13 @@ pub fn append_typed_production_elements(
                 .as_ref()
                 .map(|body| plan_axis_turn(rotation_radians, body)),
         });
+        let level_slab = level_slab(
+            &ifc_type,
+            &decoded,
+            extrusion.as_ref(),
+            solid_shape.is_some(),
+            property_set.as_ref(),
+        );
         let opening_host = pending_host_id;
         if !policy.include_geometry {
             location_feet = None;
@@ -829,6 +889,43 @@ pub fn append_typed_production_elements(
             .unwrap_or_default();
         add_is_external(&mut reference_sets, &ifc_type, &decoded, opening_only);
         add_covering_finish(&mut reference_sets, &ifc_type, &decoded);
+        add_mullion_span(&mut reference_sets, &ifc_type, &decoded);
+        add_door_window_quantities(&mut reference_sets, &ifc_type, &decoded);
+        add_wall_quantities(&mut reference_sets, &ifc_type, &decoded);
+        add_wall_height(
+            &mut reference_sets,
+            &ifc_type,
+            &decoded,
+            extrusion.as_ref().filter(|_| solid_shape.is_none()),
+        );
+        add_curtain_wall_length(&mut reference_sets, &ifc_type, &decoded);
+        add_body_quantities(
+            &mut reference_sets,
+            &ifc_type,
+            &decoded,
+            extrusion.as_ref(),
+            solid_shape.as_ref(),
+        );
+        add_beam_length(&mut reference_sets, &ifc_type, property_set.as_ref());
+        add_slab_gross_area(
+            &mut reference_sets,
+            &ifc_type,
+            &decoded,
+            extrusion.as_ref(),
+            solid_shape.is_none() && piece_bodies.is_empty(),
+        );
+        add_ceiling_width(
+            &mut reference_sets,
+            &ifc_type,
+            &decoded,
+            extrusion.as_ref(),
+            solid_shape.is_none() && piece_bodies.is_empty(),
+        );
+        add_stair_flight_quantities(&mut reference_sets, &ifc_type, &decoded);
+        add_railing_height(&mut reference_sets, &ifc_type, &decoded);
+        add_railing_length(&mut reference_sets, &ifc_type, &decoded);
+        add_space_height(&mut reference_sets, &ifc_type, &decoded);
+        add_extend_to_structure(&mut reference_sets, &ifc_type, &decoded);
         let mut serial_sets = serial_number_property_sets(&decoded);
         serial_sets.extend(revit_parameter_property_sets(&decoded));
         let named = named_parameter_properties(&decoded);
@@ -1050,13 +1147,37 @@ pub fn append_typed_production_elements(
             "IFCDUCTSEGMENT" => Some(("Qto_DuctSegmentBaseQuantities", None)),
             _ => None,
         };
+        // RE-247: a pipe's cross-section and outer surface are those of the
+        // cylinder it is drawn as (RE-131), as Revit's export writes them.
+        let pipe_radius = (decoded.class == "Pipe")
+            .then(|| crate::partition_schema_mvp::pipe_body_from_fields(&decoded.fields))
+            .flatten()
+            .map(|pipe| pipe.radius_feet)
+            .filter(|radius| radius.is_finite() && *radius > 0.0);
         if let Some((quantities, occurrence)) = segment_sets {
-            let quantities = segment_length.map(|length| PropertySet {
-                name: quantities.into(),
-                properties: vec![Property {
+            let quantities = segment_length.map(|length| {
+                let mut properties = vec![Property {
                     name: "Length".into(),
                     value: PropertyValue::PositiveLengthFeet(length),
-                }],
+                }];
+                if let Some(radius) = pipe_radius {
+                    properties.push(Property {
+                        name: "GrossCrossSectionArea".into(),
+                        value: PropertyValue::AreaSquareFeet(
+                            std::f64::consts::PI * radius * radius,
+                        ),
+                    });
+                    properties.push(Property {
+                        name: "OuterSurfaceArea".into(),
+                        value: PropertyValue::AreaSquareFeet(
+                            2.0 * std::f64::consts::PI * radius * length,
+                        ),
+                    });
+                }
+                PropertySet {
+                    name: quantities.into(),
+                    properties,
+                }
             });
             if let Some(set) = quantities {
                 entities.push(entities::IfcEntity::ElementPropertySet {
@@ -1086,6 +1207,9 @@ pub fn append_typed_production_elements(
                 },
             });
         }
+        if level_slab {
+            add_level_slab_pitch(&mut reference_sets);
+        }
         // RE-154: the common property sets' Reference, the type's name;
         // RE-156: the shared parameter Serial Number.
         for set in reference_sets.into_iter().chain(serial_sets) {
@@ -1097,8 +1221,7 @@ pub fn append_typed_production_elements(
     }
 
     // #323: group each whole's parts into one aggregate.
-    let mut parts_by_whole: std::collections::BTreeMap<usize, Vec<usize>> =
-        std::collections::BTreeMap::new();
+    let mut parts_by_whole: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (part_index, whole_id) in pending_parts {
         if let Some(&whole_index) = out.id_to_entity.get(&whole_id) {
             parts_by_whole
@@ -1405,7 +1528,7 @@ fn wall_geometry_from_decoded(decoded: &DecodedElement) -> Option<RecoveredWallG
     if let Some(id) = curve.location_curve_id {
         properties.push(Property {
             name: "LocationCurveId".into(),
-            value: PropertyValue::Integer(i64::from(id)),
+            value: PropertyValue::Integer(id.get()),
         });
     }
     Some(RecoveredWallGeom {
@@ -1489,16 +1612,50 @@ fn level_parameter_property_set(decoded: &DecodedElement, ifc_type: &str) -> Opt
 /// flight, holding the number of risers, riser height and tread length
 /// their data records (RE-47), with the measure types those standard sets
 /// declare. `None` when nothing was read.
+///
+/// As revit-ifc's calculators give them (CLEANROOM.md source 5): a flight's
+/// number of treads and nosing length are its own (RE-92, RE-52), and a
+/// stair's nosing length the one its runs share; `TreadLengthAtOffset` is
+/// the stair's tread depth, which a flight carries, and so is a flight's
+/// `TreadLengthAtInnerSide`, since its run type has no inside-boundary
+/// width. A stair's `TreadLengthAtInnerSide` is its stair type's
+/// inside-boundary width where that is set, which is not read, so it is not
+/// written; nor is `WalkingLineOffset`, which revit-ifc gives as half the
+/// run's width in feet and the export scales as millimetres.
 fn stair_property_set(decoded: &DecodedElement) -> Option<PropertySet> {
     use crate::partition_schema_mvp as mvp;
-    let name = match decoded.class.as_str() {
-        "Stair" => "Pset_StairCommon",
-        "StairsRun" => "Pset_StairFlightCommon",
+    let (name, flight) = match decoded.class.as_str() {
+        "Stair" => ("Pset_StairCommon", false),
+        "StairsRun" => ("Pset_StairFlightCommon", true),
         _ => return None,
     };
     let mut properties = Vec::new();
     for (field, value) in &decoded.fields {
+        if let (mvp::STAIR_TREAD_DEPTH_FIELD, InstanceField::Float { value, .. }) =
+            (field.as_str(), value)
+        {
+            properties.push(Property {
+                name: "TreadLengthAtOffset".into(),
+                value: PropertyValue::PositiveLengthFeet(*value),
+            });
+            if flight {
+                properties.push(Property {
+                    name: "TreadLengthAtInnerSide".into(),
+                    value: PropertyValue::PositiveLengthFeet(*value),
+                });
+            }
+        }
         let property = match (field.as_str(), value) {
+            (mvp::STAIR_TREAD_COUNT_FIELD, InstanceField::Integer { value, .. }) if flight => {
+                Property {
+                    name: "NumberOfTreads".into(),
+                    value: PropertyValue::CountValue(*value),
+                }
+            }
+            (mvp::STAIR_NOSING_LENGTH_FIELD, InstanceField::Float { value, .. }) => Property {
+                name: "NosingLength".into(),
+                value: PropertyValue::LengthFeet(*value),
+            },
             (mvp::STAIR_RISER_COUNT_FIELD, InstanceField::Integer { value, .. }) => Property {
                 name: "NumberOfRiser".into(),
                 value: PropertyValue::CountValue(*value),
@@ -1523,7 +1680,7 @@ fn stair_property_set(decoded: &DecodedElement) -> Option<PropertySet> {
 
 /// The sets holding `Reference` of each entity and predefined type written
 /// ([`reference_set_kinds`]).
-type ReferenceKinds = std::collections::BTreeMap<
+type ReferenceKinds = BTreeMap<
     (String, Option<&'static str>),
     Vec<(
         &'static str,
@@ -1538,7 +1695,8 @@ type ReferenceKinds = std::collections::BTreeMap<
 /// sets). Revit's IFC4 export gives the BIM4LCA office's elements exactly
 /// these sets, but for those revit-ifc matches by a prefix of the entity's
 /// name, such as `Pset_StairFlightCommon` on a stair. None for a space,
-/// whose `Reference` is [`space_common_property_set`]'s.
+/// whose `Reference` is [`space_common_property_set`]'s, and only the sets
+/// in [`CONFIRMED_REFERENCE_SETS`].
 fn reference_set_kinds(
     ifc_type: &str,
     predefined_type: Option<&str>,
@@ -1553,9 +1711,52 @@ fn reference_set_kinds(
     STANDARD_PROPERTY_SETS
         .iter()
         .filter(|set| set.applies_to(ifc_type, predefined_type))
+        .filter(|set| CONFIRMED_REFERENCE_SETS.contains(&set.name))
         .filter_map(|set| Some((set.name, set.property_kind("Reference")?)))
         .collect()
 }
+
+/// The sets whose `Reference` a Revit export measured writes, equal to
+/// rvt-rs's and never where rvt-rs leaves it out (RE-239 §7): the office's
+/// and the R2025 models' IFC4 exports, and RE1's IFC2X3 exports for the duct
+/// and pipe fitting and duct segment types. Reference goes in no other set
+/// until a Revit export confirms it (the maintainer, 2026-10-29).
+const CONFIRMED_REFERENCE_SETS: &[&str] = &[
+    "Pset_AirTerminalTypeCommon",
+    "Pset_BeamCommon",
+    "Pset_BuildingElementProxyCommon",
+    "Pset_ColumnCommon",
+    "Pset_CoveringCommon",
+    "Pset_CurtainWallCommon",
+    "Pset_DoorCommon",
+    "Pset_DuctFittingTypeCommon",
+    "Pset_DuctSegmentTypeCommon",
+    "Pset_ElectricApplianceTypeCommon",
+    "Pset_EnvironmentalImpactIndicators",
+    "Pset_FireSuppressionTerminalTypeCommon",
+    "Pset_FurnitureTypeCommon",
+    "Pset_LightFixtureTypeCommon",
+    "Pset_MemberCommon",
+    "Pset_OpeningElementCommon",
+    "Pset_PipeFittingTypeCommon",
+    "Pset_PipeSegmentTypeCommon",
+    "Pset_PlateCommon",
+    "Pset_RailingCommon",
+    "Pset_RampCommon",
+    "Pset_ReinforcementBarPitchOfBeam",
+    "Pset_ReinforcementBarPitchOfColumn",
+    "Pset_ReinforcementBarPitchOfSlab",
+    "Pset_ReinforcementBarPitchOfWall",
+    "Pset_RoofCommon",
+    "Pset_SanitaryTerminalTypeCommon",
+    "Pset_SlabCommon",
+    "Pset_SpaceCommon",
+    "Pset_StairCommon",
+    "Pset_StairFlightCommon",
+    "Pset_WallCommon",
+    "Pset_WasteTerminalTypeCommon",
+    "Pset_WindowCommon",
+];
 
 /// The sets `kinds` ([`reference_set_kinds`]), each holding `type_name` as
 /// its `Reference`.
@@ -1588,12 +1789,12 @@ fn reference_property_sets(
 }
 
 /// The set Revit's own IFC export writes an element's Category, family and
-/// type in, and its type object's Category and Family Name (spike 257).
+/// type in, and its type object's Category and Family Name (#755).
 pub const REVIT_OTHER_SET: &str = "Other";
 
 /// The parameters Revit's own IFC export writes on an element for its
 /// category, family, type and phase, under its set and property names
-/// (spike 257): `Other` (Category, Family, Family and Type, Type, Type Id)
+/// (#755): `Other` (Category, Family, Family and Type, Type, Type Id)
 /// and `Phasing` (Phase Created). Each is written only from a value the
 /// element carries. The type's own parameters (Family Name, Type Name) go on
 /// its type object, as Revit writes them.
@@ -1704,7 +1905,7 @@ fn is_external_set(ifc_type: &str) -> Option<&'static str> {
 /// property set entry reads before anything else (`PropertySetEntry
 /// ("Pset_WallCommon.IsExternal", "IsExternal")` in its pset definitions,
 /// CLEANROOM.md source 5), else the value Revit's exporter calculates
-/// ([`crate::partition_schema_mvp::IS_EXTERNAL_FIELD`]). `None` where neither
+/// (`crate::partition_schema_mvp::IS_EXTERNAL_FIELD`). `None` where neither
 /// is read.
 fn is_external_value(decoded: &DecodedElement, set: &str) -> Option<bool> {
     use crate::partition_schema_mvp as mvp;
@@ -1756,8 +1957,760 @@ fn add_is_external(
     }
 }
 
+/// Add `ExtendToStructure` (`IfcBoolean`) to a wall's `Pset_WallCommon`
+/// among `sets`: whether its top is joined to a roof or floor, as its native
+/// record says (RE-228). Nothing where the record is not read.
+fn add_extend_to_structure(sets: &mut Vec<PropertySet>, ifc_type: &str, decoded: &DecodedElement) {
+    if !matches!(ifc_type, "IFCWALL" | "IFCWALLSTANDARDCASE") {
+        return;
+    }
+    let Some(joined) = decoded.fields.iter().find_map(|(name, value)| match value {
+        InstanceField::Bool(flag) if name == crate::partition_schema_mvp::WALL_TOP_JOINED_FIELD => {
+            Some(*flag)
+        }
+        _ => None,
+    }) else {
+        return;
+    };
+    let property = Property {
+        name: "ExtendToStructure".into(),
+        value: PropertyValue::Boolean(joined),
+    };
+    match sets.iter_mut().find(|set| set.name == "Pset_WallCommon") {
+        Some(set) => set.properties.push(property),
+        None => sets.push(PropertySet {
+            name: "Pset_WallCommon".into(),
+            properties: vec![property],
+        }),
+    }
+}
+
+/// Whether a slab's top is known to lie level, so that it gets `PitchAngle`
+/// 0 in its `Pset_SlabCommon`: revit-ifc's `SlopeCalculator` (CLEANROOM.md
+/// source 5) gives a slab with no sloped extrusion and no location curve
+/// the slope of its largest upward face (RE-238). A stair landing drawn from
+/// its top down its type's thickness (RE-214) is level, and so is a slab
+/// drawn as an extrusion whose depth is its type's layers' total
+/// thickness, as a sloped or shape-edited slab's record box is deeper than
+/// its layers. Any other slab gets nothing: on the BIM4LCA office the
+/// record boxes of 8 sloped floors are drawn level, and Revit gives them
+/// 1.9 to 24 degrees.
+fn level_slab(
+    ifc_type: &str,
+    decoded: &DecodedElement,
+    extrusion: Option<&Extrusion>,
+    has_solid_shape: bool,
+    property_set: Option<&PropertySet>,
+) -> bool {
+    const TOLERANCE_FEET: f64 = 1e-3;
+    if ifc_type != "IFCSLAB" {
+        return false;
+    }
+    let landing = property_set
+        .iter()
+        .flat_map(|set| &set.properties)
+        .any(|property| {
+            property.name == "BodySource"
+                && matches!(&property.value, PropertyValue::Text(text) if text == LANDING_SLAB_BODY_SOURCE)
+        });
+    let layered = !has_solid_shape
+        && extrusion.is_some_and(|body| {
+            crate::partition_schema_mvp::element_layers_from_fields(&decoded.fields)
+                .filter(|layers| layers.stacked && !layers.layers.is_empty())
+                .is_some_and(|layers| {
+                    let total: f64 = layers.layers.iter().map(|layer| layer.width_feet).sum();
+                    (total - body.height_feet).abs() <= TOLERANCE_FEET
+                })
+        });
+    landing || layered
+}
+
+/// Add `PitchAngle` 0 to the `Pset_SlabCommon` among `sets` of a slab
+/// [`level_slab`] finds level, read before a mode without geometry strips
+/// its body.
+fn add_level_slab_pitch(sets: &mut Vec<PropertySet>) {
+    let property = Property {
+        name: "PitchAngle".into(),
+        value: PropertyValue::AngleRadians(0.0),
+    };
+    match sets.iter_mut().find(|set| set.name == "Pset_SlabCommon") {
+        Some(set) => set.properties.push(property),
+        None => sets.push(PropertySet {
+            name: "Pset_SlabCommon".into(),
+            properties: vec![property],
+        }),
+    }
+}
+
+/// Add a stair railing's `Qto_RailingBaseQuantities.Length` to `sets`, its
+/// path along its stair (RE-254).
+fn add_railing_length(sets: &mut Vec<PropertySet>, ifc_type: &str, decoded: &DecodedElement) {
+    if ifc_type != "IFCRAILING" {
+        return;
+    }
+    let Some(length) = decoded.fields.iter().find_map(|(name, value)| match value {
+        InstanceField::Float { value, .. }
+            if name == crate::partition_schema_mvp::RAILING_LENGTH_FIELD =>
+        {
+            Some(*value)
+        }
+        _ => None,
+    }) else {
+        return;
+    };
+    sets.push(PropertySet {
+        name: "Qto_RailingBaseQuantities".into(),
+        properties: vec![Property {
+            name: "Length".into(),
+            value: PropertyValue::PositiveLengthFeet(length),
+        }],
+    });
+}
+
+/// Add a space's `Qto_SpaceBaseQuantities.Height` to `sets`, its room's
+/// height (RE-255).
+fn add_space_height(sets: &mut Vec<PropertySet>, ifc_type: &str, decoded: &DecodedElement) {
+    if ifc_type != "IFCSPACE" {
+        return;
+    }
+    let Some(height) = decoded.fields.iter().find_map(|(name, value)| match value {
+        InstanceField::Float { value, .. }
+            if name == crate::partition_schema_mvp::ROOM_HEIGHT_FIELD =>
+        {
+            Some(*value)
+        }
+        _ => None,
+    }) else {
+        return;
+    };
+    sets.push(PropertySet {
+        name: "Qto_SpaceBaseQuantities".into(),
+        properties: vec![Property {
+            name: "Height".into(),
+            value: PropertyValue::PositiveLengthFeet(height),
+        }],
+    });
+}
+
+/// Add `Height` (`IfcPositiveLengthMeasure`) to a railing's
+/// `Pset_RailingCommon` among `sets`: its type's top rail height (RE-231).
+fn add_railing_height(sets: &mut Vec<PropertySet>, ifc_type: &str, decoded: &DecodedElement) {
+    if ifc_type != "IFCRAILING" {
+        return;
+    }
+    let Some(height) = decoded.fields.iter().find_map(|(name, value)| match value {
+        InstanceField::Float { value, .. }
+            if name == crate::partition_schema_mvp::RAILING_HEIGHT_FIELD =>
+        {
+            Some(*value)
+        }
+        _ => None,
+    }) else {
+        return;
+    };
+    let property = Property {
+        name: "Height".into(),
+        value: PropertyValue::PositiveLengthFeet(height),
+    };
+    match sets.iter_mut().find(|set| set.name == "Pset_RailingCommon") {
+        Some(set) => set.properties.push(property),
+        None => sets.push(PropertySet {
+            name: "Pset_RailingCommon".into(),
+            properties: vec![property],
+        }),
+    }
+}
+
+/// Add a door's `Qto_DoorBaseQuantities` or a window's
+/// `Qto_WindowBaseQuantities` to `sets`: the Width and Height of the symbol
+/// that draws it, and their product as its Area. revit-ifc's
+/// `WidthCalculator`, `HeightCalculator` and `AreaCalculator` (CLEANROOM.md
+/// source 5) read a door's or window's Width and Height parameters, its own
+/// or its type's, where no opening profile gives them (#1016); an instance
+/// whose own parameters change its size is drawn by a symbol of its own,
+/// which holds them (RE-215). Nothing where that symbol's size is not read.
+fn add_door_window_quantities(
+    sets: &mut Vec<PropertySet>,
+    ifc_type: &str,
+    decoded: &DecodedElement,
+) {
+    use crate::partition_schema_mvp as mvp;
+    let set = match ifc_type {
+        "IFCDOOR" => "Qto_DoorBaseQuantities",
+        "IFCWINDOW" => "Qto_WindowBaseQuantities",
+        _ => return,
+    };
+    let Some([width, height]) = mvp::drawn_size_from_fields(&decoded.fields) else {
+        return;
+    };
+    sets.push(PropertySet {
+        name: set.into(),
+        properties: vec![
+            Property {
+                name: "Width".into(),
+                value: PropertyValue::PositiveLengthFeet(width),
+            },
+            Property {
+                name: "Height".into(),
+                value: PropertyValue::PositiveLengthFeet(height),
+            },
+            Property {
+                name: "Area".into(),
+                value: PropertyValue::AreaSquareFeet(width * height),
+            },
+        ],
+    });
+}
+
+/// Add the base quantities a column's body gives to `sets` (#1016, RE-247):
+/// its `Length`, the depth of the extrusion it is drawn as, and, where that
+/// extrusion is its type's hollow section (whose family parameters are
+/// Revit's profile exactly), its `CrossSectionArea` (the section's area),
+/// `OuterSurfaceArea` (the length times the section's outline and hole) and
+/// `GrossVolume` (the area times the length), as revit-ifc's
+/// `PropertyUtil.CreateBeamColumnBaseQuantities` takes them (CLEANROOM.md
+/// source 5). Its `NetVolume` is left out: Revit's export writes the volume
+/// Revit computes, less than that on every one of the BIM4LCA office's
+/// hollow columns. A column drawn as its record's box gets none of these, as a
+/// round column is drawn as one too. All on a column joined by no
+/// `CleanPairGStep`
+/// ([`crate::partition_schema_mvp::COLUMN_UNJOINED_FIELD`]), which Revit's
+/// export draws as that extrusion. A joined column's Length is left out:
+/// Revit's export draws 18 of the BIM4LCA office's at permit as a cut mesh
+/// and gives them none, and no field tells them from the others. None where
+/// another solid draws it. A curtain panel's `Width`, its box's larger side
+/// wherever Revit writes it, is left out too: Revit's export writes none on
+/// 3 of the office's panels that no field tells apart.
+fn add_body_quantities(
+    sets: &mut Vec<PropertySet>,
+    ifc_type: &str,
+    decoded: &DecodedElement,
+    extrusion: Option<&Extrusion>,
+    solid_shape: Option<&entities::SolidShape>,
+) {
+    let unjoined = decoded.fields.iter().any(|(name, value)| {
+        name == crate::partition_schema_mvp::COLUMN_UNJOINED_FIELD
+            && matches!(value, InstanceField::Bool(true))
+    });
+    if !unjoined {
+        return;
+    }
+    let (feet, profile) = match (ifc_type, extrusion, solid_shape) {
+        ("IFCCOLUMN", Some(body), None) => (body.height_feet, Some(body)),
+        ("IFCCOLUMN", _, Some(entities::SolidShape::PlacedExtrusion { depth_feet, .. })) => {
+            (*depth_feet, None)
+        }
+        _ => return,
+    };
+    if !(feet.is_finite() && feet > 0.0) {
+        return;
+    }
+    let mut properties = vec![Property {
+        name: "Length".into(),
+        value: PropertyValue::PositiveLengthFeet(feet),
+    }];
+    if let Some((area, perimeter)) = profile.and_then(hollow_section_area_perimeter) {
+        properties.extend([
+            Property {
+                name: "CrossSectionArea".into(),
+                value: PropertyValue::AreaSquareFeet(area),
+            },
+            Property {
+                name: "OuterSurfaceArea".into(),
+                value: PropertyValue::AreaSquareFeet(perimeter * feet),
+            },
+            Property {
+                name: "GrossVolume".into(),
+                value: PropertyValue::VolumeCubicFeet(area * feet),
+            },
+        ]);
+    }
+    sets.push(PropertySet {
+        name: "Qto_ColumnBaseQuantities".into(),
+        properties,
+    });
+}
+
+/// Add a beam's `Qto_BeamBaseQuantities.Length` to `sets` (#1016): the
+/// length of the location line it is drawn along (RE-49, its record set's
+/// `AxisLength`), where its body is that line's box
+/// ([`BEAM_AXIS_BODY_SOURCE`]), whose ends lie in the beam's record box:
+/// Revit's export writes it as its body's extrusion length, the line's on
+/// each of the BIM4LCA office's 8 beams. Its areas and volumes are left out:
+/// that box is not the beam's section.
+fn add_beam_length(sets: &mut Vec<PropertySet>, ifc_type: &str, record: Option<&PropertySet>) {
+    if ifc_type != "IFCBEAM" {
+        return;
+    }
+    let Some(record) = record else {
+        return;
+    };
+    let along_axis = record.properties.iter().any(|property| {
+        property.name == "BodySource"
+            && matches!(&property.value, PropertyValue::Text(text) if text == BEAM_AXIS_BODY_SOURCE)
+    });
+    let length = record
+        .properties
+        .iter()
+        .find_map(|property| match &property.value {
+            PropertyValue::LengthFeet(feet) if property.name == "AxisLength" => Some(*feet),
+            _ => None,
+        });
+    let (true, Some(length)) = (along_axis, length) else {
+        return;
+    };
+    if !(length.is_finite() && length > 0.0) {
+        return;
+    }
+    sets.push(PropertySet {
+        name: "Qto_BeamBaseQuantities".into(),
+        properties: vec![Property {
+            name: "Length".into(),
+            value: PropertyValue::PositiveLengthFeet(length),
+        }],
+    });
+}
+
+/// Add a floor's `Qto_SlabBaseQuantities.GrossArea` to `sets` (#1016,
+/// RE-249): the area of the profile its body extrudes, its outline less its
+/// holes, as Revit's export writes it. Only on a floor drawn as one extrusion
+/// (`single`): a sketch of separate loops is several elements sharing its
+/// `Tag`, and a stair landing's slab gets none from Revit's export. Where the
+/// floor's type has one layer and the extrusion is as deep (RE-238), also,
+/// as revit-ifc's `DepthCalculator` and `GrossVolumeCalculator` take them
+/// from that extrusion (CLEANROOM.md source 5), its `Depth`, the extrusion's
+/// length, and its `GrossVolume`, the area times that length. Its
+/// `Perimeter` is left out: Revit's export writes it in feet, unscaled, in
+/// a file whose length unit is millimetres (RE-235 §5).
+fn add_slab_gross_area(
+    sets: &mut Vec<PropertySet>,
+    ifc_type: &str,
+    decoded: &DecodedElement,
+    extrusion: Option<&Extrusion>,
+    single: bool,
+) {
+    if ifc_type != "IFCSLAB" || decoded.class != "Floor" || !single {
+        return;
+    }
+    let Some(body) = extrusion else {
+        return;
+    };
+    let Some(area) = profile_area(body) else {
+        return;
+    };
+    let mut properties = vec![Property {
+        name: "GrossArea".into(),
+        value: PropertyValue::AreaSquareFeet(area),
+    }];
+    const TOLERANCE_FEET: f64 = 1e-3;
+    let depth = body.height_feet;
+    let layered = crate::partition_schema_mvp::element_layers_from_fields(&decoded.fields)
+        .filter(|layers| layers.stacked && layers.layers.len() == 1)
+        .is_some_and(|layers| (layers.layers[0].width_feet - depth).abs() <= TOLERANCE_FEET);
+    if layered && depth.is_finite() && depth > 0.0 {
+        properties.push(Property {
+            name: "Depth".into(),
+            value: PropertyValue::PositiveLengthFeet(depth),
+        });
+        properties.push(Property {
+            name: "GrossVolume".into(),
+            value: PropertyValue::VolumeCubicFeet(area * depth),
+        });
+    }
+    sets.push(PropertySet {
+        name: "Qto_SlabBaseQuantities".into(),
+        properties,
+    });
+}
+
+/// The area of the profile `body` extrudes, its rectangle or its outline less
+/// its holes; `None` for another profile or an area that is not positive.
+fn profile_area(body: &Extrusion) -> Option<f64> {
+    use crate::ifc::from_decoded::polygon_area_sqft;
+    let area = match &body.profile_override {
+        None => body.width_feet * body.depth_feet,
+        Some(entities::ProfileDef::Rectangle {
+            width_feet,
+            depth_feet,
+        }) => width_feet * depth_feet,
+        Some(entities::ProfileDef::ArbitraryClosed { points }) => polygon_area_sqft(points),
+        Some(entities::ProfileDef::ArbitraryWithVoids { points, voids }) => {
+            polygon_area_sqft(points) - voids.iter().map(|v| polygon_area_sqft(v)).sum::<f64>()
+        }
+        Some(_) => return None,
+    };
+    (area.is_finite() && area > 0.0).then_some(area)
+}
+
+/// The area and the length of the outline and hole of a hollow section
+/// `body` extrudes ([`hollow_section_profile`]), its arcs counted exactly;
+/// `None` for another profile.
+fn hollow_section_area_perimeter(body: &Extrusion) -> Option<(f64, f64)> {
+    let Some(entities::ProfileDef::IndexedPolyCurveWithVoids { outer, voids }) =
+        &body.profile_override
+    else {
+        return None;
+    };
+    let (mut area, mut perimeter) = curve_area_length(outer)?;
+    area = area.abs();
+    for void in voids {
+        let (hole, length) = curve_area_length(void)?;
+        area -= hole.abs();
+        perimeter += length;
+    }
+    (area.is_finite() && area > 0.0 && perimeter.is_finite()).then_some((area, perimeter))
+}
+
+/// The signed area (positive counter-clockwise) and the length of a closed
+/// curve of lines and three-point arcs, by Green's theorem, so an arc counts
+/// as itself and not its chord.
+fn curve_area_length(curve: &entities::IndexedCurve) -> Option<(f64, f64)> {
+    use std::f64::consts::TAU;
+    let point = |i: usize| curve.points.get(i).copied();
+    let (mut area, mut length) = (0.0, 0.0);
+    for segment in &curve.segments {
+        match *segment {
+            entities::CurveSegment::Line([a, b]) => {
+                let ((x0, y0), (x1, y1)) = (point(a)?, point(b)?);
+                area += (x0 * y1 - x1 * y0) / 2.0;
+                length += (x1 - x0).hypot(y1 - y0);
+            }
+            entities::CurveSegment::Arc([a, m, b]) => {
+                let (p0, p1, p2) = (point(a)?, point(m)?, point(b)?);
+                let d = 2.0 * (p0.0 * (p1.1 - p2.1) + p1.0 * (p2.1 - p0.1) + p2.0 * (p0.1 - p1.1));
+                if d.abs() < 1e-12 {
+                    return None;
+                }
+                let sq = |p: (f64, f64)| p.0 * p.0 + p.1 * p.1;
+                let cx =
+                    (sq(p0) * (p1.1 - p2.1) + sq(p1) * (p2.1 - p0.1) + sq(p2) * (p0.1 - p1.1)) / d;
+                let cy =
+                    (sq(p0) * (p2.0 - p1.0) + sq(p1) * (p0.0 - p2.0) + sq(p2) * (p1.0 - p0.0)) / d;
+                let r = (p0.0 - cx).hypot(p0.1 - cy);
+                let angle = |p: (f64, f64)| (p.1 - cy).atan2(p.0 - cx);
+                let (a0, am, a2) = (angle(p0), angle(p1), angle(p2));
+                let ccw = (a2 - a0).rem_euclid(TAU);
+                let sweep = if (am - a0).rem_euclid(TAU) < ccw {
+                    ccw
+                } else {
+                    ccw - TAU
+                };
+                let a1 = a0 + sweep;
+                area += (r * r * sweep + cx * r * (a1.sin() - a0.sin())
+                    - cy * r * (a1.cos() - a0.cos()))
+                    / 2.0;
+                length += r * sweep.abs();
+            }
+        }
+    }
+    Some((area, length))
+}
+
+/// Add a ceiling's `Qto_CoveringBaseQuantities.Width` to `sets` (#1016,
+/// RE-250): the depth of the extrusion it is drawn as, where that is its
+/// type's layers' total thickness (as RE-238 tells a level slab), as Revit's
+/// export writes it. Its `GrossArea` is left out: the area of the profile its
+/// sketch gives it differs from Revit's on 2 of the BIM4LCA office's ceilings
+/// as built and 9 at permit.
+fn add_ceiling_width(
+    sets: &mut Vec<PropertySet>,
+    ifc_type: &str,
+    decoded: &DecodedElement,
+    extrusion: Option<&Extrusion>,
+    single: bool,
+) {
+    const TOLERANCE_FEET: f64 = 1e-3;
+    if ifc_type != "IFCCOVERING" || decoded.class != "Ceiling" || !single {
+        return;
+    }
+    let Some(body) = extrusion else {
+        return;
+    };
+    let layered = crate::partition_schema_mvp::element_layers_from_fields(&decoded.fields)
+        .filter(|layers| layers.stacked && !layers.layers.is_empty())
+        .is_some_and(|layers| {
+            let total: f64 = layers.layers.iter().map(|layer| layer.width_feet).sum();
+            (total - body.height_feet).abs() <= TOLERANCE_FEET
+        });
+    if !(layered && body.height_feet.is_finite() && body.height_feet > 0.0) {
+        return;
+    }
+    sets.push(PropertySet {
+        name: "Qto_CoveringBaseQuantities".into(),
+        properties: vec![Property {
+            name: "Width".into(),
+            value: PropertyValue::PositiveLengthFeet(body.height_feet),
+        }],
+    });
+}
+
+/// Add a stair run's `Qto_StairFlightBaseQuantities` to `sets` (#1016,
+/// RE-247): its `Length`, the distance from its first riser line to its last
+/// ([`crate::partition_schema_mvp::STAIR_RUN_LENGTH_FIELD`]), and its
+/// `NetVolume`, its side views' areas times the run's width, the solids
+/// [`STAIR_RUN_BODY_SOURCE`] draws (one, or a riserless run's treads). None
+/// for a run not drawn from its sketch.
+fn add_stair_flight_quantities(
+    sets: &mut Vec<PropertySet>,
+    ifc_type: &str,
+    decoded: &DecodedElement,
+) {
+    if ifc_type != "IFCSTAIRFLIGHT" || decoded.class != "StairsRun" {
+        return;
+    }
+    let Some(run) = crate::partition_schema_mvp::stair_run_body_from_fields(&decoded.fields)
+        .filter(|run| run.profile.len() >= 3)
+    else {
+        return;
+    };
+    let length = decoded.fields.iter().find_map(|(name, value)| match value {
+        InstanceField::Float { value, .. }
+            if name == crate::partition_schema_mvp::STAIR_RUN_LENGTH_FIELD =>
+        {
+            Some(*value)
+        }
+        _ => None,
+    });
+    let area: f64 = std::iter::once(&run.profile)
+        .chain(&run.pieces)
+        .map(|ring| {
+            ring.iter()
+                .zip(ring.iter().cycle().skip(1))
+                .map(|(p, q)| p[0] * q[1] - q[0] * p[1])
+                .sum::<f64>()
+                .abs()
+                / 2.0
+        })
+        .sum();
+    let volume = area * run.width_feet;
+    if !(volume.is_finite() && volume > 0.0) {
+        return;
+    }
+    let mut properties: Vec<Property> = length
+        .filter(|length| length.is_finite() && *length > 0.0)
+        .map(|length| Property {
+            name: "Length".into(),
+            value: PropertyValue::PositiveLengthFeet(length),
+        })
+        .into_iter()
+        .collect();
+    properties.push(Property {
+        name: "NetVolume".into(),
+        value: PropertyValue::VolumeCubicFeet(volume),
+    });
+    sets.push(PropertySet {
+        name: "Qto_StairFlightBaseQuantities".into(),
+        properties,
+    });
+}
+
+/// Add a wall's `Qto_WallBaseQuantities` `Width` to `sets`: its type's
+/// thickness, the wall's Width parameter revit-ifc's `WidthCalculator`
+/// (CLEANROOM.md source 5) reads (#1016), also on a wall the partition
+/// reader does not draw from its centreline, from its type's layers. Its `Length` too where the partition
+/// reader gives one ([`crate::partition_schema_mvp::WALL_LENGTH_FIELD`]):
+/// Revit's export writes either the wall's curve's length or the length of
+/// that curve cut back at its joins, by how it draws the wall, so a Length is
+/// written only where the two are the same (Griffin, 2026-10-26, RE-252).
+/// Nothing where the thickness is not read.
+/// Add a curtain wall's `Qto_CurtainWallQuantities.Length` to `sets`: its
+/// curve's length ([`crate::partition_schema_mvp::WALL_LENGTH_FIELD`]), which
+/// revit-ifc's `LengthCalculator` takes from the wall's location curve
+/// (CLEANROOM.md source 5): on all 218 of the BIM4LCA office's straight
+/// curtain walls, as built and at permit (#1016). Nothing on a curved one.
+fn add_curtain_wall_length(sets: &mut Vec<PropertySet>, ifc_type: &str, decoded: &DecodedElement) {
+    use crate::partition_schema_mvp as mvp;
+    if ifc_type != "IFCCURTAINWALL" || decoded.class != mvp::CURTAIN_WALL_CLASS {
+        return;
+    }
+    let Some(length) = decoded.fields.iter().find_map(|(name, value)| match value {
+        InstanceField::Float { value, .. } if name == mvp::WALL_LENGTH_FIELD => Some(*value),
+        _ => None,
+    }) else {
+        return;
+    };
+    sets.push(PropertySet {
+        name: "Qto_CurtainWallQuantities".into(),
+        properties: vec![Property {
+            name: "Length".into(),
+            value: PropertyValue::PositiveLengthFeet(length),
+        }],
+    });
+}
+
+fn add_wall_quantities(sets: &mut Vec<PropertySet>, ifc_type: &str, decoded: &DecodedElement) {
+    use crate::partition_schema_mvp as mvp;
+    if !matches!(ifc_type, "IFCWALL" | "IFCWALLSTANDARDCASE") {
+        return;
+    }
+    let thickness = mvp::wall_axis_from_fields(&decoded.fields)
+        .map(|axis| axis.thickness_feet)
+        .or_else(|| mvp::wall_arc_from_fields(&decoded.fields).map(|arc| arc.thickness_feet))
+        .or_else(|| mvp::wall_layers_width_from_fields(&decoded.fields));
+    let Some(thickness) = thickness.filter(|t| t.is_finite() && *t > 0.0) else {
+        return;
+    };
+    let length = decoded.fields.iter().find_map(|(name, value)| match value {
+        InstanceField::Float { value, .. } if name == mvp::WALL_LENGTH_FIELD => Some(*value),
+        _ => None,
+    });
+    let mut properties: Vec<Property> = length
+        .filter(|l| l.is_finite() && *l > 0.0)
+        .map(|length| Property {
+            name: "Length".into(),
+            value: PropertyValue::PositiveLengthFeet(length),
+        })
+        .into_iter()
+        .collect();
+    properties.push(Property {
+        name: "Width".into(),
+        value: PropertyValue::PositiveLengthFeet(thickness),
+    });
+    sets.push(PropertySet {
+        name: "Qto_WallBaseQuantities".into(),
+        properties,
+    });
+}
+
+/// Add a wall's `Qto_WallBaseQuantities.Height` to `sets`: the depth of
+/// the extrusion it is drawn as, where its native record names nothing
+/// joined to or cutting it ([`crate::partition_schema_mvp::WALL_UNCUT_FIELD`]).
+/// revit-ifc's `WallExporter` (CLEANROOM.md source 5) writes the vertical
+/// span of Revit's body, and on those walls the record box rvt-rs extrudes
+/// is that tall: on all 81 of the BIM4LCA office's as built, 70 at building
+/// permit and 93 of puzzbobb's R2025 walls, with Revit writing a `Height` on
+/// each (RE-266). Nothing on any other wall, whose body may be cut (#1067).
+fn add_wall_height(
+    sets: &mut Vec<PropertySet>,
+    ifc_type: &str,
+    decoded: &DecodedElement,
+    extrusion: Option<&Extrusion>,
+) {
+    if !matches!(ifc_type, "IFCWALL" | "IFCWALLSTANDARDCASE") {
+        return;
+    }
+    let uncut = decoded.fields.iter().any(|(name, value)| {
+        name == crate::partition_schema_mvp::WALL_UNCUT_FIELD
+            && matches!(value, InstanceField::Bool(true))
+    });
+    let Some(height) = extrusion
+        .map(|body| body.height_feet)
+        .filter(|height| uncut && height.is_finite() && *height > 0.0)
+    else {
+        return;
+    };
+    let property = Property {
+        name: "Height".into(),
+        value: PropertyValue::PositiveLengthFeet(height),
+    };
+    match sets
+        .iter_mut()
+        .find(|set| set.name == "Qto_WallBaseQuantities")
+    {
+        Some(set) => set.properties.push(property),
+        None => sets.push(PropertySet {
+            name: "Qto_WallBaseQuantities".into(),
+            properties: vec![property],
+        }),
+    }
+}
+
+/// Add `Span` (`IfcPositiveLengthMeasure`) to a curtain mullion's
+/// `Pset_MemberCommon` among `sets`: its length, which revit-ifc's
+/// `SpanCalculator` (CLEANROOM.md source 5) takes from the depth of the
+/// mullion's body extrusion where no parameter gives it. A mullion runs along
+/// its own Z axis (RE-226): on the model's axes, its record box's extent
+/// along the model axis that Z lies on; turned or tilted, the extent along Z
+/// of the box along its own axes (RE-106). Nothing where neither is read.
+/// The same length is its `Qto_MemberBaseQuantities.Length`, which Revit's
+/// export gives every one of the BIM4LCA office's 10,003 mullions equal to
+/// their `Span` (#1016).
+fn add_mullion_span(sets: &mut Vec<PropertySet>, ifc_type: &str, decoded: &DecodedElement) {
+    use crate::partition_schema_mvp as mvp;
+    if ifc_type != "IFCMEMBER" || decoded.class != "CurtainWallMullion" {
+        return;
+    }
+    let float = |wanted: &str| {
+        decoded.fields.iter().find_map(|(name, value)| match value {
+            InstanceField::Float { value, .. } if name == wanted => Some(*value),
+            _ => None,
+        })
+    };
+    let (Some(width), Some(depth), Some(height)) = (
+        float("m_bboxWidth"),
+        float("m_bboxDepth"),
+        float("m_bboxHeight"),
+    ) else {
+        return;
+    };
+    let size = [width, depth, height];
+    let along = decoded.fields.iter().find_map(|(name, value)| match value {
+        InstanceField::Integer { value, .. } if name == mvp::CURTAIN_MULLION_ALONG_FIELD => {
+            usize::try_from(*value).ok()
+        }
+        _ => None,
+    });
+    // The box's two sides across the mullion, then its length along it.
+    let sides = match (mvp::curtain_axes_from_fields(&decoded.fields), along) {
+        (Some(axes), _) => oriented_box(axes, size).map(|(_, half)| half.map(|h| 2.0 * h)),
+        (None, Some(axis)) if axis < 3 => {
+            let across: Vec<f64> = (0..3).filter(|i| *i != axis).map(|i| size[i]).collect();
+            Some([across[0], across[1], size[axis]])
+        }
+        _ => None,
+    };
+    let Some(span) = sides
+        .map(|sides| sides[2])
+        .filter(|span| span.is_finite() && *span > 0.0)
+    else {
+        return;
+    };
+    let property = Property {
+        name: "Span".into(),
+        value: PropertyValue::PositiveLengthFeet(span),
+    };
+    match sets.iter_mut().find(|set| set.name == "Pset_MemberCommon") {
+        Some(set) => set.properties.push(property),
+        None => sets.push(PropertySet {
+            name: "Pset_MemberCommon".into(),
+            properties: vec![property],
+        }),
+    }
+    let mut quantities = vec![Property {
+        name: "Length".into(),
+        value: PropertyValue::PositiveLengthFeet(span),
+    }];
+    if let Some(volume) = mullion_box_volume(decoded, sides, span) {
+        quantities.push(Property {
+            name: "NetVolume".into(),
+            value: PropertyValue::VolumeCubicFeet(volume),
+        });
+    }
+    sets.push(PropertySet {
+        name: "Qto_MemberBaseQuantities".into(),
+        properties: quantities,
+    });
+}
+
+/// A curtain mullion's `NetVolume` (#1016, RE-243): its box's two sides across
+/// it times its length, where Revit's export draws it as an extrusion of
+/// that section, a mullion whose type has its own rectangular section
+/// (RE-246) on a straight curtain wall with an unedited profile
+/// ([`crate::partition_schema_mvp::MULLION_PLAIN_HOST_FIELD`]). revit-ifc's
+/// `NetVolumeCalculator` (CLEANROOM.md source 5) takes the volume of the
+/// solid it writes.
+fn mullion_box_volume(decoded: &DecodedElement, sides: Option<[f64; 3]>, span: f64) -> Option<f64> {
+    use crate::partition_schema_mvp as mvp;
+    let plain = decoded.fields.iter().any(|(name, value)| {
+        name == mvp::MULLION_PLAIN_HOST_FIELD && matches!(value, InstanceField::Bool(true))
+    });
+    let [a, b, _] = sides?;
+    (plain && a.is_finite() && b.is_finite() && a > 0.0 && b > 0.0).then_some(a * b * span)
+}
+
 /// Add `Finish` (`IfcText`) to a covering's `Pset_CoveringCommon` among
-/// `sets`: its type's finish layers' materials (B41).
+/// `sets`: its type's finish layers' materials.
+// Tracker: B41.
 fn add_covering_finish(sets: &mut [PropertySet], ifc_type: &str, decoded: &DecodedElement) {
     if ifc_type != "IFCCOVERING" {
         return;
@@ -2048,12 +3001,20 @@ const PIPE_AXIS_TOLERANCE_FEET: f64 = 1e-6;
 
 /// A pipe's invert in model height, feet (RE-157): the lower end of a
 /// vertical pipe, or a horizontal pipe's axis less half its inner diameter.
-/// `None` for a sloped pipe, or a horizontal one whose inner diameter was not
-/// read.
+/// `None` for a sloped pipe, or one whose inner diameter was not read: the
+/// diameters are read on the release RE-157 measured the invert on (2025),
+/// and a 2024 pipe's axis alone gives an invert Revit's export does not
+/// (the BIM4LCA office's 12, #869).
 fn pipe_invert_height(fields: &[(String, InstanceField)]) -> Option<f64> {
     use crate::partition_schema_mvp as mvp;
     let pipe = mvp::pipe_body_from_fields(fields)?;
     let (start, end) = (pipe.start, pipe.end);
+    let inner = fields.iter().find_map(|(name, value)| match value {
+        InstanceField::Float { value, .. } if name == mvp::PIPE_INNER_DIAMETER_FIELD => {
+            Some(*value)
+        }
+        _ => None,
+    })?;
     let near = |a: f64, b: f64| (a - b).abs() <= PIPE_AXIS_TOLERANCE_FEET;
     let level = near(start[2], end[2]);
     if !level && near(start[0], end[0]) && near(start[1], end[1]) {
@@ -2062,12 +3023,6 @@ fn pipe_invert_height(fields: &[(String, InstanceField)]) -> Option<f64> {
     if !level {
         return None;
     }
-    let inner = fields.iter().find_map(|(name, value)| match value {
-        InstanceField::Float { value, .. } if name == mvp::PIPE_INNER_DIAMETER_FIELD => {
-            Some(*value)
-        }
-        _ => None,
-    })?;
     Some(start[2] - inner / 2.0)
 }
 
@@ -2109,12 +3064,13 @@ pub(super) fn pipe_inverts_above_storeys(
     }
 }
 
-/// The entities a room's space contains in Revit's export (B63): on RE1
+/// The entities a room's space contains in Revit's export: on RE1
 /// Architecture its furniture, sanitary terminals and equipment written as
 /// proxies, and no wall, door, slab, covering or curtain wall. On the
 /// BIM4LCA office (#792) Revit's export also puts its waste, fire
 /// suppression and air terminals and electric appliances in their rooms'
 /// spaces.
+// Tracker: B63.
 const ROOM_CONTENT_TYPES: [&str; 7] = [
     "IFCFURNITURE",
     "IFCSANITARYTERMINAL",
@@ -2133,7 +3089,7 @@ type PlanLoop = Vec<(f64, f64)>;
 fn space_plan_outline(
     location: &[f64; 3],
     rotation: f64,
-    extrusion: &entities::Extrusion,
+    extrusion: &Extrusion,
 ) -> Option<(PlanLoop, Vec<PlanLoop>)> {
     let (sin, cos) = rotation.sin_cos();
     let place = |ring: &[(f64, f64)]| -> PlanLoop {
@@ -2161,12 +3117,13 @@ fn space_plan_outline(
 }
 
 /// Contain each room's furniture, fixtures and equipment in its space, as
-/// Revit's export does (B63): a family instance written as one of
+/// Revit's export does: a family instance written as one of
 /// [`ROOM_CONTENT_TYPES`], hosted by nothing, whose location lies in the plan
 /// outline of a space on its storey, or, where it lies in none, whose plan box
 /// overlaps exactly one, as a cabinet recessed into a room's wall does (RE1
 /// Architecture's 375441, 0.08 ft outside its room). Everything else stays in
 /// its storey.
+// Tracker: B63.
 pub(super) fn contain_in_spaces(entities: &mut Vec<entities::IfcEntity>) {
     use crate::element_record_plan_profiles::inside;
     let is_family_instance = |set: &Option<PropertySet>| {
@@ -2456,14 +3413,20 @@ struct RecordGeometry {
 /// its outline in the body's frame, and the floor's thickness, feet.
 type VoidBody = (usize, u32, Vec<(f64, f64)>, f64);
 
-/// A wall's elevation-profile opening (B55): its tag, its outline along and
+/// A wall's elevation-profile opening: its tag, its outline along and
 /// up the wall, the wall's axis turn in its placement, the sketch plane's
 /// offset to the axis's left, and the wall's thickness.
+// Tracker: B55.
 type ProfileOpening = (u32, Vec<(f64, f64)>, f64, f64, f64);
 
 /// `BodyHeightSource` of a column drawn as its body after geometry joins: the
 /// box at id-48 of its geometry node (RE-178).
 pub const COLUMN_CUT_BODY_HEIGHT_SOURCE: &str = "partition_geometry_node_after_joins";
+
+/// `BodyHeightSource` of a monolithic stair landing drawn as its slab: from
+/// its top (`StairsLanding.m_baseElevation`) down its landing type's
+/// thickness (`StairsLandingType.m_thickness`, #824).
+pub const LANDING_SLAB_BODY_HEIGHT_SOURCE: &str = "native_landing_top_and_type_thickness";
 
 /// `BodySource` of a body that is the element record's bounding box, where
 /// no carrier refines it (#409).
@@ -2536,7 +3499,7 @@ fn oriented_box_solid(axes: [[f64; 3]; 3], half: [f64; 3], height: f64) -> entit
 pub const INSTANCE_ORIGIN_PROPERTIES: [&str; 2] = ["InstanceOriginX", "InstanceOriginY"];
 
 /// Properties holding a window's opening from its type and transform
-/// (RE-93, [`crate::partition_schema_mvp::FillerOpening`]): the plan point
+/// (RE-93, `crate::partition_schema_mvp::FillerOpening`): the plan point
 /// it is centred on and the direction of its width, model feet and a unit
 /// vector, then its base elevation, width and height, feet.
 pub const FILLER_OPENING_PROPERTIES: [&str; 7] = [
@@ -2550,8 +3513,24 @@ pub const FILLER_OPENING_PROPERTIES: [&str; 7] = [
 ];
 
 /// Properties holding a door's Width and Height from its type (RE-187,
-/// [`crate::partition_schema_mvp::DOOR_TYPE_SIZE_FIELDS`]), feet.
+/// `crate::partition_schema_mvp::DOOR_TYPE_SIZE_FIELDS`), feet.
 pub const DOOR_TYPE_SIZE_PROPERTIES: [&str; 2] = ["TypeWidth", "TypeHeight"];
+
+/// Properties holding the extent along X and along Z of the outline a
+/// door's or window's symbol cuts in its host (RE-215,
+/// `crate::partition_schema_mvp::CUT_LOOP_SIZE_FIELDS`), feet.
+pub const CUT_LOOP_SIZE_PROPERTIES: [&str; 2] = ["CutWidth", "CutHeight"];
+
+/// Properties holding the extents along X, Y and Z of the solid a door's or
+/// window's symbol cuts where it cuts no loop (RE-225,
+/// `crate::partition_schema_mvp::CUT_SOLID_SIZE_FIELDS`), feet.
+pub const CUT_SOLID_SIZE_PROPERTIES: [&str; 3] =
+    ["CutSolidWidth", "CutSolidDepth", "CutSolidHeight"];
+
+/// Properties holding a door's or window's record box extent along its own
+/// X axis and its height, where its symbol cuts no loop (#810,
+/// `crate::partition_schema_mvp::INSTANCE_BOX_SIZE_FIELDS`), feet.
+pub const INSTANCE_BOX_SIZE_PROPERTIES: [&str; 2] = ["BoxWidth", "BoxHeight"];
 
 /// Classes whose body another rule draws, which a family instance's turn
 /// leaves alone: columns (their type's section), beams (their line), and
@@ -2661,6 +3640,77 @@ fn pipe_cylinder_solid(
 /// (RE-104).
 pub const COLUMN_I_SECTION_BODY_SOURCE: &str = "family_type_i_section";
 
+/// `BodySource` of a column drawn as its type's square hollow section,
+/// rounded corners and all, from its family's parameters (W6).
+pub const COLUMN_HOLLOW_SECTION_BODY_SOURCE: &str = "family_type_hollow_section";
+
+/// How closely a hollow-section column's record box must equal its
+/// section's outside to be drawn as it, feet.
+pub const HOLLOW_SECTION_BOX_TOLERANCE_FEET: f64 = 1e-3;
+
+/// A square hollow section's profile, centred: the outside and the inside,
+/// each four lines and four quarter arcs about the corners' common centres,
+/// as Revit's export writes one (`IfcIndexedPolyCurve`s, W6).
+fn hollow_section_profile(
+    section: &crate::partition_type_parameters::HollowSection,
+) -> entities::ProfileDef {
+    use entities::{CurveSegment, IndexedCurve};
+    let (x, y) = (section.width_feet / 2.0, section.height_feet / 2.0);
+    let ring = |half_x: f64, half_y: f64, radius: f64, clockwise: bool| {
+        let (cx, cy) = (half_x - radius, half_y - radius);
+        let diagonal = radius * std::f64::consts::FRAC_1_SQRT_2;
+        // Counter-clockwise from the bottom edge's left end.
+        let mut points = vec![
+            (-cx, -half_y),
+            (cx, -half_y),
+            (cx + diagonal, -cy - diagonal),
+            (half_x, -cy),
+            (half_x, cy),
+            (cx + diagonal, cy + diagonal),
+            (cx, half_y),
+            (-cx, half_y),
+            (-cx - diagonal, cy + diagonal),
+            (-half_x, cy),
+            (-half_x, -cy),
+            (-cx - diagonal, -cy - diagonal),
+        ];
+        if clockwise {
+            points.reverse();
+        }
+        let segments = if clockwise {
+            // The same curves, reversed: point i is the counter-clockwise
+            // ring's point 11 - i.
+            vec![
+                CurveSegment::Line([1, 2]),
+                CurveSegment::Arc([2, 3, 4]),
+                CurveSegment::Line([4, 5]),
+                CurveSegment::Arc([5, 6, 7]),
+                CurveSegment::Line([7, 8]),
+                CurveSegment::Arc([8, 9, 10]),
+                CurveSegment::Line([10, 11]),
+                CurveSegment::Arc([11, 0, 1]),
+            ]
+        } else {
+            vec![
+                CurveSegment::Line([0, 1]),
+                CurveSegment::Arc([1, 2, 3]),
+                CurveSegment::Line([3, 4]),
+                CurveSegment::Arc([4, 5, 6]),
+                CurveSegment::Line([6, 7]),
+                CurveSegment::Arc([7, 8, 9]),
+                CurveSegment::Line([9, 10]),
+                CurveSegment::Arc([10, 11, 0]),
+            ]
+        };
+        IndexedCurve { points, segments }
+    };
+    let t = section.wall_feet;
+    entities::ProfileDef::IndexedPolyCurveWithVoids {
+        outer: ring(x, y, section.outer_radius_feet, false),
+        voids: vec![ring(x - t, y - t, section.outer_radius_feet - t, true)],
+    }
+}
+
 /// How closely an I-section column's section, turned to its X axis, must
 /// fill its record box in plan (RE-104), feet.
 pub const COLUMN_SECTION_TOLERANCE_FEET: f64 = 0.01;
@@ -2722,9 +3772,154 @@ fn beam_i_solid(
 
 /// `BodySource` of a stair run drawn as its treads and risers (RE-52).
 pub const STAIR_RUN_BODY_SOURCE: &str = "partition_stair_run_sketch";
+/// `BodySource` of a spiral stair run drawn as its treads, from its native
+/// records (#357).
+pub const SPIRAL_RUN_BODY_SOURCE: &str = "native_spiral_run_treads";
+
+/// `BodySource` of a landing drawn as the one tread it is: its outline's
+/// curve loop, arcs and all, one run tread thick (#824).
+pub const LANDING_TREAD_BODY_SOURCE: &str = "native_landing_tread";
+
+/// `BodySource` of a monolithic stair landing drawn as its slab, its outline
+/// from its top down its type's thickness (#824).
+pub const LANDING_SLAB_BODY_SOURCE: &str = "partition_landing_slab";
 
 /// `BodySource` of a shed roof drawn along its slope (RE-56).
 pub const ROOF_SLOPE_BODY_SOURCE: &str = "partition_roof_slope";
+
+/// `BodySource` of a roof by extrusion drawn as its section (RE-211).
+pub const ROOF_EXTRUSION_BODY_SOURCE: &str = "partition_roof_extrusion";
+
+/// A roof by extrusion's body (RE-211): its section
+/// ([`crate::partition_schema_mvp::RoofExtrusion`]) run along its axis from
+/// `start` to `end`, as a closed faceted brep in the element's frame at
+/// `origin`. The two caps are the section, which rises along `u` on its top
+/// and its underside alike, cut into triangles between the two; the sides
+/// join the caps along the section's outline. Every triangle faces out.
+fn roof_extrusion_solid(
+    extrusion: &crate::partition_schema_mvp::RoofExtrusion,
+    origin: [f64; 3],
+    (start, end): (f64, f64),
+) -> Option<entities::SolidShape> {
+    let (top, bottom) = (&extrusion.top, &extrusion.bottom);
+    if top.len() < 2 || bottom.len() < 2 || !start.is_finite() || !end.is_finite() || end <= start {
+        return None;
+    }
+    let axis = extrusion.axis;
+    let u_axis = 1 - axis;
+    let place = |(u, v): (f64, f64), along: f64| {
+        let mut point = [0.0; 3];
+        point[axis] = along - origin[axis];
+        point[u_axis] = u - origin[u_axis];
+        point[2] = v - origin[2];
+        point
+    };
+    // The outline: the top along `u`, then the underside back.
+    let outline: Vec<(f64, f64)> = top.iter().chain(bottom.iter().rev()).copied().collect();
+    let n = outline.len();
+    let mut vertices: Vec<[f64; 3]> = outline.iter().map(|&p| place(p, start)).collect();
+    vertices.extend(outline.iter().map(|&p| place(p, end)));
+    // Cap triangles: the outline cut into ears, since the section may be
+    // concave, kept only where they cover its area exactly.
+    let points: Vec<[f64; 2]> = outline.iter().map(|&(u, v)| [u, v]).collect();
+    let no_holes: [u32; 0] = [];
+    let mut flat: Vec<u32> = Vec::new();
+    earcut::Earcut::new().earcut(points.iter().copied(), &no_holes, &mut flat);
+    if flat.len() != 3 * (n - 2) || flat.iter().any(|&k| k as usize >= n) {
+        return None;
+    }
+    let twice_area = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    };
+    // Relative to the outline's first point, so large model coordinates do
+    // not cancel.
+    let origin = points[0];
+    let section = (0..n)
+        .map(|k| {
+            let (a, b) = (points[k], points[(k + 1) % n]);
+            let (a, b) = (
+                [a[0] - origin[0], a[1] - origin[1]],
+                [b[0] - origin[0], b[1] - origin[1]],
+            );
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum::<f64>()
+        .abs();
+    let covered: f64 = flat
+        .chunks_exact(3)
+        .map(|t| {
+            twice_area(
+                points[t[0] as usize],
+                points[t[1] as usize],
+                points[t[2] as usize],
+            )
+            .abs()
+        })
+        .sum();
+    if !(section.is_finite() && section > 0.0)
+        || (covered - section).abs() > 1e-9 * section.max(1.0)
+    {
+        return None;
+    }
+    let cap: Vec<[usize; 3]> = flat
+        .chunks_exact(3)
+        .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+        .collect();
+    let mut triangles: Vec<[usize; 3]> = Vec::new();
+    // The outward side of a triangle: the caps face away from each other,
+    // a side away from the section (its outline runs clockwise across the
+    // plane, top first, so an edge's outward normal is on its left).
+    let mut outward: Vec<[f64; 3]> = Vec::new();
+    let mut axis_vector = [0.0; 3];
+    axis_vector[axis] = 1.0;
+    for &[a, b, c] in &cap {
+        triangles.push([a, b, c]);
+        outward.push(axis_vector.map(|v| -v));
+        triangles.push([a + n, b + n, c + n]);
+        outward.push(axis_vector);
+    }
+    for k in 0..n {
+        let next = (k + 1) % n;
+        let (du, dv) = (
+            outline[next].0 - outline[k].0,
+            outline[next].1 - outline[k].1,
+        );
+        let mut normal = [0.0; 3];
+        normal[u_axis] = -dv;
+        normal[2] = du;
+        triangles.push([k, next, next + n]);
+        outward.push(normal);
+        triangles.push([k, next + n, k + n]);
+        outward.push(normal);
+    }
+    let triangles = triangles
+        .into_iter()
+        .zip(outward)
+        .map(|([a, b, c], out)| {
+            let (pa, pb, pc) = (vertices[a], vertices[b], vertices[c]);
+            let (e1, e2) = (
+                [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]],
+                [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]],
+            );
+            let normal = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            let facing = normal[0] * out[0] + normal[1] * out[1] + normal[2] * out[2];
+            let [a, b, c] = if facing < 0.0 { [a, c, b] } else { [a, b, c] };
+            Some(entities::BrepTriangle(
+                u32::try_from(a).ok()?,
+                u32::try_from(b).ok()?,
+                u32::try_from(c).ok()?,
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(entities::SolidShape::FacetedBrep {
+        vertices_feet: vertices,
+        triangles,
+    })
+}
 
 /// How closely a shed roof's rise and thickness must reproduce its record
 /// box's height for its slope to be drawn, feet.
@@ -3337,6 +4532,9 @@ fn stair_run_solid(
     run: &crate::partition_schema_mvp::StairRunBody,
     location: [f64; 3],
 ) -> entities::SolidShape {
+    if !run.pieces.is_empty() {
+        return stair_run_pieces_solid(run, location);
+    }
     let y_axis = [run.across[1], -run.across[0]];
     let along = if y_axis[0] * run.climb[0] + y_axis[1] * run.climb[1] >= 0.0 {
         1.0
@@ -3365,6 +4563,184 @@ fn stair_run_solid(
     }
 }
 
+/// A spiral run's treads (#357), as Revit's export writes them: one
+/// extrusion per tread, up its thickness from its bottom, of a profile of
+/// two arcs and two lines about the run's centre, as an `IfcIndexedPolyCurve`
+/// so a reader draws the arcs as it draws Revit's.
+/// A tread landing's body (#824): its outline, lines and three-point arcs,
+/// as one `IfcIndexedPolyCurve` extruded up from its underside to its top.
+fn landing_tread_solid(
+    tread: &crate::partition_schema_mvp::LandingTreadBody,
+    location: [f64; 3],
+) -> entities::SolidShape {
+    use crate::native_stairs::LandingCurve;
+    let mut curves = tread.outline.clone();
+    // Counter-clockwise, as IFC wants a profile's outer curve.
+    let area: f64 = curves
+        .iter()
+        .map(|curve| {
+            let (p, q) = (curve.start(), curve.end());
+            p[0] * q[1] - q[0] * p[1]
+        })
+        .sum();
+    if area < 0.0 {
+        curves.reverse();
+        for curve in &mut curves {
+            *curve = match *curve {
+                LandingCurve::Line(a, b) => LandingCurve::Line(b, a),
+                LandingCurve::Arc(a, m, b) => LandingCurve::Arc(b, m, a),
+            };
+        }
+    }
+    let origin = curves.first().map_or([0.0, 0.0], |curve| curve.start());
+    let local = |p: [f64; 2]| (p[0] - origin[0], p[1] - origin[1]);
+    let mut points = Vec::new();
+    let mut starts = Vec::new();
+    for curve in &curves {
+        starts.push(points.len());
+        points.push(local(curve.start()));
+        if let LandingCurve::Arc(_, m, _) = curve {
+            points.push(local(*m));
+        }
+    }
+    let segments = curves
+        .iter()
+        .enumerate()
+        .map(|(i, curve)| {
+            let start = starts[i];
+            let end = starts.get(i + 1).copied().unwrap_or(0);
+            match curve {
+                LandingCurve::Line(..) => entities::CurveSegment::Line([start, end]),
+                LandingCurve::Arc(..) => entities::CurveSegment::Arc([start, start + 1, end]),
+            }
+        })
+        .collect();
+    entities::SolidShape::PlacedExtrusion {
+        profile: entities::ProfileDef::IndexedPolyCurve { points, segments },
+        origin_feet: [
+            origin[0] - location[0],
+            origin[1] - location[1],
+            tread.bottom_feet - location[2],
+        ],
+        axis: [0.0, 0.0, 1.0],
+        ref_direction: [1.0, 0.0, 0.0],
+        depth_feet: tread.top_feet - tread.bottom_feet,
+    }
+}
+
+fn spiral_run_solid(
+    run: &crate::partition_schema_mvp::SpiralRunBody,
+    location: [f64; 3],
+) -> entities::SolidShape {
+    let [r0, r1] = run.radii_feet;
+    let at = |radius: f64, angle: f64| (radius * angle.cos(), radius * angle.sin());
+    let items = run
+        .treads
+        .iter()
+        .map(|tread| {
+            let [outer, inner] = tread.up_angles;
+            let d = tread.down_angle;
+            let mut points = vec![
+                at(r1, d),
+                at(r1, (d + outer) / 2.0),
+                at(r1, outer),
+                at(r0, inner),
+                at(r0, (inner + d) / 2.0),
+                at(r0, d),
+            ];
+            // Counter-clockwise, as IFC wants a profile's outer curve.
+            let area: f64 = points
+                .iter()
+                .zip(points.iter().cycle().skip(1))
+                .map(|(p, q)| p.0 * q.1 - q.0 * p.1)
+                .sum();
+            if area < 0.0 {
+                points.reverse();
+            }
+            entities::SolidShape::PlacedExtrusion {
+                profile: entities::ProfileDef::IndexedPolyCurve {
+                    points,
+                    segments: vec![
+                        entities::CurveSegment::Arc([0, 1, 2]),
+                        entities::CurveSegment::Line([2, 3]),
+                        entities::CurveSegment::Arc([3, 4, 5]),
+                        entities::CurveSegment::Line([5, 0]),
+                    ],
+                },
+                origin_feet: [
+                    run.centre[0] - location[0],
+                    run.centre[1] - location[1],
+                    tread.bottom_feet - location[2],
+                ],
+                axis: [0.0, 0.0, 1.0],
+                ref_direction: [1.0, 0.0, 0.0],
+                depth_feet: tread.top_feet - tread.bottom_feet,
+            }
+        })
+        .collect();
+    entities::SolidShape::Compound(items)
+}
+
+/// A run of several solids (a riserless run's treads, #357) as one
+/// triangulated face set: each side view extruded across the run, a closed
+/// prism, its faces turned outward.
+fn stair_run_pieces_solid(
+    run: &crate::partition_schema_mvp::StairRunBody,
+    location: [f64; 3],
+) -> entities::SolidShape {
+    let point = |u: f64, up: f64, a: f64| {
+        [
+            run.origin[0] + run.climb[0] * u + run.across[0] * a - location[0],
+            run.origin[1] + run.climb[1] * u + run.across[1] * a - location[1],
+            run.origin[2] + up - location[2],
+        ]
+    };
+    let mut vertices_feet: Vec<[f64; 3]> = Vec::new();
+    let mut triangles: Vec<entities::BrepTriangle> = Vec::new();
+    for ring in std::iter::once(&run.profile).chain(run.pieces.iter()) {
+        let n = ring.len();
+        let base = vertices_feet.len() as u32;
+        for &[u, up] in ring {
+            vertices_feet.push(point(u, up, 0.0));
+        }
+        for &[u, up] in ring {
+            vertices_feet.push(point(u, up, run.width_feet));
+        }
+        let near = |i: usize| base + i as u32;
+        let far = |i: usize| base + (n + i) as u32;
+        let mut faces: Vec<entities::BrepTriangle> = Vec::new();
+        for i in 1..n - 1 {
+            faces.push(entities::BrepTriangle(near(0), near(i + 1), near(i)));
+            faces.push(entities::BrepTriangle(far(0), far(i), far(i + 1)));
+        }
+        for i in 0..n {
+            let j = (i + 1) % n;
+            faces.push(entities::BrepTriangle(near(i), near(j), far(j)));
+            faces.push(entities::BrepTriangle(near(i), far(j), far(i)));
+        }
+        // Turn the prism's faces outward: its signed volume is positive.
+        let volume: f64 = faces
+            .iter()
+            .map(|t| {
+                let [a, b, c] = [t.0, t.1, t.2].map(|k| vertices_feet[k as usize]);
+                (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                    + a[2] * (b[0] * c[1] - b[1] * c[0]))
+                    / 6.0
+            })
+            .sum();
+        if volume < 0.0 {
+            for t in &mut faces {
+                std::mem::swap(&mut t.1, &mut t.2);
+            }
+        }
+        triangles.extend(faces);
+    }
+    entities::SolidShape::TriangulatedFaceSet {
+        vertices_feet,
+        triangles,
+    }
+}
+
 fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<RecordGeometry> {
     let class = decoded.class.as_str();
     let mut width = None;
@@ -3384,6 +4760,7 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
     let mut beam_body_source = None;
     let mut column_cut_walls = None;
     let mut column_body_z = (None, None);
+    let mut landing_slab = false;
     let mut type_symbol_id = None;
     let mut type_profile = (None, None);
     let mut level_id = None;
@@ -3478,6 +4855,19 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
                 crate::partition_schema_mvp::COLUMN_BODY_TOP_FIELD,
                 InstanceField::Float { value, .. },
             ) => column_body_z.1 = Some(*value),
+            // A landing's slab is placed the same way, between its own
+            // bottom and top (#824).
+            (
+                crate::partition_schema_mvp::LANDING_BODY_BOTTOM_FIELD,
+                InstanceField::Float { value, .. },
+            ) => {
+                column_body_z.0 = Some(*value);
+                landing_slab = true;
+            }
+            (
+                crate::partition_schema_mvp::LANDING_BODY_TOP_FIELD,
+                InstanceField::Float { value, .. },
+            ) => column_body_z.1 = Some(*value),
             ("m_locationX", InstanceField::Float { value, .. }) => x = Some(*value),
             ("m_locationY", InstanceField::Float { value, .. }) => y = Some(*value),
             ("m_locationZ", InstanceField::Float { value, .. }) => z = Some(*value),
@@ -3568,10 +4958,36 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
     } else {
         None
     };
+    // W6: a column whose type is a square hollow section is drawn as it,
+    // where its record box is the section's outside.
+    let hollow_column = if crate::partition_schema_mvp::HOLLOW_SECTION_CLASSES.contains(&class)
+        && i_column.is_none()
+    {
+        crate::partition_schema_mvp::hollow_section_from_fields(&decoded.fields).filter(|section| {
+            let near = |a: f64, b: f64| (a - b).abs() <= HOLLOW_SECTION_BOX_TOLERANCE_FEET;
+            near(section.width_feet, section.height_feet)
+                && near(width, section.width_feet)
+                && near(depth, section.height_feet)
+        })
+    } else {
+        None
+    };
     // RE-52: a straight run with separate treads and risers is drawn as
     // them.
     let stair_run = if class == "StairsRun" {
         crate::partition_schema_mvp::stair_run_body_from_fields(&decoded.fields)
+    } else {
+        None
+    };
+    // #357: a spiral run is drawn as its treads.
+    let spiral_run = if class == "StairsRun" && stair_run.is_none() {
+        crate::partition_schema_mvp::spiral_run_body_from_fields(&decoded.fields)
+    } else {
+        None
+    };
+    // #824: a landing that is one tread is drawn as it.
+    let landing_tread = if class == "StairsLanding" {
+        crate::partition_schema_mvp::landing_tread_body_from_fields(&decoded.fields)
     } else {
         None
     };
@@ -3653,6 +5069,8 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
     let turned = if TURNED_BOX_EXCLUDED_CLASSES.contains(&class)
         || profile_override.is_some()
         || stair_run.is_some()
+        || spiral_run.is_some()
+        || landing_tread.is_some()
         || beam.is_some()
         || matches!(type_profile, (Some(_), Some(_)))
     {
@@ -3703,6 +5121,25 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
                 None => plain().or_else(two_cut),
             }
         })
+    } else {
+        None
+    };
+    // RE-211: a roof by extrusion, its section run across its record box.
+    let roof_extrusion = if class == "Roof" && roof_slope.is_none() {
+        crate::partition_schema_mvp::roof_extrusion_from_fields(&decoded.fields).and_then(
+            |extrusion| {
+                let (centre, size) = if extrusion.axis == 0 {
+                    (x, width)
+                } else {
+                    (y, depth)
+                };
+                roof_extrusion_solid(
+                    &extrusion,
+                    [x, y, z],
+                    (centre - size / 2.0, centre + size / 2.0),
+                )
+            },
+        )
     } else {
         None
     };
@@ -3781,12 +5218,31 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
                     .or_else(|| wall_arc.as_ref().map(|_| WALL_ARC_BODY_SOURCE.into()))
                     .or_else(|| wall_body_source.clone())
                     .or_else(|| column_body_source.clone())
+                    .or_else(|| {
+                        (landing_slab && profile.is_some()).then(|| LANDING_SLAB_BODY_SOURCE.into())
+                    })
                     .or_else(|| beam_body_source.clone())
                     .or_else(|| beam.map(|_| BEAM_AXIS_BODY_SOURCE.into()))
                     .or_else(|| pipe.map(|_| PIPE_AXIS_BODY_SOURCE.into()))
                     .or_else(|| stair_run.as_ref().map(|_| STAIR_RUN_BODY_SOURCE.into()))
+                    .or_else(|| spiral_run.as_ref().map(|_| SPIRAL_RUN_BODY_SOURCE.into()))
+                    .or_else(|| {
+                        landing_tread
+                            .as_ref()
+                            .map(|_| LANDING_TREAD_BODY_SOURCE.into())
+                    })
                     .or_else(|| roof_slope.as_ref().map(|_| ROOF_SLOPE_BODY_SOURCE.into()))
+                    .or_else(|| {
+                        roof_extrusion
+                            .as_ref()
+                            .map(|_| ROOF_EXTRUSION_BODY_SOURCE.into())
+                    })
                     .or_else(|| i_column.map(|_| COLUMN_I_SECTION_BODY_SOURCE.into()))
+                    .or_else(|| {
+                        hollow_column
+                            .as_ref()
+                            .map(|_| COLUMN_HOLLOW_SECTION_BODY_SOURCE.into())
+                    })
                     .or_else(|| turned.map(|_| INSTANCE_TURNED_BODY_SOURCE.into()))
                     .or_else(|| oriented.map(|_| INSTANCE_ORIENTED_BODY_SOURCE.into()))
                     .unwrap_or_else(|| RECORD_BBOX_BODY_SOURCE.into()),
@@ -3800,9 +5256,12 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
                     || beam.is_some()
                     || pipe.is_some()
                     || stair_run.is_some()
+                    || spiral_run.is_some()
+                    || landing_tread.is_some()
                     || wall_centreline.is_some()
                     || wall_arc.is_some()
-                    || i_column.is_some(),
+                    || i_column.is_some()
+                    || hollow_column.is_some(),
             ),
         },
         Property {
@@ -3815,9 +5274,14 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
         },
     ];
     if column_body_z.0.is_some() && (height - record_height).abs() > 1e-9 {
+        let source = if landing_slab {
+            LANDING_SLAB_BODY_HEIGHT_SOURCE
+        } else {
+            COLUMN_CUT_BODY_HEIGHT_SOURCE
+        };
         properties.push(Property {
             name: "BodyHeightSource".into(),
-            value: PropertyValue::Text(COLUMN_CUT_BODY_HEIGHT_SOURCE.into()),
+            value: PropertyValue::Text(source.into()),
         });
     }
     // #219 / RE-27: the host Level the record's counted reference list
@@ -3953,6 +5417,36 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
             .iter()
             .zip([size.width_feet, size.height_feet])
         {
+            properties.push(Property {
+                name: (*name).into(),
+                value: PropertyValue::PositiveLengthFeet(feet),
+            });
+        }
+    }
+    // RE-215: a door or window reports the extents of the outline its
+    // symbol cuts in its host.
+    if let Some(size) = crate::partition_schema_mvp::cut_loop_size_from_fields(&decoded.fields) {
+        for (name, feet) in CUT_LOOP_SIZE_PROPERTIES.iter().zip(size) {
+            properties.push(Property {
+                name: (*name).into(),
+                value: PropertyValue::PositiveLengthFeet(feet),
+            });
+        }
+    }
+    // RE-225: one whose symbol cuts a solid and no loop, the solid's extents.
+    if let Some(size) = crate::partition_schema_mvp::cut_solid_size_from_fields(&decoded.fields) {
+        for (name, feet) in CUT_SOLID_SIZE_PROPERTIES.iter().zip(size) {
+            properties.push(Property {
+                name: (*name).into(),
+                value: PropertyValue::PositiveLengthFeet(feet),
+            });
+        }
+    }
+    // #810: one whose symbol cuts none, its record box along its own X axis
+    // and its height.
+    if let Some(size) = crate::partition_schema_mvp::instance_box_size_from_fields(&decoded.fields)
+    {
+        for (name, feet) in INSTANCE_BOX_SIZE_PROPERTIES.iter().zip(size) {
             properties.push(Property {
                 name: (*name).into(),
                 value: PropertyValue::PositiveLengthFeet(feet),
@@ -4220,6 +5714,17 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
                     record_body,
                     oriented.map(|(axes, half)| oriented_box_solid(axes, half, height)),
                 ),
+                None if hollow_column.is_some() => {
+                    let section = hollow_column.as_ref().expect("checked above");
+                    (
+                        None,
+                        Extrusion {
+                            profile_override: Some(hollow_section_profile(section)),
+                            ..Extrusion::rectangle(section.width_feet, section.height_feet, height)
+                        },
+                        None,
+                    )
+                }
                 None if i_column.is_some() => {
                     let (angle, section) = i_column.expect("checked above");
                     (
@@ -4236,7 +5741,7 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
                         None,
                     )
                 }
-                None => match (turned, roof_slope) {
+                None => match (turned, roof_slope.or(roof_extrusion)) {
                     (Some((angle, along, across)), None) => (
                         Some(angle),
                         Extrusion::rectangle(along, across, height),
@@ -4246,6 +5751,16 @@ fn element_record_geometry_from_decoded(decoded: &DecodedElement) -> Option<Reco
                         let solid = stair_run
                             .as_ref()
                             .map(|run| stair_run_solid(run, [x, y, z]))
+                            .or_else(|| {
+                                spiral_run
+                                    .as_ref()
+                                    .map(|run| spiral_run_solid(run, [x, y, z]))
+                            })
+                            .or_else(|| {
+                                landing_tread
+                                    .as_ref()
+                                    .map(|tread| landing_tread_solid(tread, [x, y, z]))
+                            })
                             .or(roof_slope);
                         (None, record_body, solid)
                     }

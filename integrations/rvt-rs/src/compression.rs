@@ -6,6 +6,7 @@
 //! bytes and refuses truncated streams, so we skip the gzip header manually
 //! and pump the raw DEFLATE body through `flate2::read::DeflateDecoder`.
 
+use crate::le_bytes;
 use crate::{Error, Result};
 use flate2::read::DeflateDecoder;
 use std::io::{Read, Write};
@@ -22,6 +23,11 @@ pub const GZIP_MAGIC: [u8; 3] = [0x1F, 0x8B, 0x08];
 /// larger legitimate needs can override by passing a custom
 /// [`InflateLimits`] to [`inflate_at_with_limits`].
 pub const DEFAULT_MAX_INFLATE_BYTES: usize = 256 * 1024 * 1024;
+
+/// Default maximum inflated bytes of one multi-member stream, all its members
+/// together: what [`InflateLimits::max_stream_total_bytes`] gives at the
+/// default per-member cap.
+pub const DEFAULT_MAX_INFLATED_STREAM_BYTES: usize = 1024 * 1024 * 1024;
 
 /// Upper bound on the capacity reserved before a DEFLATE member is
 /// decoded. The reservation must not scale with the input that follows
@@ -49,8 +55,8 @@ const INITIAL_INFLATE_CAPACITY_BYTES: usize = 1024 * 1024;
 /// bound and called `read_to_end` with no size limit, so a
 /// hostile `.rvt` could trivially DoS any process that opened it.
 ///
-/// The audit (AUDIT-2026-04-19.md P0 item 4) flagged this as the
-/// single most urgent security fix before promoting the repo.
+/// An April 2026 security audit found it the most urgent fix the
+/// project needed.
 #[derive(Debug, Clone, Copy)]
 pub struct InflateLimits {
     /// Maximum decompressed output bytes per call.
@@ -62,6 +68,38 @@ impl Default for InflateLimits {
         Self {
             max_output_bytes: DEFAULT_MAX_INFLATE_BYTES,
         }
+    }
+}
+
+impl InflateLimits {
+    /// The cap on one multi-member stream's inflated members together:
+    /// [`DEFAULT_MAX_INFLATED_STREAM_BYTES`], or `max_output_bytes` when that
+    /// is larger, so raising the per-member cap for a large model raises
+    /// the stream's total with it (#1075).
+    pub fn max_stream_total_bytes(&self) -> usize {
+        DEFAULT_MAX_INFLATED_STREAM_BYTES.max(self.max_output_bytes)
+    }
+}
+
+/// What a multi-member inflate left out because a limit stopped it (#1075).
+/// Members that fail to inflate for any other reason are gzip-magic false
+/// positives inside compressed data and are not counted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct InflateShortfall {
+    /// Members skipped because each would inflate past
+    /// [`InflateLimits::max_output_bytes`].
+    pub members_over_limit: usize,
+    /// True when the members stopped at the stream's inflated total
+    /// ([`InflateLimits::max_stream_total_bytes`]) and the rest were not
+    /// inflated.
+    pub stopped_at_total: bool,
+}
+
+impl InflateShortfall {
+    /// True when no limit left anything out.
+    pub fn is_complete(&self) -> bool {
+        self.members_over_limit == 0 && !self.stopped_at_total
     }
 }
 
@@ -93,7 +131,7 @@ fn clean_stream_path(path: &str) -> &str {
 /// out at first because stripping it lowered an opportunistic class-name
 /// count; that count was drift garbage. With the strip, every file of one
 /// Revit release inflates to the byte-identical schema, family or project,
-/// and without it no two do (`examples/probe_schema_page_strip.rs`).
+/// and without it no two do (`probes/examples/probe_schema_page_strip.rs`).
 ///
 /// `ProjectInformation`, `PartAtom`, `BasicFileInfo`, and preview streams are
 /// never gated — they are not routed through the paged gzip reader.
@@ -177,14 +215,33 @@ pub fn prepare_stream_for_inflate<'a>(
 /// Raw [`inflate_at`] remains a path-agnostic codec and **never** strips — so
 /// Formats/Latest, tiny streams, and already-clean buffers stay untouched.
 pub fn inflate_stream_at(stream_name: &str, stored: &[u8], offset: usize) -> Result<Vec<u8>> {
+    inflate_stream_at_with_limits(stream_name, stored, offset, InflateLimits::default())
+}
+
+/// [`inflate_stream_at`] under `limits`.
+pub fn inflate_stream_at_with_limits(
+    stream_name: &str,
+    stored: &[u8],
+    offset: usize,
+    limits: InflateLimits,
+) -> Result<Vec<u8>> {
     let prepared = prepare_stream_for_inflate(stream_name, stored);
-    inflate_at(prepared.as_ref(), offset)
+    inflate_at_with_limits(prepared.as_ref(), offset, limits)
 }
 
 /// Auto-offset inflate for a named stored stream (page-stripped when gated).
 pub fn inflate_stream_auto(stream_name: &str, stored: &[u8]) -> Result<(usize, Vec<u8>)> {
+    inflate_stream_auto_with_limits(stream_name, stored, InflateLimits::default())
+}
+
+/// [`inflate_stream_auto`] under `limits`.
+pub fn inflate_stream_auto_with_limits(
+    stream_name: &str,
+    stored: &[u8],
+    limits: InflateLimits,
+) -> Result<(usize, Vec<u8>)> {
     let prepared = prepare_stream_for_inflate(stream_name, stored);
-    inflate_at_auto(prepared.as_ref())
+    inflate_at_auto_with_limits(prepared.as_ref(), limits)
 }
 
 /// Inflate every gzip member in a named stored stream (page-stripped when gated).
@@ -208,18 +265,31 @@ pub struct InflatedStream {
     concat: Vec<u8>,
     chunk_ends: Vec<usize>,
     /// Each member's offset in the prepared stream and the bytes its gzip
-    /// header and DEFLATE stream take there (B82).
+    /// header and DEFLATE stream take there.
+    // Tracker: B82.
     members: Vec<(usize, usize)>,
 }
 
 impl InflatedStream {
-    /// Inflate every member of `stored` and concatenate them in order.
+    /// Inflate every member of `stored` and concatenate them in order, at
+    /// the default [`InflateLimits`].
     pub fn from_stored(stream_name: &str, stored: &[u8]) -> Self {
+        Self::from_stored_with_limits(stream_name, stored, InflateLimits::default()).0
+    }
+
+    /// [`Self::from_stored`] under `limits`: each member is capped at
+    /// `max_output_bytes` and the members together at
+    /// [`InflateLimits::max_stream_total_bytes`], with what the caps left out.
+    pub fn from_stored_with_limits(
+        stream_name: &str,
+        stored: &[u8],
+        limits: InflateLimits,
+    ) -> (Self, InflateShortfall) {
         let prepared = prepare_stream_for_inflate(stream_name, stored);
-        let chunks = inflate_all_members_with_limits(
+        let (chunks, shortfall) = inflate_all_members_with_limits(
             prepared.as_ref(),
-            InflateLimits::default(),
-            1024 * 1024 * 1024,
+            limits,
+            limits.max_stream_total_bytes(),
         );
         let total: usize = chunks.iter().map(|(_, _, chunk)| chunk.len()).sum();
         let mut concat = Vec::with_capacity(total);
@@ -230,16 +300,20 @@ impl InflatedStream {
             chunk_ends.push(concat.len());
             members.push((*offset, *consumed));
         }
-        Self {
-            concat,
-            chunk_ends,
-            members,
-        }
+        (
+            Self {
+                concat,
+                chunk_ends,
+                members,
+            },
+            shortfall,
+        )
     }
 
     /// The inflated member whose gzip header starts at `offset` of the
     /// prepared stream ([`prepare_stream_for_inflate`]), with the bytes its
-    /// header and DEFLATE stream take there (B82).
+    /// header and DEFLATE stream take there.
+    // Tracker: B82.
     pub fn member_at(&self, offset: usize) -> Option<(&[u8], usize)> {
         let i = self
             .members
@@ -278,6 +352,7 @@ impl InflatedStream {
 /// Whether production inflate strips checksum-page trailers for a stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ChecksumTailStripping {
     /// No longer produced for `Formats/Latest` (#410); kept for readers of
     /// older diagnostics.
@@ -292,6 +367,7 @@ pub enum ChecksumTailStripping {
 /// (Discussion #112 / #151 residual).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum FormatsIntegrityStatus {
     /// Stored length is under one full checksum page and inflate succeeded.
     Ok,
@@ -301,12 +377,13 @@ pub enum FormatsIntegrityStatus {
     Incomplete,
 }
 
-/// Stable diagnostic code for Formats multipage integrity (A2 / PARSE-001).
+/// Stable diagnostic code for Formats multipage integrity.
 pub const RVT_FORMATS_MULTIPAGE_UNVERIFIED: &str = "RVT_FORMATS_MULTIPAGE_UNVERIFIED";
 
 /// Machine-readable `Formats/Latest` integrity sidecar for inspect / export /
 /// viewer File Status.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct FormatsLatestIntegrity {
     pub stream: String,
     pub stored_bytes: usize,
@@ -407,7 +484,7 @@ fn gzip_trailer_verifies(data: &[u8]) -> bool {
     let mut buf = [0u8; 8192];
     let mut total = 0usize;
     loop {
-        match std::io::Read::read(&mut decoder, &mut buf) {
+        match Read::read(&mut decoder, &mut buf) {
             Ok(0) => return true,
             Ok(n) => {
                 total = total.saturating_add(n);
@@ -441,8 +518,7 @@ pub fn gzip_header_len(data: &[u8], offset: usize) -> Option<usize> {
     if flags & 0x04 != 0 {
         // FEXTRA: 2-byte LE length, then that many bytes
         let xlen_end = pos.checked_add(2)?;
-        let xlen_bytes = data.get(pos..xlen_end)?;
-        let xlen = u16::from_le_bytes([xlen_bytes[0], xlen_bytes[1]]) as usize;
+        let xlen = le_bytes::u16_at(data, pos)? as usize;
         pos = xlen_end.checked_add(xlen)?;
     }
     if flags & 0x08 != 0 {
@@ -519,7 +595,8 @@ pub fn inflate_at_with_limits(
 }
 
 /// [`inflate_at_with_limits`], with the number of bytes of `data` the gzip
-/// header and its DEFLATE stream take from `offset` (B82).
+/// header and its DEFLATE stream take from `offset`.
+// Tracker: B82.
 pub fn inflate_member_at_with_limits(
     data: &[u8],
     offset: usize,
@@ -613,13 +690,18 @@ pub fn inflate_at(data: &[u8], offset: usize) -> Result<Vec<u8>> {
 /// that need to preserve the custom prefix on round-trip write can
 /// read it from `data[..prefix_len]`.
 pub fn inflate_at_auto(data: &[u8]) -> Result<(usize, Vec<u8>)> {
+    inflate_at_auto_with_limits(data, InflateLimits::default())
+}
+
+/// [`inflate_at_auto`] under `limits`.
+pub fn inflate_at_auto_with_limits(data: &[u8], limits: InflateLimits) -> Result<(usize, Vec<u8>)> {
     // Heuristic: the first gzip magic in the stream. Family files hit
     // at offset 8; project files sometimes hit at offset 0. We always
     // prefer the observed offset over a hard-coded constant because
     // the hard-coded value panicked on the first project-file Global/
     // History we probed.
     let offset = find_gzip_offsets(data).into_iter().next().unwrap_or(8);
-    let out = inflate_at_with_limits(data, offset, InflateLimits::default())?;
+    let out = inflate_at_with_limits(data, offset, limits)?;
     Ok((offset, out))
 }
 
@@ -661,32 +743,41 @@ pub fn inflate_all_chunks_with_limits(
     aggregate: usize,
 ) -> Vec<Vec<u8>> {
     inflate_all_members_with_limits(data, per_chunk, aggregate)
+        .0
         .into_iter()
         .map(|(_, _, chunk)| chunk)
         .collect()
 }
 
 /// [`inflate_all_chunks_with_limits`], with each chunk's offset in `data`
-/// and the bytes its gzip header and DEFLATE stream take there (B82).
+/// and the bytes its gzip header and DEFLATE stream take there, and what the
+/// limits left out.
+// Tracker: B82.
 fn inflate_all_members_with_limits(
     data: &[u8],
     per_chunk: InflateLimits,
     aggregate: usize,
-) -> Vec<(usize, usize, Vec<u8>)> {
+) -> (Vec<(usize, usize, Vec<u8>)>, InflateShortfall) {
     let mut total: usize = 0;
     let mut results = Vec::new();
+    let mut shortfall = InflateShortfall::default();
     for off in find_gzip_offsets(data) {
         let (chunk, consumed) = match inflate_member_at_with_limits(data, off, per_chunk) {
             Ok(c) => c,
+            Err(Error::DecompressLimitExceeded(_)) => {
+                shortfall.members_over_limit += 1;
+                continue;
+            }
             Err(_) => continue,
         };
         if total.saturating_add(chunk.len()) > aggregate {
+            shortfall.stopped_at_total = true;
             break;
         }
         total += chunk.len();
         results.push((off, consumed, chunk));
     }
-    results
+    (results, shortfall)
 }
 
 /// Inflate every GZIP chunk in `data`, concatenating the outputs.
@@ -740,8 +831,9 @@ pub fn truncated_gzip_encode_with_prefix8(bytes: &[u8]) -> Result<Vec<u8>> {
 /// Encode `bytes` as one complete gzip member: [`truncated_gzip_encode`]'s
 /// header and DEFLATE data, then the CRC32 and ISIZE trailer. Revit's own
 /// `Formats/Latest` and `Global/Latest` carry that trailer, and a conforming
-/// reader such as [`crate::native_document::read_single`] checks it, so this
-/// is what the writer stores (B69).
+/// reader such as `crate::native_document::read_single` checks it, so this
+/// is what the writer stores.
+// Tracker: B69.
 pub fn gzip_member_encode(bytes: &[u8]) -> Result<Vec<u8>> {
     let mut out = truncated_gzip_encode(bytes)?;
     let mut crc = flate2::Crc::new();
@@ -751,7 +843,7 @@ pub fn gzip_member_encode(bytes: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Validate (WRT-11) that [`truncated_gzip_encode`] and
+/// Validate that [`truncated_gzip_encode`] and
 /// [`inflate_at`] are round-trip-exact inverses for the given
 /// payload. Encodes `bytes`, inflates the result, compares
 /// byte-for-byte.
@@ -765,6 +857,7 @@ pub fn gzip_member_encode(bytes: &[u8]) -> Result<Vec<u8>> {
 /// [`crate::writer::write_with_patches`] — if this fails, the
 /// writer would have produced a file that the reader couldn't
 /// re-open.
+// Tracker: WRT-11.
 pub fn validate_truncated_gzip_round_trip(bytes: &[u8]) -> Result<()> {
     let encoded = truncated_gzip_encode(bytes)?;
     let decoded = inflate_at(&encoded, 0)?;
@@ -785,10 +878,11 @@ pub fn validate_truncated_gzip_round_trip(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Validate (WRT-11) that [`truncated_gzip_encode_with_prefix8`]
+/// Validate that [`truncated_gzip_encode_with_prefix8`]
 /// is a round-trip-exact inverse for the given payload. Encodes
 /// with the 8-byte custom prefix, inflates at offset 8, compares
 /// byte-for-byte.
+// Tracker: WRT-11.
 pub fn validate_truncated_gzip_prefix8_round_trip(bytes: &[u8]) -> Result<()> {
     let encoded = truncated_gzip_encode_with_prefix8(bytes)?;
     // First 8 bytes are the custom prefix; caller-visible invariant
@@ -814,428 +908,4 @@ pub fn validate_truncated_gzip_prefix8_round_trip(bytes: &[u8]) -> Result<()> {
         )));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn detects_magic() {
-        assert!(has_gzip_magic(&[0x1F, 0x8B, 0x08, 0, 0, 0], 0));
-        assert!(!has_gzip_magic(&[0x1F, 0x8B, 0x07], 0));
-        assert!(has_gzip_magic(&[0xFF, 0x1F, 0x8B, 0x08], 1));
-    }
-
-    #[test]
-    fn minimal_gzip_header_len() {
-        // magic(3) + method(1) + flags=0(1) + mtime(4) + xfl(1) + os(1) = 10
-        let hdr = [0x1F, 0x8B, 0x08, 0x00, 0, 0, 0, 0, 0, 0x0B];
-        assert_eq!(gzip_header_len(&hdr, 0), Some(10));
-    }
-
-    #[test]
-    fn gzip_header_with_fname() {
-        // flags = 0x08 (FNAME), followed by "foo\0" after 10-byte base
-        let hdr = [
-            0x1F, 0x8B, 0x08, 0x08, 0, 0, 0, 0, 0, 0x0B, b'f', b'o', b'o', 0,
-        ];
-        assert_eq!(gzip_header_len(&hdr, 0), Some(14));
-    }
-
-    #[test]
-    fn inflate_capacity_hint_does_not_scale_with_remaining_input() {
-        // `inflate_all_chunks_with_limits` hands every gzip member the
-        // whole stream from that member's offset, and every member's
-        // buffer stays alive in the collected results. A per-member
-        // reservation of `4 x remaining` therefore reserves
-        // O(members x stream) bytes: native allocators never commit
-        // untouched capacity, but wasm32 linear memory commits every
-        // page, and a 33 MB Revit 2024 project trapped at the 4 GiB
-        // ceiling in ~140 ms (viewer demo core-interior-2024).
-        let mut data = truncated_gzip_encode(b"tiny payload").unwrap();
-        data.resize(data.len() + 8 * 1024 * 1024, 0);
-        let out = inflate_at_with_limits(&data, 0, InflateLimits::default()).unwrap();
-        assert_eq!(out, b"tiny payload");
-        assert!(
-            out.capacity() <= 1024 * 1024,
-            "capacity {} scales with the 8 MiB of trailing input",
-            out.capacity()
-        );
-    }
-
-    #[test]
-    fn compressed_bomb_rejected_by_inflate_limits() {
-        // Build a minimal compressed bomb: truncated-gzip header plus a
-        // DEFLATE body that inflates 1 MB of zeros. Then set the inflate
-        // cap below 1 MB and assert the call refuses rather than
-        // allocating past the limit.
-        use flate2::{Compression, write::DeflateEncoder};
-        use std::io::Write;
-        let payload = vec![0u8; 1024 * 1024]; // 1 MiB of zeros
-        let mut bomb = Vec::new();
-        bomb.extend_from_slice(&[0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0, 0xff]);
-        let mut enc = DeflateEncoder::new(&mut bomb, Compression::default());
-        enc.write_all(&payload).unwrap();
-        enc.finish().unwrap();
-
-        // Bomb ratio is ~1000:1 — a few KB expands to 1 MB. Cap at
-        // 64 KB to force rejection; a legit Formats/Latest stream is
-        // nowhere near this small-compared-to-header.
-        let tight = InflateLimits {
-            max_output_bytes: 64 * 1024,
-        };
-        let result = inflate_at_with_limits(&bomb, 0, tight);
-        match result {
-            Err(Error::DecompressLimitExceeded(msg)) => {
-                assert!(msg.contains("65536"), "error should name the cap: {msg}");
-            }
-            other => panic!("expected DecompressLimitExceeded, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn legitimate_decompression_under_default_limit_still_works() {
-        // Sanity: ordinary small payloads continue to inflate with the
-        // default cap. Previous regressions have come from over-zealous
-        // cap application.
-        let payload = b"hello, world";
-        let compressed = truncated_gzip_encode(payload).unwrap();
-        let out = inflate_at_with_limits(&compressed, 0, InflateLimits::default()).unwrap();
-        assert_eq!(&out[..], payload);
-    }
-
-    // ---- WRT-11: truncated-gzip encoder validation ----
-
-    #[test]
-    fn round_trip_empty_payload_is_ok() {
-        assert!(validate_truncated_gzip_round_trip(b"").is_ok());
-        assert!(validate_truncated_gzip_prefix8_round_trip(b"").is_ok());
-    }
-
-    #[test]
-    fn round_trip_single_byte_is_ok() {
-        for b in 0..=255_u8 {
-            let payload = [b];
-            validate_truncated_gzip_round_trip(&payload)
-                .unwrap_or_else(|e| panic!("round-trip failed for 0x{b:02x}: {e}"));
-        }
-    }
-
-    #[test]
-    fn round_trip_typical_schema_payload_is_ok() {
-        // Size + entropy pattern similar to a Formats/Latest chunk:
-        // ~8 KB of mixed ASCII + binary noise.
-        let mut payload = Vec::with_capacity(8 * 1024);
-        for i in 0..8 * 1024 {
-            payload.push(((i * 17 + 3) % 256) as u8);
-        }
-        validate_truncated_gzip_round_trip(&payload).unwrap();
-    }
-
-    #[test]
-    fn round_trip_large_payload_crosses_32k_deflate_window() {
-        // 128 KB — larger than the 32 KB DEFLATE sliding window so
-        // the encoder hits multi-block encoding.
-        let payload: Vec<u8> = (0..128 * 1024).map(|i| (i as u8).wrapping_mul(7)).collect();
-        validate_truncated_gzip_round_trip(&payload).unwrap();
-    }
-
-    #[test]
-    fn round_trip_highly_compressible_payload() {
-        // All zeros — DEFLATE compresses this to near-zero bytes.
-        // Previous regressions have come from zero-length DEFLATE
-        // blocks; keep this case pinned.
-        let payload = vec![0u8; 32 * 1024];
-        validate_truncated_gzip_round_trip(&payload).unwrap();
-    }
-
-    #[test]
-    fn round_trip_highly_incompressible_payload() {
-        // Deterministic "random" payload — DEFLATE output is larger
-        // than the input. Ensures the encoder handles pathological
-        // expansion without overflowing buffers.
-        let mut payload = Vec::with_capacity(1024);
-        let mut state = 0x12345_u32;
-        for _ in 0..1024 {
-            state = state.wrapping_mul(1103515245).wrapping_add(12345);
-            payload.push((state >> 16) as u8);
-        }
-        validate_truncated_gzip_round_trip(&payload).unwrap();
-    }
-
-    #[test]
-    fn prefix8_encoder_zero_fills_first_eight_bytes() {
-        let encoded = truncated_gzip_encode_with_prefix8(b"test").unwrap();
-        assert!(encoded.len() > 8);
-        assert_eq!(&encoded[..8], &[0u8; 8]);
-        // And byte 8 is the gzip magic.
-        assert_eq!(encoded[8], 0x1f);
-        assert_eq!(encoded[9], 0x8b);
-    }
-
-    #[test]
-    fn prefix8_round_trip_includes_framing_invariant_check() {
-        for payload in [
-            &b""[..],
-            &b"a"[..],
-            &b"Global/Latest typical chunk"[..],
-            &vec![0xFFu8; 4096][..],
-        ] {
-            validate_truncated_gzip_prefix8_round_trip(payload).unwrap();
-        }
-    }
-
-    #[test]
-    fn encoded_header_is_canonical_ten_bytes() {
-        // The encoder always emits the minimal 10-byte header:
-        //   1F 8B 08 00 00 00 00 00 00 FF
-        // so every round-trip starts from the same place.
-        let encoded = truncated_gzip_encode(b"x").unwrap();
-        assert!(encoded.len() > 10);
-        assert_eq!(
-            &encoded[..10],
-            &[0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff]
-        );
-    }
-
-    #[test]
-    fn checksum_paged_stream_paths() {
-        // Partitions, Global DB streams and (#410) Formats/Latest.
-        assert!(is_checksum_paged_stream("Formats/Latest"));
-        assert!(is_checksum_paged_stream("/Formats/Latest"));
-        assert!(is_revit_paged_loader_candidate("Formats/Latest"));
-        assert!(is_checksum_paged_stream("Global/Latest"));
-        assert!(is_checksum_paged_stream("Global/ElemTable"));
-        assert!(is_checksum_paged_stream("Partitions/67"));
-        assert!(is_checksum_paged_stream("Partitions/46"));
-        assert!(is_checksum_paged_stream("/Partitions/46"));
-        assert!(!is_checksum_paged_stream("BasicFileInfo"));
-        assert!(!is_checksum_paged_stream("PartAtom"));
-        assert!(!is_checksum_paged_stream("ProjectInformation"));
-        assert!(!is_checksum_paged_stream("RevitPreview4.0"));
-    }
-
-    #[test]
-    fn strip_revit_page_checksums_cuts_full_page_trailers() {
-        let mut stored = vec![0xABu8; REVIT_PAGE_PAYLOAD_BYTES];
-        stored.extend(vec![0xCDu8; REVIT_PAGE_CHECKSUM_BYTES]);
-        stored.extend(vec![0xEFu8; 100]); // short final page
-        let clean = strip_revit_page_checksums(&stored);
-        assert_eq!(clean.len(), REVIT_PAGE_PAYLOAD_BYTES + 100);
-        assert!(
-            clean
-                .iter()
-                .take(REVIT_PAGE_PAYLOAD_BYTES)
-                .all(|&b| b == 0xAB)
-        );
-        assert!(
-            clean
-                .iter()
-                .skip(REVIT_PAGE_PAYLOAD_BYTES)
-                .all(|&b| b == 0xEF)
-        );
-        assert!(!clean.contains(&0xCD));
-    }
-
-    #[test]
-    fn strip_under_one_page_is_identity() {
-        let small = vec![1u8, 2, 3, 4, 5];
-        assert_eq!(strip_revit_page_checksums(&small), small);
-    }
-
-    #[test]
-    fn strip_exact_page_boundary_drops_only_trailer() {
-        let mut stored = vec![0x11u8; REVIT_PAGE_PAYLOAD_BYTES];
-        stored.extend(vec![0x22u8; REVIT_PAGE_CHECKSUM_BYTES]);
-        assert_eq!(stored.len(), REVIT_STORED_PAGE_BYTES);
-        let clean = strip_revit_page_checksums(&stored);
-        assert_eq!(clean, vec![0x11u8; REVIT_PAGE_PAYLOAD_BYTES]);
-    }
-
-    #[test]
-    fn strip_empty_is_empty() {
-        assert!(strip_revit_page_checksums(&[]).is_empty());
-    }
-
-    #[test]
-    fn strip_two_full_pages_plus_partial() {
-        let mut stored = Vec::new();
-        for page in 0..2 {
-            stored.extend(vec![page as u8; REVIT_PAGE_PAYLOAD_BYTES]);
-            stored.extend(vec![0xFFu8; REVIT_PAGE_CHECKSUM_BYTES]);
-        }
-        stored.extend(vec![0x33u8; 50]);
-        let clean = strip_revit_page_checksums(&stored);
-        assert_eq!(clean.len(), REVIT_PAGE_PAYLOAD_BYTES * 2 + 50);
-        assert!(clean[..REVIT_PAGE_PAYLOAD_BYTES].iter().all(|&b| b == 0));
-        assert!(
-            clean[REVIT_PAGE_PAYLOAD_BYTES..REVIT_PAGE_PAYLOAD_BYTES * 2]
-                .iter()
-                .all(|&b| b == 1)
-        );
-        assert!(
-            clean[REVIT_PAGE_PAYLOAD_BYTES * 2..]
-                .iter()
-                .all(|&b| b == 0x33)
-        );
-        assert!(!clean.contains(&0xFF));
-    }
-
-    /// Inject 353-byte trailers into a real truncated-gzip blob so the
-    /// stored layout matches Discussion #112 / issue #151, then prove
-    /// gated [`inflate_stream_at`] recovers the payload while bare inflate
-    /// drifts or fails closed — and Formats stays ungated by default.
-    #[test]
-    fn synthetic_multipage_partitions_require_strip_before_inflate() {
-        // High-entropy payload so the compressed form already crosses a
-        // full stored page (64_896 payload bytes) without a slow grow loop.
-        let mut state = 0xC0FFEE_u32;
-        let payload: Vec<u8> = (0..180_000)
-            .map(|_| {
-                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                (state >> 16) as u8
-            })
-            .collect();
-        let gzip = truncated_gzip_encode(&payload).unwrap();
-        assert!(
-            gzip.len() > REVIT_PAGE_PAYLOAD_BYTES,
-            "compressed fixture too small: {}",
-            gzip.len()
-        );
-        let paged = inject_page_checksums(&gzip);
-        assert!(
-            paged.len() >= REVIT_STORED_PAGE_BYTES,
-            "fixture must cross a page boundary"
-        );
-        assert_ne!(paged, gzip);
-
-        // Control: naive inflate on paged bytes must not round-trip.
-        // Mid-page trailers may either corrupt the stream (Err) or
-        // silently yield a wrong prefix (Ok) — both falsify recovery.
-        if let Ok(naive) = inflate_at(&paged, 0) {
-            assert_ne!(
-                naive, payload,
-                "paged bytes without strip must not decode to the original payload"
-            );
-        }
-
-        // Experiment: Partitions path strips pages first.
-        let recovered = inflate_stream_at("Partitions/46", &paged, 0).expect("strip+inflate");
-        assert_eq!(recovered, payload);
-
-        // Global DB streams are also gated.
-        assert_eq!(
-            inflate_stream_at("Global/Latest", &paged, 0).unwrap(),
-            payload
-        );
-
-        // Formats/Latest is paged too (#410).
-        assert_eq!(
-            inflate_stream_at("Formats/Latest", &paged, 0).unwrap(),
-            payload
-        );
-
-        // Small non-paged streams stay identity under prepare.
-        let small = truncated_gzip_encode(b"tiny").unwrap();
-        assert!(small.len() < REVIT_STORED_PAGE_BYTES);
-        assert_eq!(
-            inflate_stream_at("Partitions/1", &small, 0).unwrap(),
-            b"tiny"
-        );
-        // Non-paged paths must not strip — same outcome as bare inflate.
-        assert_eq!(
-            inflate_stream_at("BasicFileInfo", &paged, 0)
-                .err()
-                .map(|e| e.to_string()),
-            inflate_at(&paged, 0).err().map(|e| e.to_string()),
-            "non-paged paths must not strip"
-        );
-    }
-
-    fn inject_page_checksums(payload: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(
-            payload.len() + (payload.len() / REVIT_PAGE_PAYLOAD_BYTES) * REVIT_PAGE_CHECKSUM_BYTES,
-        );
-        let mut offset = 0;
-        while offset < payload.len() {
-            let end = (offset + REVIT_PAGE_PAYLOAD_BYTES).min(payload.len());
-            out.extend_from_slice(&payload[offset..end]);
-            if end - offset == REVIT_PAGE_PAYLOAD_BYTES {
-                out.extend(std::iter::repeat_n(0x5A, REVIT_PAGE_CHECKSUM_BYTES));
-            }
-            offset = end;
-        }
-        out
-    }
-
-    /// A gzip member with its CRC32 and ISIZE trailer, as `Formats/Latest`
-    /// carries.
-    fn gzip_with_trailer(payload: &[u8]) -> Vec<u8> {
-        let mut gzip = truncated_gzip_encode(payload).unwrap();
-        let mut crc = flate2::Crc::new();
-        crc.update(payload);
-        gzip.extend_from_slice(&crc.sum().to_le_bytes());
-        gzip.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        gzip
-    }
-
-    #[test]
-    fn formats_integrity_single_page_ok() {
-        let gzip = gzip_with_trailer(b"formats-single-page");
-        assert!(gzip.len() < REVIT_STORED_PAGE_BYTES);
-        let diag = diagnose_formats_latest_integrity(&gzip);
-        assert_eq!(diag.stream, "Formats/Latest");
-        assert_eq!(diag.inflated_bytes, Some(b"formats-single-page".len()));
-        assert!(!diag.page_boundary_detected);
-        assert_eq!(diag.checksum_tail_stripping, ChecksumTailStripping::Enabled);
-        assert_eq!(diag.integrity_status, FormatsIntegrityStatus::Ok);
-        assert!(diag.diagnostic_code.is_none());
-        assert!(!diag.schema_scan_truncated);
-        // Without its trailer the stream still inflates but is unverified.
-        let bare = diagnose_formats_latest_integrity(&truncated_gzip_encode(b"x").unwrap());
-        assert_eq!(bare.integrity_status, FormatsIntegrityStatus::Uncertain);
-        assert_eq!(
-            bare.diagnostic_code.as_deref(),
-            Some(RVT_FORMATS_MULTIPAGE_UNVERIFIED)
-        );
-    }
-
-    #[test]
-    fn formats_multipage_inflates_to_its_exact_payload() {
-        // #410: Formats/Latest is paged like the database streams.
-        let mut state = 0xC0FFEE_u32;
-        let payload: Vec<u8> = (0..180_000)
-            .map(|_| {
-                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                (state >> 16) as u8
-            })
-            .collect();
-        let gzip = gzip_with_trailer(&payload);
-        let paged = inject_page_checksums(&gzip);
-        assert!(
-            paged.len() >= REVIT_STORED_PAGE_BYTES,
-            "fixture must cross a page boundary"
-        );
-        assert!(is_checksum_paged_stream("Formats/Latest"));
-        assert_eq!(
-            inflate_stream_at("Formats/Latest", &paged, 0).unwrap(),
-            payload
-        );
-        let diag = diagnose_formats_latest_integrity(&paged);
-        assert!(diag.page_boundary_detected);
-        assert_eq!(diag.inflated_bytes, Some(payload.len()));
-        assert_eq!(diag.integrity_status, FormatsIntegrityStatus::Ok);
-        assert!(diag.diagnostic_code.is_none());
-    }
-
-    #[test]
-    fn formats_integrity_garbage_under_one_page_is_incomplete() {
-        let garbage = vec![0u8; 64];
-        let diag = diagnose_formats_latest_integrity(&garbage);
-        assert!(!diag.page_boundary_detected);
-        assert_eq!(diag.integrity_status, FormatsIntegrityStatus::Incomplete);
-        assert!(diag.inflated_bytes.is_none());
-        assert!(diag.schema_scanned_bytes.is_none());
-    }
 }

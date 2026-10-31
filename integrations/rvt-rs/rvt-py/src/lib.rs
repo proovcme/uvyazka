@@ -77,20 +77,51 @@ fn parse_export_quality_mode(mode: &str) -> PyResult<ifc::ExportQualityMode> {
 fn write_ifc_with_quality_mode(
     rf: &mut RustRevitFile,
     mode: ifc::ExportQualityMode,
+    allow_partial: bool,
 ) -> PyResult<String> {
-    write_ifc_with_quality_mode_and_limits(rf, mode, walker::WalkerLimits::default())
+    write_ifc_with_quality_mode_and_limits(rf, mode, walker::WalkerLimits::default(), allow_partial)
 }
 
 fn write_ifc_with_quality_mode_and_limits(
     rf: &mut RustRevitFile,
     mode: ifc::ExportQualityMode,
     walker_limits: walker::WalkerLimits,
+    allow_partial: bool,
 ) -> PyResult<String> {
     let result = ifc::RvtDocExporter
         .export_with_diagnostics_mode_and_limits(rf, mode, walker_limits)
         .map_err(to_py_val)?;
+    // #1075: a stream a resource limit kept from being read leaves the
+    // export without what it holds; refuse unless the caller accepts that.
+    if !allow_partial && !rf.unread_streams().is_empty() {
+        let mut message =
+            String::from("part of the file was not read, so the IFC would be incomplete:");
+        for stream in rf.unread_streams() {
+            message.push_str(&format!("\n  {stream}"));
+        }
+        message.push_str(
+            "\nOpen the file with a larger max_stream_bytes / max_inflate_bytes to read it, or pass allow_partial=True to write the incomplete IFC.",
+        );
+        return Err(PyValueError::new_err(message));
+    }
     mode.validate(&result.diagnostics).map_err(to_py_val)?;
     Ok(ifc::write_step(&result.model))
+}
+
+fn unread_streams_to_list<'py>(
+    py: Python<'py>,
+    unread: &[rvt::reader::UnreadStream],
+) -> PyResult<Bound<'py, PyList>> {
+    let list = PyList::empty(py);
+    for stream in unread {
+        let entry = PyDict::new(py);
+        entry.set_item("name", stream.name.as_str())?;
+        entry.set_item("stored_bytes", stream.stored_bytes)?;
+        entry.set_item("kind", stream.kind.as_str())?;
+        entry.set_item("limit", stream.limit)?;
+        list.append(entry)?;
+    }
+    Ok(list)
 }
 
 /// Shared serialiser: ADocumentInstance → Python dict. Used by the
@@ -171,6 +202,9 @@ fn set_instance_field_items(
             out.set_item("kind", "bytes")?;
             out.set_item("len", b.len())?;
         }
+        _ => {
+            out.set_item("kind", "unknown")?;
+        }
     }
     Ok(())
 }
@@ -178,6 +212,7 @@ fn set_instance_field_items(
 fn decoded_element_to_dict<'py>(
     py: Python<'py>,
     element: &walker::DecodedElement,
+    saved: &elements::parameters::SavedParameters,
 ) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     match element.id {
@@ -200,12 +235,16 @@ fn decoded_element_to_dict<'py>(
     }
     d.set_item("fields", fields)?;
 
-    // #35 — AProperty* values when this row is a value carrier; empty
-    // for host elements until host↔parameter joins recover.
+    // #35 — AProperty* values when this row is a value carrier, then the
+    // saved parameters of its native record and its type's (RE-207).
     let params = PyList::empty(py);
-    for entry in elements::parameters::parameter_entries_from_decoded(element) {
+    for entry in elements::parameters::parameter_entries_from_decoded(element)
+        .iter()
+        .map(|entry| entry.to_json_value())
+        .chain(saved.entries_for(element))
+    {
         let json_module = py.import("json")?;
-        let entry_json = serde_json::to_string(&entry.to_json_value()).map_err(to_py_val)?;
+        let entry_json = serde_json::to_string(&entry).map_err(to_py_val)?;
         let entry_obj = json_module.call_method1("loads", (entry_json,))?;
         params.append(entry_obj)?;
     }
@@ -337,6 +376,17 @@ impl PyRevitFile {
         self.inner.stream_names()
     }
 
+    /// The streams a resource limit kept from being read whole so far
+    /// (#1075), each a dict with `name`, `stored_bytes`, `kind`
+    /// (`"stream_too_large"`, `"inflated_member_too_large"` or
+    /// `"inflated_total_too_large"`) and `limit`. Empty when nothing was
+    /// cut. When not, everything read from this file is missing what those
+    /// streams hold; open it again with a larger `max_stream_bytes` /
+    /// `max_inflate_bytes`.
+    fn unread_streams<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        unread_streams_to_list(py, self.inner.unread_streams())
+    }
+
     /// Raw bytes of the named OLE stream. Accepts either a
     /// leading-slash path (`"/Formats/Latest"`) or the bare name
     /// (`"Formats/Latest"`) — both resolve the same way. Returns the
@@ -388,7 +438,7 @@ impl PyRevitFile {
         Ok(Some(serde_json::to_string(&bfi).map_err(to_py_val)?))
     }
 
-    /// Strict variant of [`basic_file_info_json`] (API-14). Raises
+    /// Strict variant of [`basic_file_info_json`]. Raises
     /// `ValueError` if the stream is missing or parse fails, instead
     /// of returning `None`. Use when downstream Python code needs
     /// to fail loud on malformed input.
@@ -471,7 +521,10 @@ impl PyRevitFile {
 
     /// Run the Layer-5a walker and return ADocument's instance fields
     /// as a Python dict, or `None` if the entry-point detector can't
-    /// confidently locate an ADocument record in this file.
+    /// confidently locate an ADocument record in this file. Raises
+    /// `ValueError` if the file's schema declares no ADocument class,
+    /// which no Revit file lacks (a synthetic file, or a damaged schema),
+    /// and `IOError` if a stream cannot be read.
     ///
     /// Return shape when present:
     ///
@@ -488,15 +541,16 @@ impl PyRevitFile {
     /// }
     /// ```
     fn read_adocument<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        let Some(inst) = walker::read_adocument_with_limits(&mut self.inner, self.walker_limits)
-            .map_err(to_py_io)?
-        else {
-            return Ok(None);
+        let inst = match walker::read_adocument_with_limits(&mut self.inner, self.walker_limits) {
+            Ok(Some(inst)) => inst,
+            Ok(None) => return Ok(None),
+            Err(e @ rvt::Error::MissingClass(_)) => return Err(to_py_val(e)),
+            Err(e) => return Err(to_py_io(e)),
         };
         instance_to_dict(py, &inst).map(Some)
     }
 
-    /// Strict variant of [`read_adocument`] (API-15). Raises
+    /// Strict variant of [`read_adocument`]. Raises
     /// `ValueError` if the entry-point detector couldn't confidently
     /// locate the record, OR if any field fell back to raw bytes.
     /// Contract: success means every field decoded cleanly — mirrors
@@ -518,7 +572,7 @@ impl PyRevitFile {
     }
 
     /// Lossy variant of [`read_adocument`] with a diagnostics
-    /// accumulator exposed to Python (API-16). Returns a dict with
+    /// accumulator exposed to Python. Returns a dict with
     /// `value` (the ADocument dict), `complete` (bool),
     /// `partial_fields` (list of field names that fell back to raw
     /// bytes), `failed_streams` (list), and `confidence` (float or
@@ -539,7 +593,10 @@ impl PyRevitFile {
     /// ```
     fn read_adocument_lossy<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let decoded = walker::read_adocument_lossy_with_limits(&mut self.inner, self.walker_limits)
-            .map_err(to_py_io)?;
+            .map_err(|e| match e {
+                rvt::Error::MissingClass(_) => to_py_val(e),
+                e => to_py_io(e),
+            })?;
         let out = PyDict::new(py);
         let value = instance_to_dict(py, &decoded.value)?;
         out.set_item("value", value)?;
@@ -560,7 +617,7 @@ impl PyRevitFile {
         Ok(out)
     }
 
-    /// Schema diagnostics as a dict (API-13 Python surface for
+    /// Schema diagnostics as a dict (the Python surface of
     /// `SchemaTable::diagnostics`). Returns class_count,
     /// parsed_field_count, declared_field_count_sum,
     /// field_count_mismatches, tagged_class_count,
@@ -587,8 +644,8 @@ impl PyRevitFile {
     /// Conservative production decoded elements as Python dicts.
     ///
     /// Each element has `id`, `class_name`, `byte_range`, `fields`,
-    /// and `typed`. The fields use the same `name` / `kind` shape as
-    /// `read_adocument()`. `typed` is a Lane Five MVP projection
+    /// `parameters` (as `rvt-elements` lists them) and `typed`. The fields use the same `name` / `kind` shape as
+    /// `read_adocument()`. `typed` is the typed projection
     /// (`Level` / `Wall` / `Floor` / `Door` / `Window` / `Room` /
     /// `Material`) or `None` for other classes.
     fn decoded_elements<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
@@ -600,9 +657,23 @@ impl PyRevitFile {
         .map_err(to_py_val)?
         .collect();
 
+        // Revit 2023 to 2027 only; a file whose parameters cannot be read
+        // keeps its elements, with a warning.
+        let saved = elements::parameters::saved_parameters_lossy(&mut self.inner, &elements);
+        for warning in &saved.diagnostics.warnings {
+            let message = std::ffi::CString::new(warning.message.as_str()).unwrap_or_default();
+            PyErr::warn(
+                py,
+                &py.get_type::<pyo3::exceptions::PyUserWarning>(),
+                &message,
+                1,
+            )?;
+        }
+        let saved = saved.value;
+
         let out = PyList::empty(py);
         for element in &elements {
-            out.append(decoded_element_to_dict(py, element)?)?;
+            out.append(decoded_element_to_dict(py, element, &saved)?)?;
         }
         Ok(out)
     }
@@ -638,19 +709,28 @@ impl PyRevitFile {
     /// the file can't be parsed far enough to produce a model, or if
     /// `mode` quality gates are not met.
     ///
-    /// Modes (forward-compatible with Lane 7 geometry work):
+    /// Modes:
     /// - `scaffold` — always accept a spec-valid envelope (default)
     /// - `typed-no-geometry` — require validated typed elements
     /// - `geometry` — require typed elements + geometry
     /// - `strict` — geometry + metadata/units/storeys + no warnings
     ///
-    /// On synthetic / scaffold-only fixtures, only `scaffold`
-    /// typically succeeds; stronger modes raise `ValueError` until
-    /// real typed/geometry recovery is available.
-    #[pyo3(signature = (mode = "scaffold"))]
-    fn write_ifc(&mut self, mode: &str) -> PyResult<String> {
+    /// On a file with no recovered elements, such as the synthetic
+    /// fixtures, only `scaffold` succeeds; the stronger modes raise
+    /// `ValueError`.
+    ///
+    /// Raises `ValueError` when a resource limit kept part of the file from
+    /// being read (`unread_streams()` lists it), unless
+    /// `allow_partial=True`.
+    #[pyo3(signature = (mode = "scaffold", allow_partial = false))]
+    fn write_ifc(&mut self, mode: &str, allow_partial: bool) -> PyResult<String> {
         let mode = parse_export_quality_mode(mode)?;
-        write_ifc_with_quality_mode_and_limits(&mut self.inner, mode, self.walker_limits)
+        write_ifc_with_quality_mode_and_limits(
+            &mut self.inner,
+            mode,
+            self.walker_limits,
+            allow_partial,
+        )
     }
 
     /// Spreadsheet schedule of the decoded model as CSV text
@@ -774,13 +854,15 @@ impl PyRevitFile {
 
 /// One-shot helper: open a Revit file, run the document-level IFC
 /// exporter, return the STEP string. Equivalent to
-/// `rvt.RevitFile(path).write_ifc()`.
+/// `rvt.RevitFile(path).write_ifc(mode, allow_partial)`: raises
+/// `ValueError` when a resource limit kept part of the file from being read,
+/// unless `allow_partial=True`.
 #[pyfunction]
-#[pyo3(signature = (path, mode = "scaffold"))]
-fn rvt_to_ifc(path: &str, mode: &str) -> PyResult<String> {
+#[pyo3(signature = (path, mode = "scaffold", allow_partial = false))]
+fn rvt_to_ifc(path: &str, mode: &str, allow_partial: bool) -> PyResult<String> {
     let mut rf = RustRevitFile::open(path).map_err(to_py_io)?;
     let mode = parse_export_quality_mode(mode)?;
-    write_ifc_with_quality_mode(&mut rf, mode)
+    write_ifc_with_quality_mode(&mut rf, mode, allow_partial)
 }
 
 /// Document identity for the file at `path` without loading the whole

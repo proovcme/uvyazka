@@ -1,5 +1,6 @@
 //! Parameter evidence for a family-instance schedule preview, without geometry.
-use rvt::{RevitFile, native_document, schema_registry};
+use rvt::{RevitFile};
+use rvt::research::{native_document, schema_registry};
 use serde_json::{Value, json};
 
 #[path="../../rvt-shared/metadata_projection.rs"]

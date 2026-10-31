@@ -1,3 +1,4 @@
+import {RVT_DIRECT_IMPORTER} from '../src/rvt-reader-version.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {IDBFactory} from 'fake-indexeddb';
@@ -8,7 +9,7 @@ import type {RvtMode} from '../src/browser-rvt-direct.ts';
 
 function sample(mode:RvtMode='ifc',hash='b'.repeat(64)):CachedRvtModel{
  const {model,binary}=fixture();model.source={...model.source,format:'rvt',filename:'synthetic.rvt',sha256:hash,rvt_read_mode:mode};
- model.importer_version=mode==='direct'?'uvyazka-rvt-direct-v1':'web-ifc-0.0.78/uvyazka-2';
+ model.importer_version=mode==='direct'?RVT_DIRECT_IMPORTER:'web-ifc-0.0.78/uvyazka-2';
  if(mode==='direct')model.rvt_direct={experimental:true,complete_document_geometry:false,graphics_owners:1,observed_records:1,unrendered_records:0,partial_owners:0,metadata_error:null};
  return {model,binary,document:{schema_version:1,schema_sha256:'synthetic',status:'partial',records:[],clipped_records:0,summary:{},source:{filename:'synthetic.rvt',sha256:hash,size_bytes:100},evaluated_schedule_body_available:false},conversion:{status:'synthetic'},convertedIfc:new Uint8Array([1,2,3]).buffer};
 }

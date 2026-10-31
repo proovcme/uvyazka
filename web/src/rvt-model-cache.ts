@@ -1,17 +1,18 @@
+import {RVT_READER_REVISION,RVT_DIRECT_IMPORTER} from './rvt-reader-version.ts';
 import type {ModelPackage} from './model.ts';
 import {validatePackage} from './model.ts';
 import type {RvtDocument} from './rvt-document.ts';
 import type {RvtMode} from './browser-rvt-direct.ts';
 
 // Advance with native reader patches, bridge output or IFC interpretation changes.
-export const RVT_CACHE_REVISION='b6086d41/mep1-bounds1-2021v1/parameters3/direct1/web-ifc-0.0.78-v2/cache4-native-mep';
+export const RVT_CACHE_REVISION=RVT_READER_REVISION+'/parameters3/direct2/web-ifc-0.0.78-v2/cache5';
 export interface CachedRvtModel {model:ModelPackage;binary:ArrayBuffer;document:RvtDocument|null;conversion?:unknown;convertedIfc?:ArrayBuffer|null}
 export const rvtCacheKey=(hash:string,mode:RvtMode)=>`${RVT_CACHE_REVISION}:${mode}:${hash}`;
 export function validateCachedRvt(value:CachedRvtModel,hash:string,mode:RvtMode){
  const model=value.model;
  if(model.source.format!=='rvt'||model.source.sha256!==hash||(model.source.rvt_read_mode??'ifc')!==mode
    ||!!model.rvt_direct!==(mode==='direct')
-   ||model.importer_version!==(mode==='direct'?'uvyazka-rvt-direct-v1':'web-ifc-0.0.78/uvyazka-2'))throw Error('Кеш RVT относится к другому файлу, режиму или обработчику');
+   ||model.importer_version!==(mode==='direct'?RVT_DIRECT_IMPORTER:'web-ifc-0.0.78/uvyazka-2'))throw Error('Кеш RVT относится к другому файлу, режиму или обработчику');
  if(value.document&&value.document.source?.sha256!==hash)throw Error('Каталог кеша относится к другому RVT');
  validatePackage(model,value.binary);return value;
 }

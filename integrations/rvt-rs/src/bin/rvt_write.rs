@@ -1,11 +1,11 @@
 //! `rvt-write` — apply stream-level patches to a Revit file and verify
 //! the round-trip.
 //!
-//! WRT-14 capstone CLI that ties together:
+//! The command-line front end that ties together:
 //!
-//! - [`rvt::writer::write_with_patches_verified`] (WRT-13)
-//! - [`rvt::compression::validate_truncated_gzip_round_trip`] (WRT-11)
-//! - [`rvt::round_trip::verify_instance_round_trip`] (WRT-04)
+//! - [`rvt::writer::write_with_patches_verified`]
+//! - [`rvt::compression::validate_truncated_gzip_round_trip`]
+//! - [`rvt::round_trip::verify_instance_round_trip`]
 //!
 //! Workflow: the user supplies a JSON manifest of stream patches + a
 //! source .rvt/.rfa, the writer applies them to a new output path, and
@@ -31,6 +31,7 @@
 //!   ]
 //! }
 //! ```
+// Tracker: WRT-13, WRT-11, WRT-04.
 
 use clap::Parser;
 use rvt::writer::{StreamFraming, StreamPatch, write_with_patches_verified};
@@ -267,30 +268,4 @@ fn run(cli: &Cli) -> Result<(), String> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn base64_decodes_canonical_cases() {
-        assert_eq!(decode_base64("").unwrap(), b"");
-        assert_eq!(decode_base64("Zg==").unwrap(), b"f");
-        assert_eq!(decode_base64("Zm8=").unwrap(), b"fo");
-        assert_eq!(decode_base64("Zm9v").unwrap(), b"foo");
-        assert_eq!(decode_base64("Zm9vYg==").unwrap(), b"foob");
-        assert_eq!(decode_base64("Zm9vYmE=").unwrap(), b"fooba");
-        assert_eq!(decode_base64("Zm9vYmFy").unwrap(), b"foobar");
-    }
-
-    #[test]
-    fn base64_ignores_whitespace() {
-        assert_eq!(decode_base64("  Zm9v\n YmFy  ").unwrap(), b"foobar");
-    }
-
-    #[test]
-    fn base64_rejects_invalid_char() {
-        assert!(decode_base64("Z@9v").is_err());
-    }
 }

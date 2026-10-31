@@ -1,55 +1,32 @@
 //! Uvyazka modification: include native MEP extraction gaps in export diagnostics.
-//! Layer 5 — IFC export (document-level scaffold).
+//! IFC4 export, and the model the glTF, plan SVG and CSV writers share.
 //!
-//! # What this module currently produces
+//! [`RvtDocExporter`] reads a [`RevitFile`](crate::RevitFile) into an
+//! [`IfcModel`]: the project, its site, building and storeys, and the
+//! elements read from the file's element records, each with the ElementId
+//! Revit gives it (written as the IFC `Tag`), its class and name, and, where
+//! they are read, its type object, storey, materials, property sets and
+//! GlobalId. Its body, where it has one, is Revit's shape where the
+//! element's data is decoded and its record's box otherwise; an element
+//! whose record has no box (an Area, for one) has no body. [`write_step`] serialises the
+//! model as deterministic ISO 10303-21 text, and [`gltf`], [`sheet`] and
+//! [`schedule_csv`] write the same model as GLB, plan SVG and CSV.
 //!
-//! A spec-valid but structurally minimal IFC4 STEP file containing:
+//! What is read on which release and input, category by category, is in
+//! `docs/supported-profile.md`, and every export's diagnostics name what was
+//! approximated or left out ([`RvtDocExporter::export_with_diagnostics`]).
 //!
-//! - `IfcProject` with name + description from PartAtom / BasicFileInfo
-//! - `IfcSite` → `IfcBuilding` → `IfcBuildingStorey` spatial hierarchy
-//!   (placeholder names today; real names from `Level` elements when
-//!   Lane Six elevation recovery succeeds)
-//! - `IfcClassification` + `IfcClassificationReference` for any
-//!   OmniClass codes found in PartAtom
-//! - Required framework entities (`IfcPerson`, `IfcOrganization`,
-//!   `IfcApplication`, `IfcOwnerHistory`, `IfcSIUnit`×4,
-//!   `IfcUnitAssignment`, `IfcGeometricRepresentationContext`)
+//! # Quality modes
 //!
-//! **Per-element entities now land as geometry-free IFC4 elements by
-//! default**, with Lane Six curves / loops / hosts / elevations
-//! attached when [`ExportQualityMode::Geometry`] or
-//! [`ExportQualityMode::Strict`] content policy requests them and
-//! recovery succeeds. `typed-no-geometry` strips geometry claims.
-//! Misleading `HostObjAttr` proxies are never emitted on the
-//! production path — use [`DiagnosticRvtDocExporter`] for research.
-//!
-//! # Eventual implementation plan
-//!
-//! 1. Layer 5b (per-element walker) produces typed `Category`, `Level`,
-//!    `Wall`, `Floor`, `Door`, `Window`, `Column`, `Beam`, etc.
-//! 2. Phase 5 (geometry) extracts curves, faces, solids for each
-//!    element.
-//! 3. Entity mapper translates:
-//!
-//!    | Revit concept | IFC mapping |
-//!    |---|---|
-//!    | Project metadata (PartAtom) | `IfcProject` (done) |
-//!    | Unit set (autodesk.unit.*) | `IfcUnitAssignment` / `IfcSIUnit` (best-effort modal read) |
-//!    | Level | `IfcBuildingStorey` (pending Layer 5b) |
-//!    | Wall | `IfcWall` + geometry (pending Phase 5) |
-//!    | Floor/Roof/Ceiling | `IfcSlab` / `IfcRoof` / `IfcCovering` (pending) |
-//!    | Door/Window | `IfcDoor` / `IfcWindow` + `IfcRelVoidsElement` (pending) |
-//!    | Column/Beam | `IfcColumn` / `IfcBeam` (pending) |
-//!    | Family (RFA) | `IfcTypeObject` + `IfcRepresentationMap` (pending) |
-//!    | Uniformat / OmniClass codes | `IfcClassificationReference` (done) |
-//!    | Material | `IfcMaterial` / `IfcMaterialLayerSet` (pending) |
-//!    | Parameters | `IfcPropertySet` + `IfcPropertySingleValue` (pending) |
-//!    | Host geometry | `IfcShapeRepresentation` (pending Phase 5) |
-//!
-//! 4. STEP serializer writes the `IfcModel` as `.ifc` text (done at
-//!    document level; extends to elements as Phase 6 lands).
-//! 5. IfcOpenShell + buildingSMART validators verify output against
-//!    the 11-release corpus (pending — IFC-41/43).
+//! [`ExportQualityMode`] chooses what is written. `scaffold` writes the
+//! production elements with whatever geometry is recovered,
+//! `typed-no-geometry` strips the geometry, `geometry` attaches recovered
+//! curves, loops, hosts and elevations, and `strict` writes what `geometry`
+//! does. The export itself never rejects a model: call
+//! [`ExportQualityMode::validate`] on the export's diagnostics to refuse an
+//! incomplete one, as the CLI and the Python package do for `strict`. The
+//! production exporter never writes `HostObjAttr` proxies;
+//! [`DiagnosticRvtDocExporter`] keeps low-confidence candidates for research.
 //!
 //! # Library collaboration
 //!
@@ -65,45 +42,38 @@
 //!
 //! | Module | What it does |
 //! |---|---|
-//! | [`category_map`] | Revit class → IFC4 type mapping (IFC-01) |
-//! | [`compare`] | IFC4 STEP file comparison summaries (M5-05) |
+//! | [`category_map`] | Revit class → IFC4 type mapping |
+//! | [`compare`] | IFC4 STEP file comparison summaries |
 //! | [`entities`] | IFC4 entity taxonomy (walls, floors, doors, …) |
-//! | [`export_content`] | Lane Seven quality-mode content policy |
+//! | [`export_content`] | What each quality mode writes |
 //! | [`from_decoded`] | Bridge: decoded Revit elements → IfcModel |
 //! | [`step_writer`] | IfcModel → ISO-10303-21 STEP text |
 //!
-//! VW1 viewer data model — Rust-side primitives a browser /
+//! The viewer's data model: Rust-side primitives a browser /
 //! desktop viewer binds to:
 //!
 //! | Module | What it does |
 //! |---|---|
-//! | [`scene_graph`] | Project → storey → element tree (VW1-05) + schedule (VW1-15) |
-//! | [`pbr`] | Revit Material → glTF PBR mapping (VW1-06) |
-//! | [`camera`] | Orbit-camera state + controls (VW1-07) |
-//! | [`clipping`] | ClippingPlane + SectionBox + ViewMode (VW1-10/14) |
-//! | [`measure`] | Distance / angle / polygon-area (VW1-13) |
-//! | [`annotation`] | Note / leader / polyline / pin markups (VW1-12) |
-//! | [`share`] | ViewerState URL-fragment serialization (VW1-24) |
-//! | [`gltf`] | glTF 2.0 GLB binary exporter (VW1-04) |
-//! | [`sheet`] | 2D SVG plan view emission (VW1-11) |
+//! | [`scene_graph`] | Project → storey → element tree + schedule |
+//! | [`pbr`] | Revit Material → glTF PBR mapping |
+//! | [`camera`] | Orbit-camera state |
+//! | [`clipping`] | SectionBox + ViewMode |
+//! | [`share`] | ViewerState URL-fragment decoding |
+//! | [`gltf`] | glTF 2.0 GLB binary exporter |
+//! | [`sheet`] | 2D SVG plan view emission |
 //! | [`schedule_csv`] | Element and room schedules as CSV (spreadsheets) |
 //!
 //! Typical viewer pipeline:
 //!
 //! 1. `IfcModel` produced via [`RvtDocExporter`]
 //! 2. [`scene_graph::build_scene_graph`] for the navigation tree
-//! 3. [`scene_graph::CategoryFilter`] applied per user toggles
-//! 4. [`gltf::model_to_glb`] for the 3D canvas, or
+//! 3. [`gltf::model_to_glb`] for the 3D canvas, or
 //!    [`sheet::render_plan_svg`] for the 2D drawing panel
-//! 5. [`camera::CameraState`] + [`clipping::ViewMode`] drive the
-//!    viewport's projection + spatial filter
-//! 6. [`scene_graph::element_info_panel`] powers click-to-inspect
-//! 7. [`share::encode_to_fragment`] serializes the whole state into
-//!    a URL for collaboration
+//! 4. [`scene_graph::element_info_panel`] powers click-to-inspect
+// Tracker: IFC-01, M5-05, VW1-05, VW1-15, VW1-06, VW1-07, VW1-13, VW1-12, VW1-24, VW1-04, VW1-11.
 
 use crate::Result;
 
-pub mod annotation;
 pub mod body_geometry;
 pub mod camera;
 pub mod category_map;
@@ -113,8 +83,9 @@ pub mod entities;
 pub mod export_content;
 pub mod from_decoded;
 pub mod gltf;
-pub mod measure;
 pub mod pbr;
+pub mod revit_property_sets;
+pub mod revit_set_placement;
 pub mod saved_meshes;
 pub mod scene_graph;
 pub mod schedule_csv;
@@ -126,7 +97,7 @@ pub mod step_writer;
 pub use export_content::{
     ELEMENT_RECORD_PROPERTY_SET, ExportContentPolicy, is_misleading_proxy_class,
 };
-pub use from_decoded::{BuilderOptions, ElementInput, build_ifc_model, entity_type_histogram};
+pub use from_decoded::{BuilderOptions, ElementInput, build_ifc_model};
 pub use step_writer::write_step;
 
 /// In-memory IFC model — what a successful export produces. Wire format
@@ -148,25 +119,28 @@ pub struct IfcModel {
     /// Materials available for association with BuildingElements.
     /// BuildingElement.material_index points into this list.
     pub materials: Vec<MaterialInfo>,
-    /// Compound material assemblies (IFC-28). Referenced by
+    /// Compound material assemblies. Referenced by
     /// `BuildingElement.material_layer_set_index`. Each layer
     /// inside a set references a material in `materials` above by
     /// index, so the two lists share a namespace — a layer can't
     /// reference a material that hasn't been registered there first.
+    // Tracker: IFC-28.
     pub material_layer_sets: Vec<entities::MaterialLayerSet>,
-    /// Compound structural profile assignments (IFC-30). Referenced
+    /// Compound structural profile assignments. Referenced
     /// by `BuildingElement.material_profile_set_index`. Used for
     /// columns and beams with named cross-sections (W12x26, HSS,
     /// circular columns). Profiles reference materials in
     /// `materials` above by index.
+    // Tracker: IFC-30.
     pub material_profile_sets: Vec<entities::MaterialProfileSet>,
-    /// Shared geometry maps for family / type instancing (IFC-21).
+    /// Shared geometry maps for family / type instancing.
     /// Any `BuildingElement` whose `representation_map_index` is
     /// `Some(i)` routes through `representation_maps[i]` via an
     /// `IfcMappedItem` instead of emitting its own body chain. Each
     /// map's shape is serialised once; instances add a ~4-entity
     /// mapped-item wrap. Empty `Vec` leaves writer behaviour
     /// unchanged.
+    // Tracker: IFC-21.
     pub representation_maps: Vec<entities::RepresentationMap>,
     /// The GlobalIds Revit's own exporter gives the model's elements and
     /// storeys (RE-48). The writer uses them in place of generated ones.
@@ -190,6 +164,12 @@ pub struct IfcModel {
     /// every element named `Family:Type` by an IFC type object of its type.
     #[serde(default)]
     pub element_type_ids: std::collections::BTreeMap<u32, u32>,
+    /// Further property sets of each type object, by its type's ElementId:
+    /// Revit's own sets of the type's parameters (RE-210,
+    /// [`revit_property_sets`]). The writer adds each to the type object's
+    /// `HasPropertySets`, merged into a set of the same name.
+    #[serde(default)]
+    pub type_property_sets: std::collections::BTreeMap<u32, Vec<entities::PropertySet>>,
     /// Material constituent sets (RE-82): an element without a layer,
     /// profile or single material gets the materials its type's geometry
     /// uses, written as IFC4 `IfcMaterialConstituentSet`, as Revit's
@@ -224,7 +204,7 @@ pub struct ElementLayers {
     pub stacked: bool,
     /// The Revit system family of the element's type, which a type with
     /// layers implies (RE-61,
-    /// [`crate::partition_schema_mvp::system_family`]).
+    /// `crate::partition_schema_mvp::system_family`).
     #[serde(default)]
     pub system_family: Option<String>,
 }
@@ -245,7 +225,7 @@ pub struct LayerBand {
 }
 
 /// GlobalIds Revit's own exporter gives, rebuilt from the file (RE-48,
-/// [`crate::revit_global_ids`]). Empty when the file does not yield them.
+/// `crate::revit_global_ids`). Empty when the file does not yield them.
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RevitGlobalIds {
     /// The document's `Unique Document GUID` (BasicFileInfo). The GlobalIds
@@ -266,8 +246,17 @@ pub struct RevitGlobalIds {
     /// GlobalId of the instance's original symbol (RE-167).
     #[serde(default)]
     pub element_types: std::collections::BTreeMap<u32, String>,
+    /// The project's, site's and building's GlobalIds, where the file gives
+    /// them (#878, `revit_global_ids::stored_global_ids`).
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub site: Option<String>,
+    #[serde(default)]
+    pub building: Option<String>,
     /// The file's Revit release, which picks the form of the GlobalId keys
-    /// Revit's exporter hashes (B73).
+    /// Revit's exporter hashes.
+    // Tracker: B73.
     #[serde(default)]
     pub revit_version: Option<u32>,
 }
@@ -281,9 +270,8 @@ pub struct Storey {
     pub elevation_feet: f64,
 }
 
-/// A single material entry ready for IFC emission. Derived from
-/// a decoded Revit `Material` element via
-/// [`from_decoded::materials_from_revit`].
+/// A single material entry ready for IFC emission, derived from a decoded
+/// Revit `Material` element.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MaterialInfo {
     /// Display name ("Concrete", "Glass - Tinted", "Wood - Oak").
@@ -301,6 +289,7 @@ pub const EXPORT_DIAGNOSTICS_SCHEMA_VERSION: u32 = 1;
 /// IFC export mode represented in diagnostics sidecars.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ExportDiagnosticsMode {
     Placeholder,
     Default,
@@ -310,6 +299,7 @@ pub enum ExportDiagnosticsMode {
 /// Result type for callers that want both the IFC model and the
 /// user/shareable export diagnostics sidecar in one pass.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct ExportResult {
     pub model: IfcModel,
     pub diagnostics: ExportDiagnostics,
@@ -321,6 +311,7 @@ pub struct ExportResult {
 /// and WASM callers can attach it to issue reports without understanding
 /// Revit internals.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct ExportDiagnostics {
     pub schema_version: u32,
     pub mode: ExportDiagnosticsMode,
@@ -331,20 +322,72 @@ pub struct ExportDiagnostics {
     pub unsupported_features: Vec<String>,
     pub warnings: Vec<String>,
     pub confidence: ExportConfidenceSummary,
-    /// A10 source-coverage fractions measured from export/decode stats.
+    /// Source-coverage fractions measured from export/decode stats.
     ///
     /// Fractions are set only when a trustworthy denominator exists;
     /// otherwise they stay `None` (fail closed — never invent ratios).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_coverage: Option<SourceCoverageDiagnostics>,
-    /// `Formats/Latest` page-boundary / strip-gate integrity (A2 / PARSE-001).
+    /// `Formats/Latest` page-boundary / strip-gate integrity (#151).
     /// `None` when the stream is absent from the container.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub formats_latest_integrity: Option<crate::compression::FormatsLatestIntegrity>,
 }
 
+/// Where the warning about "Export to IFC As" values the export does not
+/// apply begins listing them (#792). The values are the project's own text,
+/// so [`ExportDiagnostics::anonymize`] cuts the list there.
+const UNAPPLIED_EXPORT_VALUES: &str = "so each keeps its category's entity (#792):";
+
+impl ExportDiagnostics {
+    /// Replace every name these diagnostics take from the project, so they
+    /// can be posted publicly: the file name and the project name become
+    /// [`crate::redact::ANONYMIZED`], the levels' and the material sample's
+    /// names `Level 1`, `Material 1` and so on in their order, and each
+    /// skipped element's sample name, which can name its family and type,
+    /// `element-<ElementId>`. The warning listing "Export to IFC As" values
+    /// the export does not apply keeps their count and drops the values,
+    /// which the project writes; no other warning carries project text
+    /// (counts, releases, type ElementIds, unit identifiers), so none is
+    /// rewritten. Counts, releases, body sources and ElementIds are kept.
+    pub fn anonymize(&mut self) {
+        use crate::redact::{ANONYMIZED, anonymize_file_name};
+        if let Some(path) = self.input.original_path.as_mut() {
+            *path = anonymize_file_name(path);
+        }
+        if let Some(project) = self.input.project_name.as_mut() {
+            *project = ANONYMIZED.to_string();
+        }
+        for (prefix, list) in [
+            ("Level", &mut self.exported.storey_names),
+            ("Material", &mut self.exported.material_names_sample),
+        ] {
+            for (index, name) in list.iter_mut().enumerate() {
+                *name = format!("{prefix} {}", index + 1);
+            }
+        }
+        for item in &mut self.skipped {
+            for name in &mut item.sample_names {
+                let id = &name[name.trim_end_matches(|c: char| c.is_ascii_digit()).len()..];
+                *name = if id.is_empty() {
+                    ANONYMIZED.to_string()
+                } else {
+                    format!("element-{id}")
+                };
+            }
+        }
+        for warning in &mut self.warnings {
+            if let Some(at) = warning.find(UNAPPLIED_EXPORT_VALUES) {
+                warning.truncate(at + UNAPPLIED_EXPORT_VALUES.len() - 1);
+                warning.push('.');
+            }
+        }
+    }
+}
+
 /// A10 export source-coverage block (measured when denominators exist).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct SourceCoverageDiagnostics {
     pub status: SourceCoverageStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -360,6 +403,7 @@ pub struct SourceCoverageDiagnostics {
 /// Measurement state for [`SourceCoverageDiagnostics`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SourceCoverageStatus {
     Unset,
     Unknown,
@@ -487,6 +531,7 @@ fn elem_table_declared_element_count(rf: &mut crate::RevitFile) -> Option<usize>
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct ExportInputDiagnostics {
     pub revit_version: Option<u32>,
     pub build: Option<String>,
@@ -507,6 +552,7 @@ pub struct ExportInputDiagnostics {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct DecodedExportDiagnostics {
     pub production_walker_elements: usize,
     pub diagnostic_proxy_candidates: usize,
@@ -519,10 +565,12 @@ pub struct DecodedExportDiagnostics {
     /// The property values the export writes in IFC common property sets
     /// (`Pset_*`), the sets Revit's exporter fills from element parameters
     /// (#35): each building element's sets, and the storey and building sets.
-    /// It equals the values of the file's `Pset_` sets (B49).
+    /// It equals the values of the file's `Pset_` sets.
+    // Tracker: B49.
     #[serde(default)]
     pub parameter_value_count: usize,
-    /// Mean provenance confidence across production `iter_elements` (M3-07).
+    /// Mean provenance confidence across production `iter_elements`.
+    // Tracker: M3-07.
     #[serde(default)]
     pub mean_element_confidence: Option<f32>,
     /// Elements whose provenance confidence is below
@@ -534,6 +582,21 @@ pub struct DecodedExportDiagnostics {
     pub min_element_confidence: f32,
     pub recovered_unit_identifiers: Vec<String>,
     pub unknown_unit_identifiers: Vec<String>,
+    /// The length of each exported wall's native curve, feet, by ElementId
+    /// (RE-252):
+    /// one of the two lengths Revit's export may write as the wall's
+    /// `Qto_WallBaseQuantities.Length`, which the quantity census compares
+    /// with the other to count apart a wall whose two lengths differ. It is
+    /// not written in the IFC file (the maintainer, 2026-10-27).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub wall_curve_lengths_feet: std::collections::BTreeMap<u32, f64>,
+    /// The ElementIds of the exported walls whose native record names the
+    /// type the export gives them (RE-253): where Revit's export gives such
+    /// a wall another type, the quantity census counts its differing
+    /// `Width` apart, the saved file and its export disagreeing. Not
+    /// written in the IFC file.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub walls_type_confirmed: std::collections::BTreeSet<u32>,
 }
 
 fn default_min_element_confidence_serde() -> f32 {
@@ -541,6 +604,7 @@ fn default_min_element_confidence_serde() -> f32 {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct ExportedModelDiagnostics {
     pub total_entities: usize,
     pub building_elements: usize,
@@ -592,6 +656,7 @@ pub struct ExportedModelDiagnostics {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct SkippedExportItem {
     pub reason: String,
     pub count: usize,
@@ -600,6 +665,7 @@ pub struct SkippedExportItem {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct ExportConfidenceSummary {
     pub level: String,
     pub score: f32,
@@ -609,7 +675,7 @@ pub struct ExportConfidenceSummary {
     pub has_diagnostic_proxies: bool,
     pub warning_count: usize,
     /// Element records of a recovered category
-    /// ([`crate::partition_element_records::RECOVERED_CATEGORIES`]) the
+    /// (`crate::partition_element_records::RECOVERED_CATEGORIES`) the
     /// partition scan found but could not export because no ElementId is attributable
     /// to them (the `element_record_without_element_id` skipped item,
     /// RE-30). Non-zero means the model is incomplete, and `score` is
@@ -627,6 +693,7 @@ pub struct ExportConfidenceSummary {
 /// of writing an IFC that looks more complete than it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum ExportQualityMode {
     Scaffold,
     TypedNoGeometry,
@@ -728,6 +795,7 @@ impl std::str::FromStr for ExportQualityMode {
 #[error(
     "unknown IFC export mode `{value}`; expected scaffold, typed-no-geometry, geometry, or strict"
 )]
+#[non_exhaustive]
 pub struct ExportQualityModeParseError {
     pub value: String,
 }
@@ -736,6 +804,7 @@ pub struct ExportQualityModeParseError {
 #[error(
     "IFC export mode `{mode}` cannot be satisfied: {reason} (confidence level: {confidence_level})"
 )]
+#[non_exhaustive]
 pub struct ExportQualityValidationError {
     pub mode: ExportQualityMode,
     pub reason: String,
@@ -771,6 +840,7 @@ pub trait Exporter {
 /// Returned by exporters that cannot yet produce a given entity class.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("IFC export not yet implemented: {reason}")]
+#[non_exhaustive]
 pub struct NotYetImplemented {
     pub reason: String,
 }
@@ -786,6 +856,7 @@ pub struct NotYetImplemented {
 ///
 /// (Renamed from `NullExporter` in v0.1.3 — the old name implied
 /// it returns `NotYetImplemented`, which it does not.)
+#[derive(Debug)]
 pub struct PlaceholderExporter;
 
 impl Exporter for PlaceholderExporter {
@@ -798,10 +869,7 @@ impl Exporter for PlaceholderExporter {
         Ok(IfcModel {
             project_name,
             description: Some(
-                "Partial IFC export via rvt-rs PlaceholderExporter. \
-                 Geometry, categories, and elements are pending Layer 5b \
-                 walker + Phase 5 geometry work."
-                    .into(),
+                "Placeholder export: the project only, no storeys, elements or geometry.".into(),
             ),
             entities: Vec::new(),
             classifications: Vec::new(),
@@ -816,6 +884,7 @@ impl Exporter for PlaceholderExporter {
             material_layer_usages: Default::default(),
             element_type_materials: Default::default(),
             element_type_ids: Default::default(),
+            type_property_sets: Default::default(),
             material_constituent_sets: Vec::new(),
             opening_cuts: Default::default(),
             body_pieces: Default::default(),
@@ -841,6 +910,7 @@ impl PlaceholderExporter {
 /// classification references + best-effort project unit assignment.
 /// Pending walker expansion: categories from the family-graph
 /// references and building-element geometry.
+#[derive(Debug)]
 pub struct RvtDocExporter;
 
 impl Exporter for RvtDocExporter {
@@ -869,9 +939,50 @@ impl RvtDocExporter {
         quality_mode: ExportQualityMode,
         limits: crate::walker::WalkerLimits,
     ) -> Result<IfcModel> {
-        export_rvt_doc(rf, RvtDocExportMode::Default, quality_mode, limits)
+        self.export_with_mode_limits_and_control(
+            rf,
+            quality_mode,
+            limits,
+            &crate::control::WalkerControl::default(),
+        )
     }
 
+    /// Same as [`Self::export_with_mode_and_limits`], walking the elements
+    /// through [`crate::walker::iter_elements_with_control`]: `control`
+    /// receives the walk's progress, and a cancelled token stops the export
+    /// with [`crate::Error::Cancelled`].
+    pub fn export_with_mode_limits_and_control(
+        &self,
+        rf: &mut crate::RevitFile,
+        quality_mode: ExportQualityMode,
+        limits: crate::walker::WalkerLimits,
+        control: &crate::control::WalkerControl,
+    ) -> Result<IfcModel> {
+        export_rvt_doc(rf, RvtDocExportMode::Default, quality_mode, limits, control)
+    }
+
+    /// The IFC model of `rf` and the diagnostics of the export: what was
+    /// read, what was approximated (a body drawn as its record's box) and
+    /// what was left out, as `rvt-ifc --diagnostics` writes them.
+    ///
+    /// # Errors
+    ///
+    /// The errors of reading the file, as [`crate::walker::iter_elements`]
+    /// lists them. A class or release rvt-rs does not read is not an error:
+    /// it is left out and counted in the diagnostics.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rvt::RevitFile;
+    /// use rvt::ifc::RvtDocExporter;
+    ///
+    /// let mut rf = RevitFile::open("corpus/tier1/architectural-2024/architectural-2024.rvt")?;
+    /// let result = RvtDocExporter.export_with_diagnostics(&mut rf)?;
+    /// println!("{} entities", result.model.entities.len());
+    /// println!("{}", serde_json::to_string(&result.diagnostics)?);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn export_with_diagnostics(&self, rf: &mut crate::RevitFile) -> Result<ExportResult> {
         self.export_with_diagnostics_and_limits(rf, crate::walker::WalkerLimits::default())
     }
@@ -908,6 +1019,7 @@ impl RvtDocExporter {
 /// `IFCBUILDINGELEMENTPROXY` elements with `RvtRsDiagnosticCandidate`
 /// provenance. It is intended for reverse-engineering and issue
 /// attachments, not for normal model exchange.
+#[derive(Debug)]
 pub struct DiagnosticRvtDocExporter;
 
 impl Exporter for DiagnosticRvtDocExporter {
@@ -929,6 +1041,7 @@ impl DiagnosticRvtDocExporter {
             RvtDocExportMode::DiagnosticProxies,
             ExportQualityMode::Scaffold,
             limits,
+            &crate::control::WalkerControl::default(),
         )
     }
 
@@ -984,12 +1097,16 @@ fn export_rvt_doc(
     mode: RvtDocExportMode,
     quality_mode: ExportQualityMode,
     walker_limits: crate::walker::WalkerLimits,
+    control: &crate::control::WalkerControl,
 ) -> Result<IfcModel> {
-    let policy = export_content::ExportContentPolicy::for_quality_mode(quality_mode);
+    let policy = ExportContentPolicy::for_quality_mode(quality_mode);
     // Identity from PartAtom if present; fall back to the file name in
     // BasicFileInfo's original path.
     let part = rf.part_atom().ok();
     let bfi = rf.basic_file_info().ok();
+    // #421: the release whose layout the records take, which is not the
+    // saving release on a file that kept an older release's schema.
+    let layout = rf.layout_release().ok();
     let project_name = part.as_ref().and_then(|pa| pa.title.clone()).or_else(|| {
         bfi.as_ref()
             .and_then(|b| b.original_path.as_deref())
@@ -1000,12 +1117,6 @@ fn export_rvt_doc(
         let mut d = Vec::new();
         if let Some(b) = &bfi {
             d.push(format!("Revit {} export", b.version));
-            if let Some(message) =
-                crate::arc_wall_record::ArcWallRecord::standard_decoder_status(b.version)
-                    .diagnostic_message()
-            {
-                d.push(message);
-            }
         }
         if let Some(p) = &part {
             if let Some(id) = &p.id {
@@ -1073,7 +1184,8 @@ fn export_rvt_doc(
         &mut materials,
         policy,
         walker_limits,
-    );
+        control,
+    )?;
     if mode == RvtDocExportMode::DiagnosticProxies {
         append_diagnostic_walker_proxy_candidates(rf, &mut entities, walker_limits);
     }
@@ -1085,7 +1197,7 @@ fn export_rvt_doc(
     // `apply_element_record_storeys`, whose replacement half is a
     // no-op once the storeys carry real, distinct elevations.
     let mut level_storey_bind = crate::level_bind::LevelStoreyBind::new();
-    if let Some(revit_version) = bfi.as_ref().map(|b| b.version) {
+    if let Some(revit_version) = layout {
         apply_partition_level_storeys(
             rf,
             revit_version,
@@ -1104,68 +1216,61 @@ fn export_rvt_doc(
     //
     // See `reports/element-framing/RE-14.3-synthesis.md` and
     // `reports/element-framing/RE-15-arcwall-trailer-synthesis.md`.
-    if let Some(revit_version) = bfi.as_ref().map(|b| b.version) {
-        if let Ok(scan) = crate::partition_arc_walls::scan_partition_arc_walls_with_limits(
-            rf,
-            revit_version,
-            walker_limits,
-        ) {
-            let level_names = collect_partition_building_storey_names(rf);
-            let recovery = crate::partition_arc_walls::recover_storeys_from_arc_walls(
-                &scan.walls,
-                &level_names,
-            );
-            if building_storeys.is_empty() {
-                building_storeys = recovery.storeys;
-            }
-            let existing_ids: std::collections::HashSet<u32> = entities
-                .iter()
-                .filter_map(|e| match e {
-                    entities::IfcEntity::BuildingElement { type_guid, .. } => {
-                        type_guid.as_ref().and_then(|g| g.parse().ok())
-                    }
-                    _ => None,
-                })
-                .collect();
-            for wall in &scan.walls {
-                if let Some(id) = wall.element_id() {
-                    if existing_ids.contains(&id) {
-                        continue;
-                    }
+    if let Some(revit_version) = layout {
+        let scan = rf.memoised_arc_wall_scan(revit_version, walker_limits);
+        let level_names = collect_partition_building_storey_names(rf);
+        let recovery =
+            crate::partition_arc_walls::recover_storeys_from_arc_walls(&scan.walls, &level_names);
+        if building_storeys.is_empty() {
+            building_storeys = recovery.storeys;
+        }
+        let existing_ids: std::collections::HashSet<u32> = entities
+            .iter()
+            .filter_map(|e| match e {
+                entities::IfcEntity::BuildingElement { type_guid, .. } => {
+                    type_guid.as_ref().and_then(|g| g.parse().ok())
                 }
-                let geometry = if policy.include_geometry {
-                    arcwall_geometry_from_partition_wall(wall)
-                } else {
-                    None
-                };
-                let storey_index = wall.base_elevation_feet().and_then(|elev| {
-                    crate::partition_arc_walls::storey_index_for_elevation(&building_storeys, elev)
-                });
-                let property_set = arcwall_property_set(wall);
-                let name = match wall.element_id() {
-                    Some(id) => format!("ArcWall-{id}"),
-                    None => format!("ArcWall-{}-{}", wall.partition, wall.offset),
-                };
-                entities.push(entities::IfcEntity::BuildingElement {
-                    ifc_type: "IFCWALL".to_string(),
-                    name,
-                    type_guid: wall.element_id().map(|id| id.to_string()),
-                    predefined_type: category_map::lookup("ArcWall")
-                        .and_then(|m| m.predefined_type)
-                        .map(str::to_string),
-                    storey_index,
-                    material_index: None,
-                    property_set,
-                    location_feet: geometry.as_ref().map(|(location, _, _)| *location),
-                    rotation_radians: geometry.as_ref().map(|(_, rotation, _)| *rotation),
-                    extrusion: geometry.map(|(_, _, extrusion)| extrusion),
-                    host_element_index: None,
-                    material_layer_set_index: None,
-                    material_profile_set_index: None,
-                    solid_shape: None,
-                    representation_map_index: None,
-                });
+                _ => None,
+            })
+            .collect();
+        for wall in &scan.walls {
+            if let Some(id) = wall.element_id() {
+                if existing_ids.contains(&id) {
+                    continue;
+                }
             }
+            let geometry = if policy.include_geometry {
+                arcwall_geometry_from_partition_wall(wall)
+            } else {
+                None
+            };
+            let storey_index = wall.base_elevation_feet().and_then(|elev| {
+                crate::partition_arc_walls::storey_index_for_elevation(&building_storeys, elev)
+            });
+            let property_set = arcwall_property_set(wall);
+            let name = match wall.element_id() {
+                Some(id) => format!("ArcWall-{id}"),
+                None => format!("ArcWall-{}-{}", wall.partition, wall.offset),
+            };
+            entities.push(entities::IfcEntity::BuildingElement {
+                ifc_type: "IFCWALL".to_string(),
+                name,
+                type_guid: wall.element_id().map(|id| id.to_string()),
+                predefined_type: category_map::lookup("ArcWall")
+                    .and_then(|m| m.predefined_type)
+                    .map(str::to_string),
+                storey_index,
+                material_index: None,
+                property_set,
+                location_feet: geometry.as_ref().map(|(location, _, _)| *location),
+                rotation_radians: geometry.as_ref().map(|(_, rotation, _)| *rotation),
+                extrusion: geometry.map(|(_, _, extrusion)| extrusion),
+                host_element_index: None,
+                material_layer_set_index: None,
+                material_profile_set_index: None,
+                solid_shape: None,
+                representation_map_index: None,
+            });
         }
     }
 
@@ -1189,6 +1294,9 @@ fn export_rvt_doc(
     export_content::contain_in_spaces(&mut entities);
     // B54: a family instance's connectors are ports, joined or not.
     attach_family_instance_ports(rf, &mut entities, &element_type_ids);
+    // #824: the openings a face-hosted door's or window's symbol cuts in the
+    // element whose face hosts it.
+    attach_hosted_cut_openings(rf, &mut entities);
 
     if !policy.include_geometry {
         export_content::strip_building_element_geometry(&mut entities);
@@ -1235,6 +1343,7 @@ fn export_rvt_doc(
         material_layer_usages,
         element_type_materials,
         element_type_ids,
+        type_property_sets: Default::default(),
         material_constituent_sets,
         opening_cuts,
         body_pieces,
@@ -1256,6 +1365,7 @@ fn opening_cuts_through_hosts(
     let mut cuts = std::collections::BTreeMap::new();
     for (index, entity) in entities.iter().enumerate() {
         let entities::IfcEntity::BuildingElement {
+            ifc_type,
             host_element_index: Some(host),
             extrusion: Some(body),
             solid_shape: None,
@@ -1309,28 +1419,53 @@ fn opening_cuts_through_hosts(
         };
         let (x_band, y_band) = (band(axes[0]), band(axes[1]));
         let (x_width, y_width) = (x_band.1 - x_band.0, y_band.1 - y_band.0);
+        // RE-225: where a window's symbol cuts a solid and no loop, Revit's
+        // export cuts the opening to that solid: as deep across the wall as
+        // the solid's Y extent, centred on the wall, and as tall as its Z
+        // extent, down from the body's top (the BIM4LCA office's windows).
+        // A door's keeps its box: on the office its solid gives none of
+        // Revit's openings.
+        let solid = cut_solid_size(entity).filter(|_| ifc_type.eq_ignore_ascii_case("IfcWindow"));
+        let solid_z = solid.map(|[_, _, height]| [body.height_feet - height, height]);
         let cut = if y_width <= MAX_THICKNESS_FEET && y_width < x_width / 2.0 && y_width > 0.0 {
             Some(entities::OpeningCut {
                 x_dim_feet: body.width_feet,
-                y_dim_feet: y_width,
+                y_dim_feet: solid.map_or(y_width, |[_, depth, _]| depth),
                 centre_feet: [0.0, (y_band.0 + y_band.1) / 2.0],
-                z_range_feet: None,
+                z_range_feet: solid_z,
             })
         } else if x_width <= MAX_THICKNESS_FEET && x_width < y_width / 2.0 && x_width > 0.0 {
             Some(entities::OpeningCut {
-                x_dim_feet: x_width,
+                x_dim_feet: solid.map_or(x_width, |[_, depth, _]| depth),
                 y_dim_feet: body.depth_feet,
                 centre_feet: [(x_band.0 + x_band.1) / 2.0, 0.0],
-                z_range_feet: None,
+                z_range_feet: solid_z,
             })
         } else {
             None
         };
-        if let Some(cut) = window_cut(cut) {
+        let cut = if solid.is_some() {
+            cut
+        } else {
+            window_cut(cut)
+        };
+        if let Some(cut) = cut {
             cuts.insert(index, cut);
         }
     }
     cuts
+}
+
+/// The extents along X, Y and Z of the solid a door's or window's symbol
+/// cuts where it cuts no loop (RE-225,
+/// [`export_content::CUT_SOLID_SIZE_PROPERTIES`]), feet.
+fn cut_solid_size(entity: &entities::IfcEntity) -> Option<[f64; 3]> {
+    let [width, depth, height] = export_content::CUT_SOLID_SIZE_PROPERTIES;
+    Some([
+        positive_length_property(entity, width)?,
+        positive_length_property(entity, depth)?,
+        positive_length_property(entity, height)?,
+    ])
 }
 
 /// A length property of an element's own property set, feet.
@@ -1436,7 +1571,7 @@ fn real_property(entity: &entities::IfcEntity, wanted: &str) -> Option<f64> {
 pub const WINDOW_TRIM_MAX_FEET: f64 = 0.5;
 
 /// RE-93, RE-94: a window's or door's opening as Revit's export cuts it,
-/// from its type ([`crate::partition_schema_mvp::FillerOpening`]), centred
+/// from its type (`crate::partition_schema_mvp::FillerOpening`), centred
 /// on its origin along its X axis. Across the wall it keeps `base`'s band,
 /// or the body's depth. `None` unless the element reports its opening
 /// ([`export_content::FILLER_OPENING_PROPERTIES`]), its width runs along
@@ -2008,24 +2143,37 @@ fn revit_model_global_ids(
         ..RevitGlobalIds::default()
     };
     out.revit_version = rf.basic_file_info().ok().map(|info| info.version);
+    let levels = match rf.layout_release().ok() {
+        Some(version) => crate::partition_level_records::recover_partition_levels(rf, version)
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    // #878: the GlobalIds the file stores, which Revit's export writes.
+    let stored = crate::revit_global_ids::stored_global_ids(
+        rf,
+        &levels.iter().map(|level| level.element_id).collect(),
+    );
+    out.project = stored.project.clone();
+    out.site = stored.site.clone();
+    out.building = stored.building.clone();
     let Ok(ids) = crate::revit_global_ids::revit_global_ids(rf) else {
         return out;
     };
     let revit_version = rf.basic_file_info().map(|info| info.version).unwrap_or(0);
-    if ids.is_empty() {
-        return out;
-    }
-    if let Ok(version) = rf.basic_file_info().map(|info| info.version) {
-        let levels = crate::partition_level_records::recover_partition_levels(rf, version)
-            .unwrap_or_default();
-        for (index, storey) in storeys.iter().enumerate() {
-            let mut named = levels.iter().filter(|level| level.name == storey.name);
-            if let (Some(level), None) = (named.next(), named.next()) {
-                if let Some(global_id) = ids.get(&level.element_id) {
-                    out.storeys.insert(index, global_id.clone());
-                }
+    for (index, storey) in storeys.iter().enumerate() {
+        let mut named = levels.iter().filter(|level| level.name == storey.name);
+        if let (Some(level), None) = (named.next(), named.next()) {
+            if let Some(global_id) = stored
+                .levels
+                .get(&level.element_id)
+                .or_else(|| ids.get(&level.element_id))
+            {
+                out.storeys.insert(index, global_id.clone());
             }
         }
+    }
+    if ids.is_empty() {
+        return out;
     }
     let mut seen = std::collections::BTreeSet::new();
     for (index, entity) in entities.iter().enumerate() {
@@ -2103,10 +2251,183 @@ const INSTANCE_AS_TYPE: u16 = 2048;
 
 /// Give each family instance written as a distribution element or a proxy a
 /// port for each of its symbol's connectors that Revit's export writes one
-/// for ([`crate::native_connectors::symbol_port_indices`], B54, B83), joined
-/// or not; the writer skips a port a join has already given it. A file whose
-/// release the native record path does not read keeps the ports of its joins
-/// only.
+/// for, with its flow direction, joined or not; the writer skips a port a
+/// join has already given it. The ducts' and pipes' ports, written by then,
+/// take their flow direction from the same pass
+/// (`crate::native_connectors::connector_ports`, RE-212), and then every
+/// joined pair is given Revit's directions ([`apply_partner_directions`]). A
+/// file whose release the native record path does not read keeps the ports
+/// of its joins only, with no direction.
+/// How far, in feet, a cut solid's corner may lie from its plan footprint's
+/// and its ends from the host's faces (#824).
+const HOSTED_CUT_TOLERANCE_FEET: f64 = 1e-6;
+
+/// A prism's plan outline, counter-clockwise, with its lowest and highest Z.
+type PrismFootprint = (Vec<(f64, f64)>, f64, f64);
+
+/// The plan footprint of a cut solid placed by `transform`, where the solid
+/// is a prism standing upright: the convex hull of its vertices in plan,
+/// counter-clockwise, when every vertex lies on one of its corners, with the
+/// solid's lowest and highest Z. `None` for any other solid.
+fn prism_footprint(
+    vertices: &[[f64; 3]],
+    transform: &crate::partition_instance_transforms::InstanceTransform,
+) -> Option<PrismFootprint> {
+    let placed: Vec<[f64; 3]> = vertices
+        .iter()
+        .map(|v| {
+            [0, 1, 2].map(|i| {
+                transform.origin[i] + (0..3).map(|j| transform.axes[j][i] * v[j]).sum::<f64>()
+            })
+        })
+        .collect();
+    let low = placed.iter().map(|p| p[2]).fold(f64::INFINITY, f64::min);
+    let high = placed
+        .iter()
+        .map(|p| p[2])
+        .fold(f64::NEG_INFINITY, f64::max);
+    let mut points: Vec<(f64, f64)> = placed.iter().map(|p| (p[0], p[1])).collect();
+    points.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    points.dedup_by(|a, b| {
+        (a.0 - b.0).abs() <= HOSTED_CUT_TOLERANCE_FEET
+            && (a.1 - b.1).abs() <= HOSTED_CUT_TOLERANCE_FEET
+    });
+    if points.len() < 3 {
+        return None;
+    }
+    let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
+    // Andrew's monotone chain, lower then upper.
+    let mut hull: Vec<(f64, f64)> = Vec::new();
+    for pass in [false, true] {
+        let start = hull.len();
+        let ordered: Vec<(f64, f64)> = if pass {
+            points.iter().rev().copied().collect()
+        } else {
+            points.clone()
+        };
+        for point in ordered {
+            while hull.len() >= start + 2
+                && cross(hull[hull.len() - 2], hull[hull.len() - 1], point) <= 0.0
+            {
+                hull.pop();
+            }
+            hull.push(point);
+        }
+        hull.pop();
+    }
+    let on_corner = |p: &(f64, f64)| {
+        hull.iter().any(|c| {
+            (c.0 - p.0).abs() <= HOSTED_CUT_TOLERANCE_FEET
+                && (c.1 - p.1).abs() <= HOSTED_CUT_TOLERANCE_FEET
+        })
+    };
+    (hull.len() >= 3 && points.iter().all(on_corner)).then_some((hull, low, high))
+}
+
+/// Write the opening each face-hosted door or window cuts in the element
+/// whose face hosts it (#824), as Revit's export writes it: the plan
+/// footprint of the solid its symbol cuts
+/// ([`crate::native_symbol_cuts::face_hosted_cuts`]), placed by the
+/// instance's transform (RE-87), extruded up through the host in the host's
+/// frame and tagged with the host's ElementId. Only where that solid is a
+/// prism standing upright through the host's whole thickness and the host is
+/// one element drawn as an extrusion; any other cut is left out. On the
+/// BIM4LCA office, roof 2991742's four 600 mm hatch openings.
+fn attach_hosted_cut_openings(rf: &mut crate::RevitFile, entities: &mut Vec<entities::IfcEntity>) {
+    let candidates: std::collections::BTreeSet<u64> = entities
+        .iter()
+        .filter_map(|entity| match entity {
+            entities::IfcEntity::BuildingElement {
+                ifc_type,
+                type_guid: Some(tag),
+                ..
+            } if ifc_type == "IFCDOOR" || ifc_type == "IFCWINDOW" => tag.parse().ok(),
+            _ => None,
+        })
+        .collect();
+    let Ok(cuts) = crate::native_symbol_cuts::face_hosted_cuts(rf, &candidates) else {
+        return;
+    };
+    if cuts.is_empty() {
+        return;
+    }
+    let revit_version = rf.layout_release().unwrap_or(0);
+    let ids = cuts
+        .iter()
+        .filter_map(|cut| u32::try_from(cut.instance).ok())
+        .collect();
+    let Ok(transforms) =
+        crate::partition_instance_transforms::scan_instance_transforms(rf, revit_version, &ids)
+    else {
+        return;
+    };
+    let mut openings = Vec::new();
+    // Revit's export names each after its host and its place among the
+    // host's openings, the cutting instance with the highest ElementId first:
+    // `Basic Roof:YP-1:2991742:1` is hatch 2896992's, `:4` hatch 2053330's.
+    let mut cut_counts: std::collections::BTreeMap<usize, u32> = Default::default();
+    let mut cuts = cuts;
+    cuts.sort_by_key(|cut| std::cmp::Reverse(cut.instance));
+    for cut in cuts {
+        let Some(transform) = u32::try_from(cut.instance)
+            .ok()
+            .and_then(|id| transforms.get(&id))
+        else {
+            continue;
+        };
+        let Some((footprint, low, high)) = prism_footprint(&cut.vertices, transform) else {
+            continue;
+        };
+        let tag = cut.host.to_string();
+        let mut hosts = entities.iter().enumerate().filter(|(_, entity)| {
+            matches!(entity, entities::IfcEntity::BuildingElement { type_guid: Some(held), .. } if *held == tag)
+        });
+        let (Some((host, entity)), None) = (hosts.next(), hosts.next()) else {
+            continue;
+        };
+        let entities::IfcEntity::BuildingElement {
+            name,
+            location_feet: Some([x, y, z]),
+            rotation_radians,
+            extrusion: Some(body),
+            solid_shape: None,
+            ..
+        } = entity
+        else {
+            continue;
+        };
+        let depth = body.height_feet;
+        if !depth.is_finite()
+            || depth <= 0.0
+            || low > z + HOSTED_CUT_TOLERANCE_FEET
+            || high < z + depth - HOSTED_CUT_TOLERANCE_FEET
+        {
+            continue;
+        }
+        let (sin, cos) = (-rotation_radians.unwrap_or(0.0)).sin_cos();
+        let outline_feet = footprint
+            .iter()
+            .map(|(px, py)| {
+                let (dx, dy) = (px - x, py - y);
+                (dx * cos - dy * sin, dx * sin + dy * cos)
+            })
+            .collect();
+        let count = cut_counts.entry(host).or_insert(0);
+        *count += 1;
+        openings.push(entities::IfcEntity::HostedCutOpening {
+            host,
+            number: *count,
+            tag,
+            name: format!("{name}:{count}"),
+            outline_feet,
+            depth_feet: depth,
+        });
+    }
+    entities.extend(openings);
+}
+
 fn attach_family_instance_ports(
     rf: &mut crate::RevitFile,
     entities: &mut Vec<entities::IfcEntity>,
@@ -2133,36 +2454,192 @@ fn attach_family_instance_ports(
             Some((index, id, *element_type_ids.get(&id)?))
         })
         .collect();
-    if instances.is_empty() {
+    let segments: std::collections::BTreeSet<u64> = entities
+        .iter()
+        .filter_map(|entity| match entity {
+            entities::IfcEntity::Port { id, .. } => Some(u64::from(*id)),
+            _ => None,
+        })
+        .collect();
+    if instances.is_empty() && segments.is_empty() {
         return;
     }
     let symbols = instances
         .iter()
-        .map(|(_, _, symbol)| u64::from(*symbol))
+        .map(|(_, id, symbol)| (u64::from(*id), u64::from(*symbol)))
         .collect();
-    let Ok(ports) = crate::native_connectors::symbol_port_indices(rf, &symbols) else {
+    let Ok(read) = crate::native_connectors::connector_ports(rf, &symbols, &segments) else {
         return;
     };
-    for (element, id, symbol) in instances {
-        for &(index, domain) in ports.get(&u64::from(symbol)).into_iter().flatten() {
+    for entity in entities.iter_mut() {
+        let entities::IfcEntity::Port {
+            id,
+            index,
+            flow_direction,
+            ..
+        } = entity
+        else {
+            continue;
+        };
+        if let Some(&direction) = read.segments.get(&(u64::from(*id), *index)) {
+            *flow_direction =
+                crate::native_connectors::flow_direction_of(direction).map(str::to_string);
+        }
+    }
+    // #869: a connector no placed duct or pipe port joins is at its point in
+    // its symbol, through the instance's transform (RE-87).
+    let placed: std::collections::BTreeSet<(u32, u32)> = entities
+        .iter()
+        .filter_map(|entity| match entity {
+            entities::IfcEntity::Port {
+                id,
+                index,
+                location_feet: Some(_),
+                ..
+            } => Some((*id, *index)),
+            _ => None,
+        })
+        .collect();
+    let mut joined_to_placed = std::collections::BTreeSet::new();
+    for entity in entities.iter() {
+        if let entities::IfcEntity::PortConnection {
+            a_id,
+            a_index,
+            b_id,
+            b_index,
+            ..
+        } = entity
+        {
+            if placed.contains(&(*a_id, *a_index)) {
+                joined_to_placed.insert((*b_id, *b_index));
+            }
+            if placed.contains(&(*b_id, *b_index)) {
+                joined_to_placed.insert((*a_id, *a_index));
+            }
+        }
+    }
+    let revit_version = rf.layout_release().unwrap_or(0);
+    let transforms = if PORT_PLACEMENT_REVIT_VERSIONS.contains(&revit_version) {
+        let ids = instances.iter().map(|(_, id, _)| *id).collect();
+        crate::partition_instance_transforms::scan_instance_transforms(rf, revit_version, &ids)
+            .unwrap_or_default()
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    for (element, id, _) in instances {
+        let transform = transforms.get(&id);
+        for port in read.instances.get(&u64::from(id)).into_iter().flatten() {
+            let place = transform
+                .zip(port.frame)
+                .filter(|_| !joined_to_placed.contains(&(id, port.index)))
+                .map(|(transform, frame)| {
+                    let through = |v: [f64; 3]| {
+                        [0, 1, 2].map(|i| (0..3).map(|j| transform.axes[j][i] * v[j]).sum::<f64>())
+                    };
+                    let offset = through(frame.origin);
+                    (
+                        [0, 1, 2].map(|i| transform.origin[i] + offset[i]),
+                        through(frame.z_axis),
+                    )
+                });
             entities.push(entities::IfcEntity::Port {
                 element,
                 id,
-                index,
+                index: port.index,
                 predefined_type: Some(
-                    crate::native_connectors::port_type_of_domain(domain).to_string(),
+                    crate::native_connectors::port_type_of_domain(port.domain).to_string(),
                 ),
-                flow_direction: crate::native_connectors::port_flow_direction_of_domain(domain)
-                    .map(str::to_string),
-                location_feet: None,
-                direction: None,
+                flow_direction: port.flow_direction.map(str::to_string),
+                location_feet: place.map(|(point, _)| point),
+                direction: place.map(|(_, axis)| axis),
             });
+        }
+    }
+    apply_partner_directions(entities);
+}
+
+/// Releases a family instance's unjoined ports are placed on (#869): 2025,
+/// the RE1 models', and 2024, the BIM4LCA office's, where all 43 such ports
+/// are within 0.01 ft of Revit's with its axis.
+const PORT_PLACEMENT_REVIT_VERSIONS: &[u32] = &[2024, 2025];
+
+/// A duct, pipe or fitting connector that is bidirectional, joined to one
+/// with a direction, takes the opposite direction (RE-212). revit-ifc writes
+/// a join as one connection, an `InPort` on the element the flow enters and
+/// an `OutPort` on the one it leaves, from the connector with a direction:
+/// on RE1 Mechanical three pipe ends joined to an air handler's connectors.
+fn apply_partner_directions(entities: &mut [entities::IfcEntity]) {
+    let mut own: std::collections::BTreeMap<(u32, u32), &'static str> =
+        std::collections::BTreeMap::new();
+    for entity in entities.iter() {
+        let entities::IfcEntity::Port {
+            id,
+            index,
+            predefined_type,
+            flow_direction: Some(flow),
+            ..
+        } = entity
+        else {
+            continue;
+        };
+        if !matches!(predefined_type.as_deref(), Some("DUCT" | "PIPE")) {
+            continue;
+        }
+        let opposite = match flow.as_str() {
+            "SINK" => "SOURCE",
+            "SOURCE" => "SINK",
+            _ => continue,
+        };
+        own.insert((*id, *index), opposite);
+    }
+    let mut partners: std::collections::BTreeMap<(u32, u32), Vec<(u32, u32)>> =
+        std::collections::BTreeMap::new();
+    for entity in entities.iter() {
+        if let entities::IfcEntity::PortConnection {
+            a_id,
+            a_index,
+            b_id,
+            b_index,
+            ..
+        } = entity
+        {
+            partners
+                .entry((*a_id, *a_index))
+                .or_default()
+                .push((*b_id, *b_index));
+            partners
+                .entry((*b_id, *b_index))
+                .or_default()
+                .push((*a_id, *a_index));
+        }
+    }
+    for entity in entities.iter_mut() {
+        let entities::IfcEntity::Port {
+            id,
+            index,
+            predefined_type,
+            flow_direction,
+            ..
+        } = entity
+        else {
+            continue;
+        };
+        if !matches!(predefined_type.as_deref(), Some("DUCT" | "PIPE"))
+            || flow_direction.as_deref() != Some("SOURCEANDSINK")
+        {
+            continue;
+        }
+        let opposite = partners
+            .get(&(*id, *index))
+            .and_then(|joined| joined.iter().find_map(|key| own.get(key)));
+        if let Some(opposite) = opposite {
+            *flow_direction = Some((*opposite).to_string());
         }
     }
 }
 
-/// A door's or window's type GlobalId as Revit's exporter makes it (B72,
-/// revit-ifc `GUIDUtil`): MD5 of `<original symbol's GlobalId>Sub-element:
+/// A door's or window's type GlobalId as Revit's exporter makes it
+/// (revit-ifc `GUIDUtil`): MD5 of `<original symbol's GlobalId>Sub-element:
 /// Flipped: <True|False>`, then ` InAssembly: False` from revit-ifc 25.4 on,
 /// read as a .NET GUID. A file of Revit 2025 or later takes the suffix (RE1,
 /// exported by Revit 2026), one of 2024 not (Core Interior, exported by
@@ -2345,7 +2822,7 @@ fn record_base_elevation_feet(entity: &entities::IfcEntity) -> Option<f64> {
 ///
 /// Fail closed twice over:
 ///
-/// - [`crate::partition_level_records::scan_partition_levels`] returns
+/// - `crate::partition_level_records::scan_partition_levels` returns
 ///   nothing unless every standalone `OST_Levels` record owns exactly
 ///   one accepted name/elevation block and no two levels share an
 ///   elevation. A partial recovery is never emitted as a smaller
@@ -2404,10 +2881,10 @@ pub(crate) const STOREY_BIND_RECORD_LEVEL_REFERENCE: &str = "record_level_refere
 ///
 /// The record's counted reference list at `+0x88` carries the host
 /// Level as a plain ElementId slot;
-/// [`crate::element_record_level_refs::unique_level_reference`] accepts
+/// `crate::element_record_level_refs::unique_level_reference` accepts
 /// it when exactly one recovered Level is named. A column or wall that
 /// names two, its base and top constraint, takes its base constraint
-/// ([`crate::element_record_level_refs::base_constraint_level`], RE-59).
+/// (`crate::element_record_level_refs::base_constraint_level`, RE-59).
 ///
 /// Fail closed twice more here:
 ///
@@ -2504,7 +2981,7 @@ fn record_level_element_id(entity: &entities::IfcEntity) -> Option<u32> {
 /// - The storey set is replaced **only** when the recovered storeys
 ///   carry no elevation of their own (all at one value, which on the
 ///   current corpora means every Level row defaulted to 0.0) and at
-///   least [`crate::element_record_storeys::MIN_DISTINCT_ELEVATIONS`]
+///   least `crate::element_record_storeys::MIN_DISTINCT_ELEVATIONS`
 ///   distinct elevations were measured. A file whose ArcWall trailers
 ///   already gave real elevations keeps them.
 /// - Binding is an exact elevation match, and an element whose base
@@ -2513,7 +2990,7 @@ fn record_level_element_id(entity: &entities::IfcEntity) -> Option<u32> {
 ///
 /// Level *names* are not paired with the measured elevations unless
 /// there is exactly one name per elevation; see
-/// [`crate::element_record_storeys`] for why a rank join is not
+/// `crate::element_record_storeys` for why a rank join is not
 /// defensible on `2024_Core_Interior.rvt`.
 fn apply_element_record_storeys(
     entities: &mut [entities::IfcEntity],
@@ -2824,14 +3301,21 @@ fn append_production_walker_elements(
     entities: &mut Vec<entities::IfcEntity>,
     building_storeys: &mut Vec<Storey>,
     materials: &mut Vec<MaterialInfo>,
-    policy: export_content::ExportContentPolicy,
+    policy: ExportContentPolicy,
     walker_limits: crate::walker::WalkerLimits,
-) -> WalkerElementData {
-    if let Ok(decoded_iter) = crate::walker::iter_elements_with_limits(
+    control: &crate::control::WalkerControl,
+) -> Result<WalkerElementData> {
+    // A failed walk leaves the metadata-only model; a cancelled one stops.
+    let walk = crate::walker::iter_elements_with_control(
         rf,
         crate::walker::PRODUCTION_ELEMENT_MIN_SCORE,
         walker_limits,
-    ) {
+        control,
+    );
+    if let Err(crate::Error::Cancelled) = walk {
+        return Err(crate::Error::Cancelled);
+    }
+    if let Ok(decoded_iter) = walk {
         // M3-07: hide low-confidence rows from default IFC emission.
         let filtered = decoded_iter
             .filter(|e| e.meets_confidence(crate::walker::DEFAULT_MIN_ELEMENT_CONFIDENCE));
@@ -2842,7 +3326,7 @@ fn append_production_walker_elements(
             policy,
         );
         materials.extend(append.materials);
-        return (
+        return Ok((
             append.element_layers,
             append.element_type_materials,
             append.unplaced_wall_layers,
@@ -2851,9 +3335,9 @@ fn append_production_walker_elements(
             append.element_flips,
             append.computed_inverts,
             append.body_pieces,
-        );
+        ));
     }
-    Default::default()
+    Ok(Default::default())
 }
 
 fn append_diagnostic_walker_proxy_candidates(
@@ -3092,6 +3576,7 @@ pub fn build_export_diagnostics_with_limits(
     walker_limits: crate::walker::WalkerLimits,
 ) -> ExportDiagnostics {
     let bfi = rf.basic_file_info().ok();
+    let layout = rf.layout_release().ok();
     let part = rf.part_atom().ok();
     let stream_names = rf.stream_names();
     let diagnostic_candidates = collect_diagnostic_walker_proxy_candidates(rf, walker_limits);
@@ -3134,10 +3619,9 @@ pub fn build_export_diagnostics_with_limits(
     // attributable ElementId are rejected by the fail-closed decode, so a
     // file made mostly of them exports a fraction of its model while
     // looking complete. Count them so the sidecar says so.
-    let unattributed_frames = bfi
-        .as_ref()
-        .and_then(|b| {
-            crate::partition_element_records::scan_unattributed_frames(rf, b.version).ok()
+    let unattributed_frames = layout
+        .and_then(|version| {
+            crate::partition_element_records::scan_unattributed_frames(rf, version).ok()
         })
         .unwrap_or_default();
     let unattributed_total: usize = unattributed_frames.values().sum();
@@ -3152,10 +3636,9 @@ pub fn build_export_diagnostics_with_limits(
     // #309: placed instances with no 3D body are left out by design, as
     // Revit's own export leaves them out. They are not missing, so they
     // do not count toward `unexported_element_records`.
-    let volumeless = bfi
-        .as_ref()
-        .and_then(|b| {
-            crate::partition_element_records::scan_volumeless_instances(rf, b.version).ok()
+    let volumeless = layout
+        .and_then(|version| {
+            crate::partition_element_records::scan_volumeless_instances(rf, version).ok()
         })
         .unwrap_or_default();
     let volumeless_total: usize = volumeless.values().sum();
@@ -3169,10 +3652,9 @@ pub fn build_export_diagnostics_with_limits(
     }
     // #319: elements in a non-primary design option are left out as
     // Revit's own export leaves them out. They are not missing either.
-    let non_primary = bfi
-        .as_ref()
-        .and_then(|b| {
-            crate::partition_design_options::scan_non_primary_option_instances(rf, b.version).ok()
+    let non_primary = layout
+        .and_then(|version| {
+            crate::partition_design_options::scan_non_primary_option_instances(rf, version).ok()
         })
         .unwrap_or_default();
     let non_primary_total: usize = non_primary.values().sum();
@@ -3184,12 +3666,27 @@ pub fn build_export_diagnostics_with_limits(
             sample_names: Vec::new(),
         });
     }
+    // #328: elements that do not exist in the export phase (the project's
+    // last) are left out as Revit's own export leaves them out (RE-184).
+    let phase_excluded = layout
+        .and_then(|version| crate::native_phases::scan_phase_excluded_instances(rf, version).ok())
+        .unwrap_or_default();
+    let phase_excluded_total: usize = phase_excluded.values().sum();
+    if phase_excluded_total > 0 {
+        skipped.push(SkippedExportItem {
+            reason: "element_record_not_in_export_phase".into(),
+            count: phase_excluded_total,
+            classes: phase_excluded,
+            sample_names: Vec::new(),
+        });
+    }
     // #309: empty curtain panels are left out as Revit's own export leaves
     // them out, recognised by their family's name. A type of theirs with a
     // material set would contradict that name, and is reported.
-    let empty_panels = bfi
-        .as_ref()
-        .and_then(|b| crate::partition_schema_mvp::scan_empty_curtain_panels(rf, b.version).ok())
+    let empty_panels = layout
+        .and_then(|version| {
+            crate::partition_schema_mvp::scan_empty_curtain_panels(rf, version).ok()
+        })
         .unwrap_or_default();
     if empty_panels.count > 0 {
         skipped.push(SkippedExportItem {
@@ -3206,6 +3703,14 @@ pub fn build_export_diagnostics_with_limits(
     let recovered_units = recover_project_units(rf);
     let mut warnings = diagnostic_candidates.warnings;
     warnings.extend(walker_stats.mep_warnings.iter().cloned());
+    // #328: a failed read of the project's phases leaves the filter empty, so
+    // every element is written, including any that Revit's export leaves out
+    // for its phase.
+    if let Some(error) = &rf.memoised_phase_filter().read_error {
+        warnings.push(format!(
+            "The project's phases could not be read ({error}); elements that do not exist in the export phase are written (#328, RE-184)."
+        ));
+    }
     if !empty_panels.types_with_material.is_empty() {
         warnings.push(format!(
             "{} empty curtain panel type(s) carry a material, which an empty panel should not: {:?}",
@@ -3215,23 +3720,15 @@ pub fn build_export_diagnostics_with_limits(
     }
     // Surface ArcWall partition-scan limit hits so crafted large
     // Partitions/* streams are visible in the diagnostics sidecar.
-    if let Some(version) = bfi.as_ref().map(|b| b.version) {
-        if let Ok(scan) = crate::partition_arc_walls::scan_partition_arc_walls_with_limits(
-            rf,
-            version,
-            walker_limits,
-        ) {
-            if let Some(hit) = scan.limit_hit {
-                warnings.push(format!("{}: {}", hit.code(), hit.message()));
-            }
+    if let Some(version) = layout {
+        if let Some(hit) = rf.memoised_arc_wall_scan(version, walker_limits).limit_hit {
+            warnings.push(format!("{}: {}", hit.code(), hit.message()));
         }
     }
     if exported.building_elements == 0 {
         warnings.push("No building elements were exported; output is scaffold-only.".into());
-    } else if let Some(version) = bfi
-        .as_ref()
-        .map(|b| b.version)
-        .filter(|&version| crate::partition_element_records_2023::is_32bit_release(version))
+    } else if let Some(version) =
+        layout.filter(|&version| crate::partition_element_records_2023::is_32bit_release(version))
     {
         // RE-81, RE-102, RE-107, RE-109, RE-111 to RE-115, RE-180: what a
         // 2015 to 2023 export carries, and what it does not (RE-181).
@@ -3248,12 +3745,28 @@ pub fn build_export_diagnostics_with_limits(
              nested in doors and windows are left out."
         ));
     }
-    let release_support = bfi
-        .as_ref()
-        .map(|b| crate::capability::release_support(b.version));
-    if let Some((version, support)) = bfi
-        .as_ref()
-        .map(|b| b.version)
+    // #421: a file that kept an older release's schema is read with that
+    // release's readers, so its support is that release's.
+    let read_as = layout.or_else(|| bfi.as_ref().map(|b| b.version));
+    if let (Some(saved), Some(read_as)) = (bfi.as_ref().map(|b| b.version), layout) {
+        if read_as != saved {
+            warnings.push(format!(
+                "Saved by Revit {saved} but keeps Revit {read_as}'s schema, so its records are read \
+                 as Revit {read_as}'s (#421)."
+            ));
+        }
+    }
+    if let Ok(table) = crate::elem_table::layout(rf) {
+        if matches!(table.framing, crate::elem_table::RecordFraming::Implicit) {
+            warnings.push(
+                "Global/ElemTable's records fit neither its 28- nor its 40-byte layout, so the \
+                 declared ElementIds are not known and no element record is read (#421)."
+                    .into(),
+            );
+        }
+    }
+    let release_support = read_as.map(crate::capability::release_support);
+    if let Some((version, support)) = read_as
         .zip(release_support.as_ref())
         .filter(|(_, support)| support.status == "experimental")
     {
@@ -3396,7 +3909,7 @@ pub fn build_export_diagnostics_with_limits(
             .map(|(value, n)| format!("{value} {n}"))
             .collect();
         warnings.push(format!(
-            "{total} element(s) carry an \"Export to IFC As\" value the export does not apply, so each keeps its category's entity (#792): {}.",
+            "{total} element(s) carry an \"Export to IFC As\" value the export does not apply, {UNAPPLIED_EXPORT_VALUES} {}.",
             listed.join(", ")
         ));
     }
@@ -3427,7 +3940,7 @@ pub fn build_export_diagnostics_with_limits(
         unattributed_total,
     );
 
-    ExportDiagnostics {
+    let mut diagnostics = ExportDiagnostics {
         schema_version: EXPORT_DIAGNOSTICS_SCHEMA_VERSION,
         mode,
         input: ExportInputDiagnostics {
@@ -3469,6 +3982,8 @@ pub fn build_export_diagnostics_with_limits(
                 .map(|unit| unit.forge_identifier.clone())
                 .collect(),
             unknown_unit_identifiers: recovered_units.unknown_identifiers,
+            wall_curve_lengths_feet: walker_stats.wall_curve_lengths_feet,
+            walls_type_confirmed: walker_stats.walls_type_confirmed,
         },
         source_coverage: {
             let coverage = SourceCoverageDiagnostics::measure(
@@ -3485,13 +4000,94 @@ pub fn build_export_diagnostics_with_limits(
         warnings,
         confidence,
         formats_latest_integrity,
+    };
+    record_unread_streams(&mut diagnostics, rf.unread_streams());
+    diagnostics
+}
+
+/// The skipped-item reason for streams a resource limit kept from being read
+/// whole (#1075); its `classes` map each such stream's name to how many
+/// limits stopped it.
+pub const UNREAD_STREAMS_REASON: &str = "stream_not_read_resource_limit";
+
+/// How each warning about a stream not read whole begins.
+const UNREAD_STREAM_WARNING: &str = "Not read whole: ";
+
+/// Put the streams a resource limit kept from being read whole
+/// ([`crate::RevitFile::unread_streams`], #1075) into `diagnostics`: one
+/// skipped item ([`UNREAD_STREAMS_REASON`]) and a warning per stream, in
+/// place of any an earlier call wrote. The export built every element it
+/// could without them, so what they hold is missing; call this again after
+/// a later step (saved meshes, Revit property sets) has read more streams.
+pub fn record_unread_streams(
+    diagnostics: &mut ExportDiagnostics,
+    unread: &[crate::reader::UnreadStream],
+) {
+    diagnostics
+        .skipped
+        .retain(|item| item.reason != UNREAD_STREAMS_REASON);
+    diagnostics
+        .warnings
+        .retain(|warning| !warning.starts_with(UNREAD_STREAM_WARNING));
+    if !unread.is_empty() {
+        let mut streams = std::collections::BTreeMap::new();
+        for stream in unread {
+            *streams.entry(stream.name.clone()).or_insert(0) += 1;
+        }
+        diagnostics.skipped.push(SkippedExportItem {
+            reason: UNREAD_STREAMS_REASON.into(),
+            count: streams.len(),
+            classes: streams,
+            sample_names: Vec::new(),
+        });
+        for stream in unread {
+            diagnostics.warnings.push(format!(
+                "{UNREAD_STREAM_WARNING}{stream}; the export is incomplete. Raise the limit to read it: rvt-ifc --large-model (or --max-stream-bytes / --max-inflate-bytes), or OpenLimits / RevitFile(max_stream_bytes=..., max_inflate_bytes=...) from Rust and Python."
+            ));
+        }
     }
+    diagnostics.confidence.warning_count = diagnostics.warnings.len();
 }
 
 /// Recount [`ExportDiagnostics::exported`] after changing `model`, as
 /// [`saved_meshes::attach`] does.
 pub fn recount_exported(diagnostics: &mut ExportDiagnostics, model: &IfcModel) {
     diagnostics.exported = exported_model_diagnostics(model);
+    diagnostics.decoded.parameter_value_count = pset_property_value_count(model);
+}
+
+/// Leave every base quantity out of `model`: each [`entities::PropertySet`]
+/// named `Qto_`, as Revit's exporter leaves them out when its export
+/// setup's "Export base quantities" is off (RE-242). Returns how many
+/// quantities were left out.
+pub fn leave_out_base_quantities(model: &mut IfcModel) -> usize {
+    fn is_quantities(set: &entities::PropertySet) -> bool {
+        set.name.starts_with("Qto_")
+    }
+    let mut left_out = 0;
+    for entity in &mut model.entities {
+        let set = match entity {
+            entities::IfcEntity::BuildingElement {
+                property_set: Some(set),
+                ..
+            } => set,
+            entities::IfcEntity::ElementPropertySet { set, .. } => set,
+            _ => continue,
+        };
+        if is_quantities(set) {
+            left_out += set.properties.len();
+            set.properties.clear();
+        }
+    }
+    for sets in model.type_property_sets.values_mut() {
+        for set in sets.iter() {
+            if is_quantities(set) {
+                left_out += set.properties.len();
+            }
+        }
+        sets.retain(|set| !is_quantities(set));
+    }
+    left_out
 }
 
 fn exported_model_diagnostics(model: &IfcModel) -> ExportedModelDiagnostics {
@@ -3883,6 +4479,10 @@ struct ProductionWalkerStats {
     /// Exported elements whose "Export to IFC As" value the export does not
     /// apply, by `"<value> on <class>"` (#792).
     unapplied_export_values: std::collections::BTreeMap<String, usize>,
+    /// [`DecodedExportDiagnostics::wall_curve_lengths_feet`].
+    wall_curve_lengths_feet: std::collections::BTreeMap<u32, f64>,
+    /// [`DecodedExportDiagnostics::walls_type_confirmed`].
+    walls_type_confirmed: std::collections::BTreeSet<u32>,
 }
 
 fn production_walker_stats(
@@ -3907,11 +4507,31 @@ fn production_walker_stats(
         n += 1;
         if !el.meets_confidence(min_c) {
             stats.elements_below_min_confidence += 1;
-        } else if let Some(value) = export_content::unapplied_export_value(&el) {
-            *stats
-                .unapplied_export_values
-                .entry(format!("{value} on {}", el.class))
-                .or_insert(0) += 1;
+        } else {
+            if let Some(value) = export_content::unapplied_export_value(&el) {
+                *stats
+                    .unapplied_export_values
+                    .entry(format!("{value} on {}", el.class))
+                    .or_insert(0) += 1;
+            }
+            if let Some(id) = el.id {
+                if let Some(length) = el.fields.iter().find_map(|(name, value)| match value {
+                    crate::walker::InstanceField::Float { value, .. }
+                        if name == crate::partition_schema_mvp::WALL_CURVE_LENGTH_FIELD =>
+                    {
+                        Some(*value)
+                    }
+                    _ => None,
+                }) {
+                    stats.wall_curve_lengths_feet.insert(id, length);
+                }
+                if el.fields.iter().any(|(name, value)| {
+                    name == crate::partition_schema_mvp::WALL_TYPE_CONFIRMED_FIELD
+                        && matches!(value, crate::walker::InstanceField::Bool(true))
+                }) {
+                    stats.walls_type_confirmed.insert(id);
+                }
+            }
         }
     }
     if n > 0 {
@@ -3920,9 +4540,41 @@ fn production_walker_stats(
     stats
 }
 
+/// Each element's type name, the `Reference` in any of its `Pset_` sets, by
+/// its index in `model.entities`: what an opening of the element's own
+/// geometry (a floor's sketch void, a face-hosted cut) carries as its
+/// `Pset_OpeningElementCommon.Reference`, as Revit's export writes it
+/// (RE-237).
+pub(crate) fn host_references(model: &IfcModel) -> std::collections::HashMap<usize, String> {
+    let mut out = std::collections::HashMap::new();
+    for entity in &model.entities {
+        let entities::IfcEntity::ElementPropertySet { element, set } = entity else {
+            continue;
+        };
+        if !set.name.starts_with("Pset_") || out.contains_key(element) {
+            continue;
+        }
+        let reference = set.properties.iter().find_map(|property| {
+            match (&property.name[..], &property.value) {
+                (
+                    "Reference",
+                    entities::PropertyValue::Identifier(text)
+                    | entities::PropertyValue::Label(text),
+                ) if !text.is_empty() => Some(text.clone()),
+                _ => None,
+            }
+        });
+        if let Some(reference) = reference {
+            out.insert(*element, reference);
+        }
+    }
+    out
+}
+
 /// The property values `write_step` writes in `Pset_` sets, counted as it
 /// emits them: every building element's own set and further sets, then each
-/// storey's sets and the building's when the model has a storey.
+/// storey's sets and the building's when the model has a storey, and an
+/// opening of its host's own geometry's `Reference` (RE-237).
 fn pset_property_value_count(model: &IfcModel) -> usize {
     let values = |set: &entities::PropertySet| {
         if set.name.starts_with("Pset_") {
@@ -3953,6 +4605,16 @@ fn pset_property_value_count(model: &IfcModel) -> usize {
             _ => 0,
         })
         .sum();
+    let references = host_references(model);
+    let openings = model
+        .entities
+        .iter()
+        .filter(|entity| match entity {
+            entities::IfcEntity::VoidOpening { host, .. }
+            | entities::IfcEntity::HostedCutOpening { host, .. } => references.contains_key(host),
+            _ => false,
+        })
+        .count();
     let storeys: usize = model
         .building_storeys
         .iter()
@@ -3964,9 +4626,9 @@ fn pset_property_value_count(model: &IfcModel) -> usize {
     } else {
         values(&entities::PropertySet::building_set(
             model.building_storeys.len(),
-        ))
+        )) - usize::from(!step_writer::every_storey_holds_an_element(model))
     };
-    elements + storeys + building
+    elements + storeys + building + openings
 }
 
 fn export_confidence_summary(

@@ -1,6 +1,6 @@
 [package]
 name = "rvt-wasm"
-version = "0.6.1"
+version = "0.11.0"
 edition = "2024"
 rust-version = "1.87"
 license = "Apache-2.0"
@@ -15,11 +15,15 @@ publish = false  # Built by wasm-pack into viewer/pkg, not published.
 # loads `pkg/rvt.js` and `pkg/rvt_bg.wasm`.
 crate-type = ["cdylib"]
 
+
+[lints]
+workspace = true
+
 [dependencies]
 rvt = { path = ".." }
 wasm-bindgen = "0.2"
-serde-wasm-bindgen = "0.6"
 serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
 
 # wasm-pack configuration. The bundled `wasm-opt` in wasm-pack 0.14
 # doesn't accept rustc's bulk-memory output — it prints a wall of

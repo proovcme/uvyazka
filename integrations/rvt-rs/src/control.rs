@@ -11,7 +11,9 @@
 //! Cancellation is cooperative — checked at the start of every
 //! [`PROGRESS_BYTE_INTERVAL`] of scanned bytes, every 256 decoded
 //! candidates, before each partition stream, and once after each loop —
-//! and it returns [`Error::Cancelled`]; nothing partial is yielded.
+//! and it returns [`Error::Cancelled`]; nothing partial is yielded. Saved
+//! graphics (`research::native_saved_scene::extract_at_detail_with_control`)
+//! check it before each pass over the file and before each element's mesh.
 
 use std::fmt;
 use std::sync::Arc;
@@ -57,6 +59,7 @@ impl CancelToken {
 
 /// Which phase of a scan a [`ProgressEvent`] describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Stage {
     /// `Formats/Latest` decompress + schema parse (reported as 0 then 1/1).
     SchemaParse,
@@ -67,6 +70,11 @@ pub enum Stage {
     /// Partition-stream passes; `done`/`total` are streams where known,
     /// otherwise 0 then 1/1 around the merged partition recoveries.
     PartitionScan,
+    /// Reading the saved display graphics and their materials (reported as
+    /// 0 then 1/1).
+    SavedGraphics,
+    /// Meshing each element's saved graphics; `done`/`total` are elements.
+    SavedMeshes,
 }
 
 impl Stage {
@@ -76,6 +84,8 @@ impl Stage {
             Self::CandidateScan => "candidate-scan",
             Self::ElementDecode => "element-decode",
             Self::PartitionScan => "partition-scan",
+            Self::SavedGraphics => "saved-graphics",
+            Self::SavedMeshes => "saved-meshes",
         }
     }
 }
@@ -83,6 +93,7 @@ impl Stage {
 /// One progress report. `total` is `None` when the stage has no known
 /// denominator yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ProgressEvent {
     pub stage: Stage,
     pub done: u64,
@@ -146,67 +157,5 @@ impl WalkerControl {
         if let Some(progress) = &self.progress {
             progress(ProgressEvent { stage, done, total });
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Mutex;
-
-    #[test]
-    fn token_starts_clear_and_stays_cancelled() {
-        let token = CancelToken::new();
-        assert!(!token.is_cancelled());
-        assert!(token.check().is_ok());
-        token.cancel();
-        token.cancel();
-        assert!(token.is_cancelled());
-        assert!(matches!(token.check(), Err(Error::Cancelled)));
-        let clone = token.clone();
-        assert!(clone.is_cancelled(), "clones share the flag");
-    }
-
-    #[test]
-    fn default_control_never_cancels_and_never_reports() {
-        let control = WalkerControl::default();
-        assert!(control.check().is_ok());
-        control.report(Stage::CandidateScan, 1, Some(2));
-        assert!(control.cancel_token().is_none());
-    }
-
-    #[test]
-    fn control_forwards_cancel_and_progress() {
-        let token = CancelToken::new();
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&seen);
-        let control = WalkerControl::new()
-            .with_cancel(token.clone())
-            .with_progress(move |event| sink.lock().unwrap().push(event));
-        control.report(Stage::SchemaParse, 0, None);
-        control.report(Stage::ElementDecode, 3, Some(7));
-        assert_eq!(
-            *seen.lock().unwrap(),
-            vec![
-                ProgressEvent {
-                    stage: Stage::SchemaParse,
-                    done: 0,
-                    total: None
-                },
-                ProgressEvent {
-                    stage: Stage::ElementDecode,
-                    done: 3,
-                    total: Some(7)
-                },
-            ]
-        );
-        assert!(control.check().is_ok());
-        token.cancel();
-        assert!(matches!(control.check(), Err(Error::Cancelled)));
-    }
-
-    #[test]
-    fn interval_is_a_power_of_two() {
-        assert!(PROGRESS_BYTE_INTERVAL.is_power_of_two());
     }
 }

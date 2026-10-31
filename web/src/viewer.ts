@@ -278,6 +278,8 @@ export class Viewer {
     this.camera.updateProjectionMatrix();this.controls.update();this.invalidate();
   }
 
+  visibleElementIds() { return [...this.meshes].filter(([,mesh])=>mesh.visible).map(([id])=>id); }
+
   show(ids: Set<string>) {
     let count = 0;const changed:string[]=[];
     for (const [id, mesh] of this.meshes) {

@@ -1,4 +1,4 @@
-//! Lane Six — recover wall curves, floor loops, opening hosts, and
+//! Recover wall curves, floor loops, opening hosts, and
 //! level elevations from typed element views / decoded fields.
 //!
 //! # Honesty contract
@@ -20,10 +20,12 @@ use crate::elements::level::{Level, normalise_field_name};
 use crate::elements::openings::{Door, Window};
 use crate::elements::wall::Wall;
 use crate::geometry::{Curve, CurveLoop, Point3};
+use crate::vector_math::polygon_area_xy;
 use crate::walker::{DecodedElement, InstanceField};
 
 /// Stable machine-readable reason a recovery path failed closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct GeometryDiagnostic {
     pub code: &'static str,
     pub message: String,
@@ -40,6 +42,7 @@ impl GeometryDiagnostic {
 
 /// Result of a geometry recovery attempt.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum RecoveryOutcome<T> {
     Recovered(T),
     Absent { diagnostic: GeometryDiagnostic },
@@ -81,6 +84,7 @@ impl<T> RecoveryOutcome<T> {
 
 /// Where a wall location curve was recovered from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WallLocationSource {
     /// Standard ArcWall partition record centerline (RE-14.3).
     ArcWallPartition,
@@ -90,12 +94,13 @@ pub enum WallLocationSource {
 
 /// Recovered wall location curve in project coordinates (feet).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct WallLocationCurve {
     pub curve: Curve,
     pub source: WallLocationSource,
     /// Handle into the document curve table when present; geometry may
     /// still be unresolved when only the id was decoded.
-    pub location_curve_id: Option<u32>,
+    pub location_curve_id: Option<crate::ElementId>,
 }
 
 impl WallLocationCurve {
@@ -119,7 +124,7 @@ impl WallLocationCurve {
 /// Recover a location curve from a typed ArcWall partition decode.
 ///
 /// Always succeeds for a valid [`ArcWall`]: the core record carries
-/// start/end XYZ under RE-14.3 H16.
+/// its start and end points (RE-14's hypothesis H16).
 pub fn recover_wall_location_curve_from_arc_wall(wall: &ArcWall) -> WallLocationCurve {
     let (sx, sy, sz) = wall.start_point();
     let (ex, ey, ez) = wall.end_point();
@@ -144,7 +149,7 @@ pub fn recover_wall_location_curve(decoded: &DecodedElement) -> RecoveryOutcome<
         return RecoveryOutcome::Recovered(WallLocationCurve {
             curve,
             source: WallLocationSource::SchemaEndpoints,
-            location_curve_id: curve_id,
+            location_curve_id: curve_id.map(crate::ElementId::from),
         });
     }
     if let Some(id) = curve_id {
@@ -254,16 +259,18 @@ fn endpoints_from_fields(decoded: &DecodedElement) -> Option<Curve> {
 
 /// Where a floor boundary was recovered from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FloorBoundarySource {
     /// Vector / float sequence on schema-driven Floor fields.
     SchemaSketch,
-    /// Closed plan polyline recovered from partition bytes (RE-15-07),
+    /// Closed plan polyline recovered from partition bytes (RE-15, #87),
     /// after ArcWall-centerline exclusion.
     PartitionPlanLoop,
 }
 
 /// Recovered floor/slab plan boundary (feet).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct FloorBoundaryLoop {
     /// Outer loop vertices in plan `(x, y)`. Not required to repeat
     /// the first point; [`Self::closed`] records closure.
@@ -504,26 +511,13 @@ fn is_closed_loop(pts: &[(f64, f64)]) -> bool {
     (fx - lx).abs() < 1e-9 && (fy - ly).abs() < 1e-9
 }
 
-fn polygon_area_xy(points: &[(f64, f64)]) -> f64 {
-    if points.len() < 3 {
-        return 0.0;
-    }
-    let n = points.len();
-    let mut sum = 0.0;
-    for i in 0..n {
-        let (x0, y0) = points[i];
-        let (x1, y1) = points[(i + 1) % n];
-        sum += x0 * y1 - x1 * y0;
-    }
-    (sum * 0.5).abs()
-}
-
 // ---------------------------------------------------------------------------
 // Door / window host relationships
 // ---------------------------------------------------------------------------
 
 /// Kind of wall-hosted opening.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OpeningKind {
     Door,
     Window,
@@ -531,12 +525,13 @@ pub enum OpeningKind {
 
 /// Host relationship for a door or window.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct OpeningHostRelationship {
     pub opening_kind: OpeningKind,
     /// Host wall (or other host) ElementId. Never zero.
-    pub host_element_id: u32,
-    pub level_id: Option<u32>,
-    pub symbol_id: Option<u32>,
+    pub host_element_id: crate::ElementId,
+    pub level_id: Option<crate::ElementId>,
+    pub symbol_id: Option<crate::ElementId>,
 }
 
 /// Recover the host wall id from a typed [`Door`].
@@ -564,12 +559,12 @@ pub fn recover_window_host(window: &Window) -> RecoveryOutcome<OpeningHostRelati
 
 fn recover_opening_host(
     kind: OpeningKind,
-    host_id: Option<u32>,
-    level_id: Option<u32>,
-    symbol_id: Option<u32>,
+    host_id: Option<crate::ElementId>,
+    level_id: Option<crate::ElementId>,
+    symbol_id: Option<crate::ElementId>,
 ) -> RecoveryOutcome<OpeningHostRelationship> {
     match host_id {
-        Some(0) => RecoveryOutcome::Absent {
+        Some(id) if id.get() == 0 => RecoveryOutcome::Absent {
             diagnostic: GeometryDiagnostic::new(
                 "opening_host_unset",
                 format!("{kind:?} host_id is 0 (unhosted / unset)"),
@@ -596,11 +591,12 @@ fn recover_opening_host(
 
 /// Recovered level elevation in project feet.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct LevelElevation {
     pub name: Option<String>,
     pub elevation_feet: f64,
     pub is_building_story: Option<bool>,
-    pub level_type_id: Option<u32>,
+    pub level_type_id: Option<crate::ElementId>,
 }
 
 /// Recover elevation from a typed [`Level`].

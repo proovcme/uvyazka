@@ -1,6 +1,6 @@
 //! `rvt-gltf` — convert a Revit file to a glTF 2.0 binary (.glb).
 //!
-//! VW1-16 CLI wrapping the VW1-04 exporter. Reads `src`, runs the
+//! The command-line front end of `rvt::ifc::gltf`. Reads `src`, runs the
 //! `RvtDocExporter` to produce an `IfcModel` (project metadata +
 //! whatever per-element info the walker can resolve), then emits
 //! the glb via `ifc::gltf::model_to_glb`.
@@ -15,7 +15,7 @@
 
 use clap::Parser;
 use rvt::RevitFile;
-use rvt::ifc::{Exporter, RvtDocExporter, gltf::model_to_glb};
+use rvt::ifc::{ExportQualityMode, RvtDocExporter, gltf::model_to_glb};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -27,7 +27,10 @@ use std::process::ExitCode;
     about = "Convert a Revit (.rvt, .rfa, .rte, .rft) file to a glTF 2.0 binary (.glb)",
     after_help = "Examples:\n  \
         rvt-gltf model.rvt                      writes model.glb next to the input\n  \
-        rvt-gltf model.rvt -o viewer/model.glb --verbose"
+        rvt-gltf model.rvt -o viewer/model.glb --verbose\n\n\
+        Exit status 3: a resource limit kept part of the file from being read, so\n\
+        no glb was written. Re-run with --large-model, or --allow-partial to write\n\
+        it anyway."
 )]
 struct Cli {
     /// Revit file to convert (.rvt / .rfa / .rte / .rft).
@@ -50,11 +53,60 @@ struct Cli {
     #[arg(long)]
     verbose: bool,
 
-    /// Draw doors, windows, furniture and other elements whose body would
-    /// be their record's bounding box from the meshes Revit saved for
-    /// display (#255). Slower on large files.
-    #[arg(long)]
+    /// Draw every element whose body would be its record's bounding box
+    /// (furniture, fixtures, equipment and the rest) from the mesh Revit
+    /// saved for display (#255). Doors and windows are drawn so by default
+    /// on Revit 2023 to 2027. Slower on large files.
+    #[arg(long, conflicts_with = "no_saved_meshes")]
     saved_meshes: bool,
+
+    /// Keep doors and windows as their record's bounding box instead of the
+    /// mesh Revit saved for them.
+    #[arg(long)]
+    no_saved_meshes: bool,
+
+    /// Print progress to stderr as the conversion goes
+    /// (`progress: <stage> <done>/<total>`, as `rvt-elements --progress`).
+    #[arg(long)]
+    progress: bool,
+
+    /// Maximum bytes of one stream read from the file (default 256 MiB). A
+    /// larger stream is not read, and nothing is written unless
+    /// `--allow-partial` (#1075).
+    #[arg(long, value_name = "BYTES")]
+    max_stream_bytes: Option<u64>,
+
+    /// Maximum inflated bytes of one compressed member (default 256 MiB). The
+    /// members of one stream may inflate to this or 1 GiB together,
+    /// whichever is larger.
+    #[arg(long, value_name = "BYTES")]
+    max_inflate_bytes: Option<usize>,
+
+    /// Raise the stream, inflate and walker-scan limits for large models:
+    /// streams up to 2 GiB, 8 GiB inflated. A model whose largest partition
+    /// is 1 GiB stored needs several GB of memory.
+    #[arg(long)]
+    large_model: bool,
+
+    /// Write the glb even when a resource limit kept part of the file from
+    /// being read.
+    #[arg(long)]
+    allow_partial: bool,
+}
+
+/// Why a conversion stopped.
+enum Failure {
+    /// Exit status 1.
+    Error(String),
+    /// A resource limit kept part of the input from being read and
+    /// `--allow-partial` was not given (#1075): exit status 3.
+    PartialRead,
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Self::Error(message)
+    }
 }
 
 fn main() -> ExitCode {
@@ -62,9 +114,13 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(&cli) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
+        Err(Failure::Error(e)) => {
             eprintln!("error: {e}");
             ExitCode::from(1)
+        }
+        Err(Failure::PartialRead) => {
+            eprintln!("error: no glb written: part of the input was not read (see above)");
+            ExitCode::from(3)
         }
     }
 }
@@ -90,7 +146,7 @@ fn resolve_paths(
     Ok((input, output))
 }
 
-fn run(cli: &Cli) -> Result<(), String> {
+fn run(cli: &Cli) -> Result<(), Failure> {
     let (input, output) = resolve_paths(
         cli.input.as_deref(),
         cli.src.as_deref(),
@@ -98,14 +154,60 @@ fn run(cli: &Cli) -> Result<(), String> {
         "glb",
     )?;
     // Open errors from the library already name the file.
-    let mut rf = RevitFile::open(&input).map_err(|e| e.to_string())?;
+    let limits =
+        rvt::cli::open_limits(cli.max_stream_bytes, cli.max_inflate_bytes, cli.large_model);
+    let mut rf = RevitFile::open_with_limits(&input, limits).map_err(|e| e.to_string())?;
+    let mut walker_limits = rvt::walker::WalkerLimits::default();
+    if cli.large_model {
+        walker_limits.max_scan_bytes = rvt::cli::LARGE_MODEL_MAX_INFLATE_BYTES;
+    }
+    let control = if cli.progress {
+        rvt::control::WalkerControl::new().with_progress(|event| {
+            let total = event.total.map(|t| format!("/{t}")).unwrap_or_default();
+            eprintln!("progress: {} {}{total}", event.stage.as_str(), event.done);
+        })
+    } else {
+        rvt::control::WalkerControl::new()
+    };
     let mut model = RvtDocExporter
-        .export(&mut rf)
+        .export_with_mode_limits_and_control(
+            &mut rf,
+            ExportQualityMode::Scaffold,
+            walker_limits,
+            &control,
+        )
         .map_err(|e| format!("export {}: {e}", input.display()))?;
-    if cli.saved_meshes {
-        if let Err(e) = rvt::ifc::saved_meshes::attach(&mut rf, &mut model) {
+    let scope = if cli.no_saved_meshes {
+        None
+    } else if cli.saved_meshes {
+        Some(rvt::ifc::saved_meshes::SavedMeshScope::All)
+    } else {
+        // Doors and windows by default (the maintainer, 2026-10-29), on the
+        // releases whose saved graphics are read.
+        rf.basic_file_info()
+            .ok()
+            .filter(|info| (2023..=2027).contains(&info.version))
+            .map(|_| rvt::ifc::saved_meshes::SavedMeshScope::DoorsAndWindows)
+    };
+    if let Some(scope) = scope {
+        if let Err(e) =
+            rvt::ifc::saved_meshes::attach_scoped_with_control(&mut rf, &mut model, scope, &control)
+        {
             eprintln!("rvt-gltf: saved graphics not read, bodies unchanged: {e}");
         }
+    }
+    let unread = rf.unread_streams().len();
+    if unread > 0 {
+        eprintln!(
+            "rvt-gltf: {unread} stream(s) not read whole, so the model is missing what they hold:"
+        );
+        for line in rvt::cli::unread_stream_report(rf.unread_streams()) {
+            eprintln!("{line}");
+        }
+        if !cli.allow_partial {
+            return Err(Failure::PartialRead);
+        }
+        eprintln!("rvt-gltf: writing the incomplete model (--allow-partial)");
     }
     let glb = model_to_glb(&model);
     fs::write(&output, &glb).map_err(|e| format!("write {}: {e}", output.display()))?;

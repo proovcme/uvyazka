@@ -1,12 +1,13 @@
 //! Shared native parameter projection used by the browser and the MCP reader. Apache-2.0.
-use rvt::{RevitFile,native_document,schema_registry};
+use rvt::{RevitFile};
+use rvt::research::{native_document, schema_registry};
 use serde_json::{Value,json};
 use std::collections::BTreeSet;
 
 pub fn partition_names(file:&mut RevitFile,registry:&schema_registry::Registry)->Result<Value,String>{
     let bytes=native_document::read_single(file,"Global/PartitionTable").map_err(|e|e.to_string())?;
     if bytes.len()<6||bytes[bytes.len()-4..]!=[0;4]{return Err("Unsupported partition table footer".into())}
-    let graph=rvt::native_parameters::decode_graph(&bytes[..bytes.len()-4],registry).map_err(|e|e.to_string())?;
+    let graph=rvt::research::native_parameters::decode_graph(&bytes[..bytes.len()-4],registry).map_err(|e|e.to_string())?;
     let root=graph.objects.first().ok_or("Partition table root missing")?;
     if root.class_name!="PartitionTable"{return Err("Unexpected partition table root".into())}
     let rows=root.fields["m_set"].as_array().ok_or("Partition table rows missing")?;

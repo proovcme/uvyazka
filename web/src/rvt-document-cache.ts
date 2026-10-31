@@ -1,5 +1,6 @@
+import {RVT_READER_REVISION} from './rvt-reader-version.ts';
 import type {RvtDocument} from './rvt-document';
-const VERSION='native-document-v7-mep-line-evidence';
+const VERSION=RVT_READER_REVISION+'/native-document-v8-mep-line-evidence';
 /** Content addressed local snapshot; source RVT bytes are never stored here. */
 export async function documentCache(){
  const db=await new Promise<IDBDatabase>((resolve,reject)=>{const r=indexedDB.open('uvyazka-rvt-documents',1);r.onupgradeneeded=()=>r.result.createObjectStore('documents');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);r.onblocked=()=>reject(Error('Хранилище занято другой вкладкой'));});

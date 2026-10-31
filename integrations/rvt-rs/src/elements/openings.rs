@@ -1,7 +1,7 @@
 //! `Door` + `Window` — wall-hosted opening elements. Both are
 //! `FamilyInstance` subtypes at the class hierarchy level but ship
 //! with enough stable scalar fields to decode directly without first
-//! resolving the full family graph (which is task L5B-21).
+//! resolving the full family graph.
 //!
 //! Each element references:
 //! - A **host** (the wall it cuts through), via `m_host_id`
@@ -39,82 +39,8 @@
 //! | `m_sill_height` | f64 | Height of windowsill above host level (feet) |
 
 use super::level::normalise_field_name;
-use crate::formats;
 use crate::geometry::Point3;
-use crate::walker::{DecodedElement, ElementDecoder, HandleIndex, InstanceField};
-use crate::{Error, Result};
-
-/// Registered decoder for the `Door` class.
-pub struct DoorDecoder;
-
-impl ElementDecoder for DoorDecoder {
-    fn class_name(&self) -> &'static str {
-        "Door"
-    }
-
-    fn decode(
-        &self,
-        bytes: &[u8],
-        schema: &formats::ClassEntry,
-        index: &HandleIndex,
-    ) -> Result<DecodedElement> {
-        self.decode_with_limits(bytes, schema, index, crate::walker::WalkerLimits::default())
-    }
-
-    fn decode_with_limits(
-        &self,
-        bytes: &[u8],
-        schema: &formats::ClassEntry,
-        _index: &HandleIndex,
-        limits: crate::walker::WalkerLimits,
-    ) -> Result<DecodedElement> {
-        if schema.name != "Door" {
-            return Err(Error::BasicFileInfo(format!(
-                "DoorDecoder received wrong schema: {}",
-                schema.name
-            )));
-        }
-        Ok(crate::walker::decode_instance_with_limits(
-            bytes, 0, schema, limits,
-        ))
-    }
-}
-
-/// Registered decoder for the `Window` class.
-pub struct WindowDecoder;
-
-impl ElementDecoder for WindowDecoder {
-    fn class_name(&self) -> &'static str {
-        "Window"
-    }
-
-    fn decode(
-        &self,
-        bytes: &[u8],
-        schema: &formats::ClassEntry,
-        index: &HandleIndex,
-    ) -> Result<DecodedElement> {
-        self.decode_with_limits(bytes, schema, index, crate::walker::WalkerLimits::default())
-    }
-
-    fn decode_with_limits(
-        &self,
-        bytes: &[u8],
-        schema: &formats::ClassEntry,
-        _index: &HandleIndex,
-        limits: crate::walker::WalkerLimits,
-    ) -> Result<DecodedElement> {
-        if schema.name != "Window" {
-            return Err(Error::BasicFileInfo(format!(
-                "WindowDecoder received wrong schema: {}",
-                schema.name
-            )));
-        }
-        Ok(crate::walker::decode_instance_with_limits(
-            bytes, 0, schema, limits,
-        ))
-    }
-}
+use crate::walker::{DecodedElement, InstanceField};
 
 /// Fields shared by every wall-hosted opening element (Door,
 /// Window, and future Opening). Gathered in one pass so neither
@@ -123,9 +49,9 @@ impl ElementDecoder for WindowDecoder {
 struct OpeningCommon {
     location: Option<Point3>,
     rotation_radians: Option<f64>,
-    level_id: Option<u32>,
-    host_id: Option<u32>,
-    symbol_id: Option<u32>,
+    level_id: Option<crate::ElementId>,
+    host_id: Option<crate::ElementId>,
+    symbol_id: Option<crate::ElementId>,
 }
 
 fn collect_common(decoded: &DecodedElement) -> OpeningCommon {
@@ -142,11 +68,13 @@ fn collect_common(decoded: &DecodedElement) -> OpeningCommon {
                 out.rotation_radians = Some(*value);
             }
             ("levelid" | "hostlevelid", InstanceField::ElementId { id, .. }) => {
-                out.level_id = Some(*id);
+                out.level_id = Some(crate::ElementId::from(*id));
             }
-            ("hostid", InstanceField::ElementId { id, .. }) => out.host_id = Some(*id),
+            ("hostid", InstanceField::ElementId { id, .. }) => {
+                out.host_id = Some(crate::ElementId::from(*id))
+            }
             ("symbolid" | "typeid" | "familysymbolid", InstanceField::ElementId { id, .. }) => {
-                out.symbol_id = Some(*id);
+                out.symbol_id = Some(crate::ElementId::from(*id));
             }
             _ => {}
         }
@@ -159,10 +87,11 @@ fn collect_common(decoded: &DecodedElement) -> OpeningCommon {
 
 /// Typed view of a decoded Door.
 #[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
 pub struct Door {
-    pub level_id: Option<u32>,
-    pub host_id: Option<u32>,
-    pub symbol_id: Option<u32>,
+    pub level_id: Option<crate::ElementId>,
+    pub host_id: Option<crate::ElementId>,
+    pub symbol_id: Option<crate::ElementId>,
     pub location: Option<Point3>,
     pub rotation_radians: Option<f64>,
     pub flip_hand: Option<bool>,
@@ -206,9 +135,9 @@ impl Door {
 /// Typed view of a decoded Window.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Window {
-    pub level_id: Option<u32>,
-    pub host_id: Option<u32>,
-    pub symbol_id: Option<u32>,
+    pub level_id: Option<crate::ElementId>,
+    pub host_id: Option<crate::ElementId>,
+    pub symbol_id: Option<crate::ElementId>,
     pub location: Option<Point3>,
     pub rotation_radians: Option<f64>,
     /// Distance from host level's elevation up to the windowsill.

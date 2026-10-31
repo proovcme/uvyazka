@@ -12,7 +12,7 @@
 //! - 2024 needs a separate decoder implementation.
 //!
 //! See `reports/element-framing/RE-13-synthesis.md` for the cross-
-//! version drift evidence and open questions (Q18-Q20, hypotheses
+//! version drift evidence and open questions (its §Q18 to §Q20, hypotheses
 //! H17-H19, decisions D23-D27 scoping this module's coverage).
 //!
 //! Production callers should use
@@ -56,6 +56,7 @@
 //! singleton trailer (177 B) documented in
 //! `reports/element-framing/RE-15-arcwall-trailer-synthesis.md`.
 
+use crate::le_bytes;
 use crate::walker::{WalkerLimitHit, WalkerLimits};
 use crate::{Error, Result};
 
@@ -108,15 +109,16 @@ pub const ARC_WALL_STANDARD_SUPPORTED_REVIT_VERSIONS: &[u32] = &[2023];
 /// and Level ElementId are **not** present as stable trailer fields
 /// on the Einhoven 2023 corpus.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct ArcWallTrailer {
     /// ElementId at `+0x10e`, accepted only when it equals the echo
     /// at `+0x11c` and is not a null/max sentinel. 23/24 Einhoven
     /// standard walls validate; all 23 hit `Global/ElemTable`.
-    pub element_id: Option<u32>,
+    pub element_id: Option<crate::ElementId>,
     /// Shared u32 at `+0xfe`. Constant `0x217a` across all 24 Einhoven
     /// standard walls and present in ElemTable — interpreted as a
     /// WallType / symbol handle candidate (not yet joined to width).
-    pub type_id: Option<u32>,
+    pub type_id: Option<crate::ElementId>,
     /// f64 at `+0xf6`. Matches the core start-point Z on every
     /// observed record — the wall's base elevation in feet.
     pub base_elevation_feet: Option<f64>,
@@ -124,6 +126,7 @@ pub struct ArcWallTrailer {
 
 /// Status for a version-scoped standard ArcWall scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ArcWallScanStatus {
     /// The caller supplied a Revit release covered by this decoder.
     Supported { revit_version: u32 },
@@ -151,6 +154,7 @@ impl ArcWallScanStatus {
 
 /// Result of a bounded ArcWall byte scan ([`ArcWallRecord::find_all_with_limits`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ArcWallFindResult {
     /// Byte offsets of candidate standard ArcWall records.
     pub offsets: Vec<usize>,
@@ -162,6 +166,7 @@ pub struct ArcWallFindResult {
 
 /// Result of a version-scoped ArcWall scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ArcWallScanReport {
     /// Whether the scan ran or was suppressed by the release guard.
     pub status: ArcWallScanStatus,
@@ -179,6 +184,7 @@ pub struct ArcWallScanReport {
 /// wall records use a different envelope and are tracked as separate
 /// reverse-engineering work.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct ArcWallRecord {
     /// Tag value read from the record. Always `0x0191` for valid records.
     pub tag: u16,
@@ -234,36 +240,47 @@ impl ArcWallRecord {
     pub fn decode_standard(buf: &[u8], offset: usize) -> Result<Self> {
         let record_end = offset
             .checked_add(STANDARD_RECORD_MIN_SIZE)
-            .ok_or_else(|| {
-                Error::Cfb(format!(
-                    "ArcWall decode: offset overflow at offset {offset}"
-                ))
+            .ok_or_else(|| Error::Malformed {
+                what: "ArcWall record",
+                detail: format!("offset overflow at offset {offset}"),
             })?;
         if record_end > buf.len() {
-            return Err(Error::Cfb(format!(
-                "ArcWall decode: buffer too short ({} < {} at offset {})",
-                buf.len(),
-                record_end,
-                offset
-            )));
+            return Err(Error::Malformed {
+                what: "ArcWall record",
+                detail: format!(
+                    "buffer too short ({} < {} at offset {})",
+                    buf.len(),
+                    record_end,
+                    offset
+                ),
+            });
         }
         let tag = u16::from_le_bytes([buf[offset], buf[offset + 1]]);
         if tag != ARC_WALL_TAG {
-            return Err(Error::Cfb(format!(
-                "ArcWall decode: expected tag 0x{ARC_WALL_TAG:04x}, got 0x{tag:04x} at offset {offset}"
-            )));
+            return Err(Error::Malformed {
+                what: "ArcWall record",
+                detail: format!(
+                    "expected tag 0x{ARC_WALL_TAG:04x}, got 0x{tag:04x} at offset {offset}"
+                ),
+            });
         }
         let filter_pad = u16::from_le_bytes([buf[offset + 2], buf[offset + 3]]);
         if filter_pad != 0 {
-            return Err(Error::Cfb(format!(
-                "ArcWall decode: expected filter_pad 0x0000, got 0x{filter_pad:04x} at offset {offset}"
-            )));
+            return Err(Error::Malformed {
+                what: "ArcWall record",
+                detail: format!(
+                    "expected filter_pad 0x0000, got 0x{filter_pad:04x} at offset {offset}"
+                ),
+            });
         }
         let variant = u16::from_le_bytes([buf[offset + 0x10], buf[offset + 0x11]]);
         if variant != ARC_WALL_VARIANT_STANDARD {
-            return Err(Error::Cfb(format!(
-                "ArcWall decode: expected variant 0x{ARC_WALL_VARIANT_STANDARD:04x}, got 0x{variant:04x} at offset {offset}"
-            )));
+            return Err(Error::Malformed {
+                what: "ArcWall record",
+                detail: format!(
+                    "expected variant 0x{ARC_WALL_VARIANT_STANDARD:04x}, got 0x{variant:04x} at offset {offset}"
+                ),
+            });
         }
 
         let fixed_header_0 = u32::from_le_bytes([
@@ -469,45 +486,21 @@ impl ArcWallRecord {
             return None;
         }
 
-        let element_id_raw = u32::from_le_bytes([
-            buf[offset + TRAILER_ELEMENT_ID_OFFSET],
-            buf[offset + TRAILER_ELEMENT_ID_OFFSET + 1],
-            buf[offset + TRAILER_ELEMENT_ID_OFFSET + 2],
-            buf[offset + TRAILER_ELEMENT_ID_OFFSET + 3],
-        ]);
-        let element_id_dup = u32::from_le_bytes([
-            buf[offset + TRAILER_ELEMENT_ID_DUP_OFFSET],
-            buf[offset + TRAILER_ELEMENT_ID_DUP_OFFSET + 1],
-            buf[offset + TRAILER_ELEMENT_ID_DUP_OFFSET + 2],
-            buf[offset + TRAILER_ELEMENT_ID_DUP_OFFSET + 3],
-        ]);
+        let element_id_raw = le_bytes::u32_at(buf, offset + TRAILER_ELEMENT_ID_OFFSET)?;
+        let element_id_dup = le_bytes::u32_at(buf, offset + TRAILER_ELEMENT_ID_DUP_OFFSET)?;
         let element_id =
             (element_id_raw == element_id_dup && element_id_raw != 0 && element_id_raw != u32::MAX)
                 .then_some(element_id_raw);
 
-        let type_id_raw = u32::from_le_bytes([
-            buf[offset + TRAILER_TYPE_ID_OFFSET],
-            buf[offset + TRAILER_TYPE_ID_OFFSET + 1],
-            buf[offset + TRAILER_TYPE_ID_OFFSET + 2],
-            buf[offset + TRAILER_TYPE_ID_OFFSET + 3],
-        ]);
+        let type_id_raw = le_bytes::u32_at(buf, offset + TRAILER_TYPE_ID_OFFSET)?;
         let type_id = (type_id_raw != 0 && type_id_raw != u32::MAX).then_some(type_id_raw);
 
-        let base_elevation = f64::from_le_bytes([
-            buf[offset + TRAILER_BASE_ELEVATION_OFFSET],
-            buf[offset + TRAILER_BASE_ELEVATION_OFFSET + 1],
-            buf[offset + TRAILER_BASE_ELEVATION_OFFSET + 2],
-            buf[offset + TRAILER_BASE_ELEVATION_OFFSET + 3],
-            buf[offset + TRAILER_BASE_ELEVATION_OFFSET + 4],
-            buf[offset + TRAILER_BASE_ELEVATION_OFFSET + 5],
-            buf[offset + TRAILER_BASE_ELEVATION_OFFSET + 6],
-            buf[offset + TRAILER_BASE_ELEVATION_OFFSET + 7],
-        ]);
+        let base_elevation = le_bytes::f64_at(buf, offset + TRAILER_BASE_ELEVATION_OFFSET)?;
         let base_elevation_feet = base_elevation.is_finite().then_some(base_elevation);
 
         Some(ArcWallTrailer {
-            element_id,
-            type_id,
+            element_id: element_id.map(crate::ElementId::from),
+            type_id: type_id.map(crate::ElementId::from),
             base_elevation_feet,
         })
     }

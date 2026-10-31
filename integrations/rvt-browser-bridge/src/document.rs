@@ -1,5 +1,6 @@
 //! Selected document records, independent of geometry conversion.
-use rvt::{RevitFile, native_document, schema_registry};
+use rvt::{RevitFile};
+use rvt::research::{native_document, schema_registry};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 

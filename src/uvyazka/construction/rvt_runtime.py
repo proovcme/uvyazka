@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 
 
-UPSTREAM_REVISION = "b6086d41b9758fd9b92f42f0a47b8345b9c58056"
+UPSTREAM_REVISION = "94b89edff3c31c5b348eed232d329138652ffb3c"
 NAMES = ("rvt-ifc", "rvt-info", "rvt-capabilities", "ifccs-rvt-metadata")
 ENV = {"rvt-ifc": "UVYAZKA_RVT_IFC", "rvt-info": "UVYAZKA_RVT_INFO",
        "rvt-capabilities": "UVYAZKA_RVT_CAPABILITIES", "ifccs-rvt-metadata": "UVYAZKA_RVT_METADATA"}

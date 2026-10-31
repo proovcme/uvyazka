@@ -33,6 +33,7 @@
 //! even when the wire layout has a variation we haven't yet documented.
 
 use crate::Result;
+use crate::le_bytes;
 use serde::{Deserialize, Serialize};
 
 /// How many decompressed `Formats/Latest` bytes [`parse_schema`] scanned
@@ -44,7 +45,7 @@ use serde::{Deserialize, Serialize};
 /// garbage classes. Inflated through [`crate::compression::inflate_stream_at`],
 /// which strips the pages, the whole stream is schema: 4,126 classes on
 /// Revit 2024 where the first 64 KB held 395
-/// (`examples/probe_schema_page_strip.rs`). Kept for
+/// (`probes/examples/probe_schema_page_strip.rs`). Kept for
 /// [`parse_schema_with_scan_limit`] callers that want the old window.
 pub const SCHEMA_SCAN_LIMIT: usize = 64 * 1024;
 
@@ -70,7 +71,7 @@ pub struct SchemaTable {
     pub scan_truncated: bool,
 }
 
-/// Derived diagnostic counters for a parsed [`SchemaTable`] (API-10).
+/// Derived diagnostic counters for a parsed [`SchemaTable`].
 ///
 /// These counters are computed on demand from the parsed table — the
 /// `SchemaTable` itself stores only the raw record lists to keep the
@@ -78,7 +79,9 @@ pub struct SchemaTable {
 /// quality metadata (for CLI output, CI drift detection, or
 /// cross-release regression checks) use [`SchemaTable::diagnostics`]
 /// and inspect the returned `SchemaDiagnostics`.
+// Tracker: API-10.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SchemaDiagnostics {
     /// Total number of classes in the schema.
     pub class_count: usize,
@@ -104,7 +107,7 @@ pub struct SchemaDiagnostics {
     /// usually means the full schema for that class lives in another
     /// stream or is implicit.
     pub parent_only_class_count: usize,
-    /// Classes that carry a non-zero `ancestor_tag` (the Q4 addendum read
+    /// Classes that carry a non-zero `ancestor_tag` (the §Q4 addendum read
     /// it as a reference distinct from `parent`; not reproduced, RE-137).
     pub ancestor_tag_count: usize,
     /// Parse candidates skipped for validation reasons. Copied from
@@ -251,7 +254,7 @@ pub struct ClassEntry {
     /// count): the tag of the base's base, the class's grandparent, on
     /// every class that has one on 53 files of 2016 to 2027 (RE-146, #154,
     /// reported by puzzbobb). The parser lands on the base's own base
-    /// reference when the base is defined inline. The Q4 addendum read it
+    /// reference when the base is defined inline. The §Q4 addendum read it
     /// as a distinct ancestor (RE-137 did not reproduce that); see the §Q4
     /// addendum in `docs/rvt-moat-break-reconnaissance.md`.
     ///
@@ -272,7 +275,7 @@ pub struct FieldEntry {
 
 /// Best-effort classification of a field's type encoding (the byte block
 /// that follows a field name in `Formats/Latest`). Derived from the
-/// 2026-04-19 Phase 4c.2 sweeps (Q5 + Q5.1) — see the §Q5 / §Q5.1
+/// 2026-04-19 Layer 4c.2 sweeps — see the §Q5 / §Q5.1
 /// addenda in `docs/rvt-moat-break-reconnaissance.md` for evidence.
 ///
 /// The primary discriminator is the first byte of the encoding:
@@ -290,6 +293,7 @@ pub struct FieldEntry {
 /// | `0x0b` | `u64` / `i64` | 8 |
 /// | `0x0e` | reference / pointer / container | variable (see sub-type) |
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FieldType {
     /// A fixed-size numeric or boolean primitive. `size` is the wire
     /// size in bytes; `kind` is the type category byte (0x01, 0x02,
@@ -350,6 +354,14 @@ pub enum FieldType {
     /// Anything we haven't classified yet. Preserves the raw bytes so
     /// downstream tools can reanalyse.
     Unknown { bytes: Vec<u8> },
+    /// `{kind} {sub} {flags} 0x00 ...` with `flags` 0x02, 0x12 or 0x22:
+    /// any other encoding with byte 2 set (RE-264). Revit 2027's schema
+    /// gives it to 325 fields that no 2016 to 2026 schema lists, and to no
+    /// other; with byte 2 cleared each decodes as `base`. Their names are
+    /// runtime state (`DBView::m_horzDirTemp`, `ImageSymbol::m_flags_unsaved`,
+    /// edit-mode managers). Whether instance data holds a value for them is
+    /// not measured, so readers treat them as [`FieldType::Unknown`].
+    Flagged { flags: u8, base: Box<FieldType> },
 }
 
 impl FieldType {
@@ -358,6 +370,17 @@ impl FieldType {
     pub fn decode(bytes: &[u8]) -> Self {
         if bytes.is_empty() {
             return FieldType::Unknown { bytes: Vec::new() };
+        }
+        if bytes.len() >= 4 && matches!(bytes[2], 0x02 | 0x12 | 0x22) && bytes[3] == 0x00 {
+            let mut unflagged = bytes.to_vec();
+            unflagged[2] = 0x00;
+            let base = FieldType::decode(&unflagged);
+            if !matches!(base, FieldType::Unknown { .. }) {
+                return FieldType::Flagged {
+                    flags: bytes[2],
+                    base: Box::new(base),
+                };
+            }
         }
         // `sub` is the two bytes following the outer-kind byte, little-
         // endian. The schema parser occasionally delivers a 2-byte slice
@@ -470,7 +493,7 @@ impl FieldType {
         }
     }
 
-    /// Encode (WRT-01) a `FieldType` back to its wire type-encoding
+    /// Encode a `FieldType` back to its wire type-encoding
     /// block — the inverse of [`FieldType::decode`]. Used by the
     /// write path (`write_with_patches` field-level edits and the
     /// forthcoming `ADocument` writer) to serialise schema records.
@@ -489,6 +512,7 @@ impl FieldType {
     /// canonical-form variant. The two collapsing cases (String alt
     /// encoding, Vector/Container 0x0011/0x0051 aliases) round-trip
     /// to the canonical form, never back to the alt.
+    // Tracker: WRT-01.
     pub fn encode(&self) -> Vec<u8> {
         match self {
             FieldType::Primitive { kind, .. } => vec![*kind, 0x00, 0x00, 0x00],
@@ -529,6 +553,18 @@ impl FieldType {
                 out
             }
             FieldType::Unknown { bytes } => bytes.clone(),
+            FieldType::Flagged { flags, base } => {
+                // A flagged string keeps the `08 60` form: in the common
+                // `08 00 60 00` byte 2 is the string's own.
+                let mut out = match **base {
+                    FieldType::String => vec![0x08, 0x60, 0x00, 0x00],
+                    _ => base.encode(),
+                };
+                if let Some(byte) = out.get_mut(2) {
+                    *byte = *flags;
+                }
+                out
+            }
         }
     }
 }
@@ -605,7 +641,7 @@ pub fn parse_schema_with_scan_limit(decompressed: &[u8], scan_limit: usize) -> R
         // Got a class-name candidate. Parse its fields until we hit
         // another likely class boundary (another length-prefixed name
         // matching our heuristic).
-        let class_name = std::str::from_utf8(name_bytes).unwrap().to_string();
+        let class_name = String::from_utf8_lossy(name_bytes).into_owned();
         let class_offset = i;
 
         // Move cursor past the class name header.
@@ -658,7 +694,7 @@ pub fn parse_schema_with_scan_limit(decompressed: &[u8], scan_limit: usize) -> R
                                     data[preamble_at + 9],
                                 ]);
                                 if flag & 0x8000 == 0 && fc == fc2 && fc <= 200 {
-                                    parent = Some(std::str::from_utf8(p).unwrap().to_string());
+                                    parent = Some(String::from_utf8_lossy(p).into_owned());
                                     declared_field_count = Some(fc);
                                     if flag != 0 {
                                         ancestor_tag = Some(flag);
@@ -838,7 +874,7 @@ fn scan_fields_until_next_class_bounded(
         if (2..=60).contains(&u32_len) && i + 4 + u32_len <= hard_stop {
             let slice = &data[i + 4..i + 4 + u32_len];
             if looks_like_field_name(slice) {
-                let field_name = std::str::from_utf8(slice).unwrap().to_string();
+                let field_name = String::from_utf8_lossy(slice).into_owned();
                 let post_name = i + 4 + u32_len;
 
                 // Optional C++ type follows. Try u32 prefix first, then u16.
@@ -928,6 +964,7 @@ fn scan_fields_until_next_class_bounded(
 
 /// One class of the `Formats/Latest` schema as the grammar reads it (#154).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SchemaClass {
     /// The class's serialization tag: its definition ordinal, 12 for the
     /// first class and one more for each further definition, top-level or
@@ -943,6 +980,7 @@ pub struct SchemaClass {
 /// Every class of a page-stripped `Formats/Latest` stream, in definition
 /// order (#154).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SchemaClasses {
     pub classes: Vec<SchemaClass>,
     /// Bytes read before the stream ended or a record broke the grammar.
@@ -976,9 +1014,30 @@ impl SchemaClasses {
 /// The tag is not stored: it is the definition ordinal. Every inline
 /// reference repeats its tag in its low 15 bits, which the reader checks, so
 /// a misread stops the parse instead of shifting every later tag.
+///
+/// Schemas written before Revit 2014 have no GUID list: a class ends at its
+/// last field, with no `u32` count (`A3PartyObject` is its name, base,
+/// version and field count, then the next separator, on Revit 2008 to 2013
+/// files). The stream says nothing of which form it takes, so it is read
+/// with GUID lists first and, when that stops early, without them; the
+/// reading that gets further is kept.
 pub fn schema_classes(data: &[u8]) -> SchemaClasses {
+    let with_guids = schema_classes_in(data, true);
+    if with_guids.stopped.is_none() {
+        return with_guids;
+    }
+    let without = schema_classes_in(data, false);
+    if without.parsed_bytes > with_guids.parsed_bytes {
+        without
+    } else {
+        with_guids
+    }
+}
+
+fn schema_classes_in(data: &[u8], guid_lists: bool) -> SchemaClasses {
     let mut reader = GrammarReader {
         data,
+        guid_lists,
         next_tag: FIRST_SCHEMA_TAG,
         classes: Vec::new(),
     };
@@ -1019,19 +1078,19 @@ const MAX_SCHEMA_NESTING: usize = 64;
 
 struct GrammarReader<'a> {
     data: &'a [u8],
+    /// Whether each class ends with a `u32`-counted GUID list (2014 on).
+    guid_lists: bool,
     next_tag: u16,
     classes: Vec<SchemaClass>,
 }
 
 impl GrammarReader<'_> {
     fn u16(&self, at: usize) -> Option<u16> {
-        let bytes = self.data.get(at..at.checked_add(2)?)?;
-        Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+        le_bytes::u16_at(self.data, at)
     }
 
     fn u32(&self, at: usize) -> Option<u32> {
-        let bytes = self.data.get(at..at.checked_add(4)?)?;
-        Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        le_bytes::u32_at(self.data, at)
     }
 
     fn need<T>(value: Option<T>, what: &str, at: usize) -> std::result::Result<T, String> {
@@ -1154,13 +1213,15 @@ impl GrammarReader<'_> {
             let (_, next) = self.field_type(next, depth)?;
             p = next;
         }
-        let guids = Self::need(self.u32(p), "GUID count", p)? as usize;
-        p += 4;
-        p = guids
-            .checked_mul(16)
-            .and_then(|len| p.checked_add(len))
-            .filter(|end| *end <= self.data.len() && guids <= 60_000)
-            .ok_or_else(|| format!("GUID count {guids} at {:#x}", p - 4))?;
+        if self.guid_lists {
+            let guids = Self::need(self.u32(p), "GUID count", p)? as usize;
+            p += 4;
+            p = guids
+                .checked_mul(16)
+                .and_then(|len| p.checked_add(len))
+                .filter(|end| *end <= self.data.len() && guids <= 60_000)
+                .ok_or_else(|| format!("GUID count {guids} at {:#x}", p - 4))?;
+        }
         self.classes.push(SchemaClass {
             tag,
             name,

@@ -47,6 +47,22 @@ use std::path::Path;
 /// byte-for-byte. For equivalence, check byte-level equality of the
 /// decompressed streams on both sides — not the raw file bytes, because
 /// OLE sector ordering may differ.
+///
+/// ```
+/// use rvt::RevitFile;
+/// use std::path::Path;
+///
+/// let src = Path::new("corpus/tier1/architectural-2024/architectural-2024.rvt");
+/// let dst = std::env::temp_dir().join(format!("rvt-copy-{}.rvt", std::process::id()));
+/// rvt::writer::copy_file(src, &dst)?;
+/// // Every stream reads back as the source's.
+/// let (mut original, mut copy) = (RevitFile::open(src)?, RevitFile::open(&dst)?);
+/// for name in original.stream_names() {
+///     assert_eq!(original.read_stream(&name)?, copy.read_stream(&name)?);
+/// }
+/// std::fs::remove_file(&dst)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn copy_file(src: &Path, dst: &Path) -> Result<()> {
     let mut rf = RevitFile::open(src)?;
     let streams = rf.stream_names();
@@ -56,8 +72,11 @@ pub fn copy_file(src: &Path, dst: &Path) -> Result<()> {
         .create(true)
         .truncate(true)
         .open(dst)?;
-    let mut out = cfb::CompoundFile::create(out_file)
-        .map_err(|e| crate::Error::Cfb(format!("create dst: {e}")))?;
+    let mut out = cfb::CompoundFile::create(out_file).map_err(|e| crate::Error::Cfb {
+        op: "create",
+        path: Some(dst.display().to_string()),
+        source: e,
+    })?;
 
     // Create parent storages first. OLE2 requires `/Formats`, `/Global`,
     // `/Partitions` to exist as storages before their child streams can
@@ -74,8 +93,11 @@ pub fn copy_file(src: &Path, dst: &Path) -> Result<()> {
         for n in 1..parts.len() {
             let parent = format!("/{}", parts[..n].join("/"));
             if created.insert(parent.clone()) {
-                out.create_storage(&parent)
-                    .map_err(|e| crate::Error::Cfb(format!("create_storage {parent}: {e}")))?;
+                out.create_storage(&parent).map_err(|e| crate::Error::Cfb {
+                    op: "create_storage",
+                    path: Some(parent.clone()),
+                    source: e,
+                })?;
             }
         }
     }
@@ -87,14 +109,22 @@ pub fn copy_file(src: &Path, dst: &Path) -> Result<()> {
         } else {
             format!("/{name}")
         };
-        let mut s = out
-            .create_stream(&path)
-            .map_err(|e| crate::Error::Cfb(format!("create_stream {path}: {e}")))?;
-        s.write_all(&data)
-            .map_err(|e| crate::Error::Cfb(format!("write_all {path}: {e}")))?;
+        let mut s = out.create_stream(&path).map_err(|e| crate::Error::Cfb {
+            op: "create_stream",
+            path: Some(path.clone()),
+            source: e,
+        })?;
+        s.write_all(&data).map_err(|e| crate::Error::Cfb {
+            op: "write",
+            path: Some(path.clone()),
+            source: e,
+        })?;
     }
-    out.flush()
-        .map_err(|e| crate::Error::Cfb(format!("flush: {e}")))?;
+    out.flush().map_err(|e| crate::Error::Cfb {
+        op: "flush",
+        path: Some(dst.display().to_string()),
+        source: e,
+    })?;
     Ok(())
 }
 
@@ -117,6 +147,7 @@ pub struct StreamPatch {
 /// - `Global/*` streams: 8-byte custom prefix (`00 × 8`), then gzip.
 /// - `Formats/Latest` and `Global/ContentDocuments`: gzip from byte 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StreamFraming {
     /// Gzip starts at offset 0 (e.g. Formats/Latest).
     RawGzipFromZero,
@@ -152,14 +183,15 @@ pub enum StreamFraming {
 /// `OpenOptions::truncate(true).open(dst)` call caused.
 /// A patch's bytes as they are stored, framed as it asks: one complete gzip
 /// member, with the CRC32 and ISIZE trailer Revit's own streams carry and a
-/// conforming reader checks (B69).
+/// conforming reader checks.
 ///
 /// Revit stores the streams [`crate::compression::is_checksum_paged_stream`]
 /// names in pages of [`crate::compression::REVIT_STORED_PAGE_BYTES`] bytes,
 /// each ending in a checksum rvt-rs cannot compute, and every reader strips
 /// those trailers. Framed bytes that fit in one page carry no trailer and are
 /// written as they are; longer ones would be read back wrong, so the patch is
-/// refused with [`crate::Error::WriteRefused`] before anything is written (B69).
+/// refused with [`crate::Error::WriteRefused`] before anything is written.
+// Tracker: B69.
 fn framed_patch_bytes(p: &StreamPatch) -> Result<Vec<u8>> {
     use crate::compression;
     let data = match p.framing {
@@ -186,6 +218,36 @@ fn framed_patch_bytes(p: &StreamPatch) -> Result<Vec<u8>> {
     Ok(data)
 }
 
+/// Write `src` to `dst` with each patch's stream replaced by its
+/// `new_decompressed` bytes, framed as its [`StreamFraming`] says, and every
+/// other stream copied byte for byte. With no patches the file is copied
+/// byte for byte. The write is atomic ([Atomicity](crate::writer#atomicity)).
+///
+/// # Errors
+///
+/// [`crate::Error::StreamNotFound`] for a patch naming a stream the file does
+/// not have, and [`crate::Error::WriteRefused`] for one whose stored bytes
+/// would span a checksummed page, both before anything is written; otherwise
+/// the errors of reading `src` and writing `dst`.
+///
+/// ```
+/// use rvt::RevitFile;
+/// use rvt::writer::{StreamFraming, StreamPatch, write_with_patches};
+/// use std::path::Path;
+///
+/// let src = Path::new("corpus/tier1/architectural-2024/architectural-2024.rvt");
+/// let dst = std::env::temp_dir().join(format!("rvt-patch-doc-{}.rvt", std::process::id()));
+/// let current = RevitFile::open(src)?.read_stream("BasicFileInfo")?;
+/// let patches = vec![StreamPatch {
+///     stream_name: "BasicFileInfo".into(),
+///     new_decompressed: current.clone(),
+///     framing: StreamFraming::Verbatim,
+/// }];
+/// write_with_patches(src, &dst, &patches)?;
+/// assert_eq!(RevitFile::open(&dst)?.read_stream("BasicFileInfo")?, current);
+/// std::fs::remove_file(&dst)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn write_with_patches(src: &Path, dst: &Path, patches: &[StreamPatch]) -> Result<()> {
     let mut rf = RevitFile::open(src)?;
     let streams = rf.stream_names();
@@ -219,7 +281,12 @@ pub fn write_with_patches(src: &Path, dst: &Path, patches: &[StreamPatch]) -> Re
         let dst_parent = dst.parent().unwrap_or_else(|| Path::new("."));
         let dst_name = dst
             .file_name()
-            .ok_or_else(|| crate::Error::Cfb("dst has no filename component".into()))?
+            .ok_or_else(|| {
+                crate::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "the destination path has no file name",
+                ))
+            })?
             .to_string_lossy()
             .to_string();
         let tmp_name = format!(".{dst_name}.copy-{}", std::process::id());
@@ -246,7 +313,12 @@ pub fn write_with_patches(src: &Path, dst: &Path, patches: &[StreamPatch]) -> Re
         let dst_parent = dst.parent().unwrap_or_else(|| Path::new("."));
         let dst_name = dst
             .file_name()
-            .ok_or_else(|| crate::Error::Cfb("dst has no filename component".into()))?
+            .ok_or_else(|| {
+                crate::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "the destination path has no file name",
+                ))
+            })?
             .to_string_lossy()
             .to_string();
         let tmp_name = format!(".{dst_name}.rw-{}", std::process::id());
@@ -268,8 +340,11 @@ pub fn write_with_patches(src: &Path, dst: &Path, patches: &[StreamPatch]) -> Re
 
         std::fs::copy(src, &tmp_path)?;
         {
-            let mut rw = cfb::open_rw(&tmp_path)
-                .map_err(|e| crate::Error::Cfb(format!("open_rw {}: {e}", tmp_path.display())))?;
+            let mut rw = cfb::open_rw(&tmp_path).map_err(|e| crate::Error::Cfb {
+                op: "open",
+                path: Some(tmp_path.display().to_string()),
+                source: e,
+            })?;
             for (p, data) in patches.iter().zip(&framed) {
                 let path = if p.stream_name.starts_with('/') {
                     p.stream_name.clone()
@@ -280,16 +355,27 @@ pub fn write_with_patches(src: &Path, dst: &Path, patches: &[StreamPatch]) -> Re
                 // stream by design, which is what we want. The cfb
                 // crate reuses the prior sector chain when content
                 // fits and extends only the tail when it grows.
-                let mut s = rw
-                    .create_stream(&path)
-                    .map_err(|e| crate::Error::Cfb(format!("create_stream {path}: {e}")))?;
-                s.write_all(data)
-                    .map_err(|e| crate::Error::Cfb(format!("write_all {path}: {e}")))?;
-                s.flush()
-                    .map_err(|e| crate::Error::Cfb(format!("flush {path}: {e}")))?;
+                let mut s = rw.create_stream(&path).map_err(|e| crate::Error::Cfb {
+                    op: "create_stream",
+                    path: Some(path.clone()),
+                    source: e,
+                })?;
+                s.write_all(data).map_err(|e| crate::Error::Cfb {
+                    op: "write",
+                    path: Some(path.clone()),
+                    source: e,
+                })?;
+                s.flush().map_err(|e| crate::Error::Cfb {
+                    op: "flush",
+                    path: Some(path.clone()),
+                    source: e,
+                })?;
             }
-            rw.flush()
-                .map_err(|e| crate::Error::Cfb(format!("flush: {e}")))?;
+            rw.flush().map_err(|e| crate::Error::Cfb {
+                op: "flush",
+                path: Some(tmp_path.display().to_string()),
+                source: e,
+            })?;
         }
         std::fs::rename(&tmp_path, dst)?;
         guard.path = None;
@@ -301,7 +387,12 @@ pub fn write_with_patches(src: &Path, dst: &Path, patches: &[StreamPatch]) -> Re
     let dst_parent = dst.parent().unwrap_or_else(|| Path::new("."));
     let dst_name = dst
         .file_name()
-        .ok_or_else(|| crate::Error::Cfb("dst has no filename component".into()))?
+        .ok_or_else(|| {
+            crate::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the destination path has no file name",
+            ))
+        })?
         .to_string_lossy()
         .to_string();
     let tmp_name = format!(".{dst_name}.tmp-{}", std::process::id());
@@ -324,14 +415,17 @@ pub fn write_with_patches(src: &Path, dst: &Path, patches: &[StreamPatch]) -> Re
         path: Some(tmp_path.clone()),
     };
 
-    let out_file = std::fs::OpenOptions::new()
+    let out_file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(true)
         .open(&tmp_path)?;
-    let mut out = cfb::CompoundFile::create(out_file)
-        .map_err(|e| crate::Error::Cfb(format!("create tmp: {e}")))?;
+    let mut out = cfb::CompoundFile::create(out_file).map_err(|e| crate::Error::Cfb {
+        op: "create",
+        path: Some(tmp_path.display().to_string()),
+        source: e,
+    })?;
 
     // Pre-create parent storages (same logic as copy_file).
     let mut created: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -345,8 +439,11 @@ pub fn write_with_patches(src: &Path, dst: &Path, patches: &[StreamPatch]) -> Re
         for n in 1..parts.len() {
             let parent = format!("/{}", parts[..n].join("/"));
             if created.insert(parent.clone()) {
-                out.create_storage(&parent)
-                    .map_err(|e| crate::Error::Cfb(format!("create_storage {parent}: {e}")))?;
+                out.create_storage(&parent).map_err(|e| crate::Error::Cfb {
+                    op: "create_storage",
+                    path: Some(parent.clone()),
+                    source: e,
+                })?;
             }
         }
     }
@@ -362,26 +459,32 @@ pub fn write_with_patches(src: &Path, dst: &Path, patches: &[StreamPatch]) -> Re
         } else {
             format!("/{name}")
         };
-        let mut s = out
-            .create_stream(&path)
-            .map_err(|e| crate::Error::Cfb(format!("create_stream {path}: {e}")))?;
-        s.write_all(&data)
-            .map_err(|e| crate::Error::Cfb(format!("write_all {path}: {e}")))?;
+        let mut s = out.create_stream(&path).map_err(|e| crate::Error::Cfb {
+            op: "create_stream",
+            path: Some(path.clone()),
+            source: e,
+        })?;
+        s.write_all(&data).map_err(|e| crate::Error::Cfb {
+            op: "write",
+            path: Some(path.clone()),
+            source: e,
+        })?;
     }
-    out.flush()
-        .map_err(|e| crate::Error::Cfb(format!("flush: {e}")))?;
+    out.flush().map_err(|e| crate::Error::Cfb {
+        op: "flush",
+        path: Some(tmp_path.display().to_string()),
+        source: e,
+    })?;
     // Close before rename so Windows doesn't hold the handle.
     drop(out);
 
     // Atomic rename into place. If rename fails (e.g. cross-device),
     // fall back to copy+remove. On failure both dst and tmp may exist
     // briefly; the guard cleans up tmp.
-    std::fs::rename(&tmp_path, dst).map_err(|e| {
-        crate::Error::Cfb(format!(
-            "rename {} -> {}: {e}",
-            tmp_path.display(),
-            dst.display()
-        ))
+    std::fs::rename(&tmp_path, dst).map_err(|e| crate::Error::Cfb {
+        op: "rename",
+        path: Some(format!("{} -> {}", tmp_path.display(), dst.display())),
+        source: e,
     })?;
 
     // Rename succeeded — temp no longer exists, disarm the guard.
@@ -391,10 +494,11 @@ pub fn write_with_patches(src: &Path, dst: &Path, patches: &[StreamPatch]) -> Re
 
 // ---- WRT-05: GUID preservation across write ----
 
-/// Read the BasicFileInfo GUID from a Revit file (WRT-05). Returns
+/// Read the BasicFileInfo GUID from a Revit file. Returns
 /// `Ok(None)` when the stream exists but no GUID was embedded. Used
 /// by the write-path invariant tests to confirm a write cycle
 /// preserves the file's identity.
+// Tracker: WRT-05.
 pub fn file_guid(path: &Path) -> Result<Option<String>> {
     let mut rf = RevitFile::open(path)?;
     let stream_name = "BasicFileInfo";
@@ -412,7 +516,7 @@ pub fn file_guid(path: &Path) -> Result<Option<String>> {
 /// carry the same GUID, `Ok(false)` when GUIDs diverge, and an
 /// error when either file is unreadable.
 ///
-/// This is the primary WRT-05 invariant check — call it right
+/// This is the primary invariant check — call it right
 /// after any [`write_with_patches`] / [`write_with_patches_verified`]
 /// to gate deploys on GUID preservation.
 pub fn guid_preserved(src: &Path, dst: &Path) -> Result<bool> {
@@ -423,7 +527,7 @@ pub fn guid_preserved(src: &Path, dst: &Path) -> Result<bool> {
 
 // ---- WRT-06: History chain preservation ----
 
-/// Read the document-history entries from a Revit file (WRT-06).
+/// Read the document-history entries from a Revit file.
 /// Returns the ordered list of Revit-version strings embedded in
 /// `Global/Latest` — oldest first, same order as
 /// [`crate::object_graph::DocumentHistory::entries`].
@@ -431,6 +535,7 @@ pub fn guid_preserved(src: &Path, dst: &Path) -> Result<bool> {
 /// Returns `Ok(Vec::new())` when no Global/Latest stream exists or
 /// when the stream has no embedded "Revit …" markers. Err when the
 /// stream read or decompression fails.
+// Tracker: WRT-06.
 pub fn file_history_entries(path: &Path) -> Result<Vec<String>> {
     let mut rf = RevitFile::open(path)?;
     let stream_name = crate::streams::GLOBAL_LATEST;
@@ -444,12 +549,13 @@ pub fn file_history_entries(path: &Path) -> Result<Vec<String>> {
 }
 
 /// Verify that a write cycle preserved the document-history chain
-/// (WRT-06). Returns `Ok(true)` when src and dst share the exact
+///. Returns `Ok(true)` when src and dst share the exact
 /// same ordered entry list, `Ok(false)` on divergence, and Err
 /// when either file is unreadable.
 ///
 /// Pair with [`guid_preserved`] for a two-value "file-identity
 /// preserved" predicate after any [`write_with_patches`] cycle.
+// Tracker: WRT-06.
 pub fn history_entries_preserved(src: &Path, dst: &Path) -> Result<bool> {
     let a = file_history_entries(src)?;
     let b = file_history_entries(dst)?;
@@ -458,11 +564,13 @@ pub fn history_entries_preserved(src: &Path, dst: &Path) -> Result<bool> {
 
 // ---- WRT-13: Stream hash verification per write ----
 
-/// Per-stream verification outcome (WRT-13). One entry per
+/// Per-stream verification outcome. One entry per
 /// expected stream; the `match_`/`first_diff_at` pair distinguishes
 /// clean success from a specific byte position where the written
 /// stream diverged from expectations.
+// Tracker: WRT-13.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct StreamVerification {
     /// OLE stream name, e.g. `"Formats/Latest"`.
     pub stream_name: String,
@@ -484,8 +592,10 @@ pub struct StreamVerification {
     pub expected_len: usize,
 }
 
-/// Aggregate result of verifying every patched stream (WRT-13).
+/// Aggregate result of verifying every patched stream.
+// Tracker: WRT-13.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct StreamVerificationReport {
     /// Per-stream outcomes in the same order as the input patches.
     pub streams: Vec<StreamVerification>,
@@ -514,7 +624,7 @@ impl StreamVerificationReport {
 /// step failed. Used internally by [`verify_patches_applied`]; pub
 /// so corpus audits can call it too.
 ///
-/// # Checksum-page policy (Finding 1 / #151)
+/// # Checksum-page policy (#151)
 ///
 /// The writer re-encodes patches with
 /// [`crate::compression::gzip_member_encode`], behind the 8-byte prefix for
@@ -526,8 +636,9 @@ impl StreamVerificationReport {
 /// to be ≥ one stored page. Identity copies (`read_stream` / empty-patch)
 /// remain stored-byte accurate. A paged encoder is still out of scope, so
 /// the writer refuses a patch whose stored bytes would span a page of a paged
-/// stream (B69): every stream it writes reads back the same through the
+/// stream: every stream it writes reads back the same through the
 /// stripping path.
+// Tracker: B69.
 pub fn decompress_stream(dst: &Path, name: &str, framing: StreamFraming) -> Result<Vec<u8>> {
     let mut rf = RevitFile::open(dst)?;
     let raw = rf.read_stream(name)?;
@@ -536,10 +647,13 @@ pub fn decompress_stream(dst: &Path, name: &str, framing: StreamFraming) -> Resu
         StreamFraming::CustomPrefix8 => {
             // 8-byte custom prefix — gzip starts at offset 8.
             if raw.len() < 8 {
-                return Err(crate::Error::Cfb(format!(
-                    "stream '{name}' too short for CustomPrefix8 framing: {} bytes",
-                    raw.len()
-                )));
+                return Err(crate::Error::Malformed {
+                    what: "stream framing",
+                    detail: format!(
+                        "stream '{name}' is {} bytes, too short for its 8-byte prefix",
+                        raw.len()
+                    ),
+                });
             }
             crate::compression::inflate_at(&raw, 8)
         }
@@ -548,25 +662,34 @@ pub fn decompress_stream(dst: &Path, name: &str, framing: StreamFraming) -> Resu
 }
 
 /// Verify that every patch in `patches` round-tripped through the
-/// writer cleanly (WRT-13). Opens `dst`, reads each named stream,
+/// writer cleanly. Opens `dst`, reads each named stream,
 /// decompresses it with the patch's `framing`, and compares the
 /// resulting bytes to the patch's `new_decompressed`.
 ///
 /// Typical use:
 ///
-/// ```no_run
-/// # use rvt::writer::{write_with_patches, verify_patches_applied, StreamPatch, StreamFraming};
-/// # use std::path::Path;
+/// ```
+/// use rvt::RevitFile;
+/// use rvt::writer::{StreamFraming, StreamPatch, verify_patches_applied, write_with_patches};
+/// use std::path::Path;
+///
+/// let src = Path::new("corpus/tier1/architectural-2024/architectural-2024.rvt");
+/// let dst = std::env::temp_dir().join(format!("rvt-writer-doc-{}.rvt", std::process::id()));
+/// // Write BasicFileInfo back with the bytes it holds: every other stream is
+/// // copied byte for byte.
+/// let current = RevitFile::open(src)?.read_stream("BasicFileInfo")?;
 /// let patches = vec![StreamPatch {
-///     stream_name: "Formats/Latest".into(),
-///     new_decompressed: vec![/* new bytes */],
-///     framing: StreamFraming::RawGzipFromZero,
+///     stream_name: "BasicFileInfo".into(),
+///     new_decompressed: current,
+///     framing: StreamFraming::Verbatim,
 /// }];
-/// write_with_patches(Path::new("in.rfa"), Path::new("out.rfa"), &patches)?;
-/// let report = verify_patches_applied(Path::new("out.rfa"), &patches)?;
+/// write_with_patches(src, &dst, &patches)?;
+/// let report = verify_patches_applied(&dst, &patches)?;
 /// assert!(report.all_matched(), "one or more patches failed to round-trip");
+/// # std::fs::remove_file(&dst).ok();
 /// # Ok::<(), rvt::Error>(())
 /// ```
+// Tracker: WRT-13.
 pub fn verify_patches_applied(
     dst: &Path,
     patches: &[StreamPatch],
@@ -612,13 +735,14 @@ pub fn verify_patches_applied(
 }
 
 /// Convenience wrapper: [`write_with_patches`] followed by
-/// [`verify_patches_applied`] on the written file (WRT-13).
+/// [`verify_patches_applied`] on the written file.
 /// Returns the verification report directly so callers can gate
 /// deployment on `report.all_matched()` without a second call.
 ///
 /// On verification failure the output file is left in place so the
 /// caller can inspect it — we don't auto-delete, since the bytes
 /// may still be useful for diagnosis.
+// Tracker: WRT-13.
 pub fn write_with_patches_verified(
     src: &Path,
     dst: &Path,

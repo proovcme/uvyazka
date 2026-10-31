@@ -1,5 +1,5 @@
 //! Synthetic graph regressions; no source project values or IDs.
-use rvt::{native_metadata, native_parameter_definitions::{Definition,Registry}, native_parameters::{GraphObject,GraphEdge,ObjectGraph}};
+use rvt::research::{native_metadata, native_parameter_definitions::{Definition,Registry}, native_parameters::{GraphObject,GraphEdge,ObjectGraph}};
 use serde_json::{json,Value};
 use std::collections::BTreeMap;
 
@@ -7,7 +7,7 @@ fn object(name:&str,fields:Value)->GraphObject {
     GraphObject{class_tag:12,class_name:name.into(),token:0,start:0,fields_end:0,fields}
 }
 fn graph(name:&str)->ObjectGraph {
-    ObjectGraph{consumed_bytes:0,objects:vec![object(name,json!({}))],edges:vec![]}
+    serde_json::from_value(json!({"consumed_bytes":0,"objects":[object(name,json!({}))],"edges":[]})).unwrap()
 }
 #[test]
 fn mep_categories_are_explicit_class_projections_and_unknowns_stay_unknown(){

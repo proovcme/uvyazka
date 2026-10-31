@@ -18,7 +18,10 @@ if __name__=='__main__':
         expected={tool.name for tool in asyncio.run(build_server(Workspace(Path(temporary)/'reference')).list_tools())}
         result=subprocess.run([str(binary),'--self-check'],env=env,capture_output=True,text=True,encoding='utf-8',timeout=60)
         assert result.returncode==0,result.stderr
-        assert json.loads(result.stdout)['core']=='ok'
+        report=json.loads(result.stdout)
+        assert report['core']=='ok'
+        from uvyazka.construction.model_tables import engine_sha
+        assert report['table_engine_sha256']==engine_sha(), 'Frozen table engine differs from source'
         messages=[{'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'desktop-build-check','version':'1'}}},
                   {'jsonrpc':'2.0','method':'notifications/initialized'},{'jsonrpc':'2.0','id':2,'method':'tools/list'}]
         result=subprocess.run([str(binary),'--mcp'],input='\n'.join(map(json.dumps,messages))+'\n',env=env,capture_output=True,text=True,encoding='utf-8',timeout=60)

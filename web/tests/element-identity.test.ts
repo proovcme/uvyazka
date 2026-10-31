@@ -34,3 +34,14 @@ test('simple finder matches names, family/type and exact IDs, excluding unrelate
  assert.equal(elementLabelMatches(item,'812345'),false);
  assert.equal(elementLabelMatches(item,'#4'),false);
 });
+
+test('shared property inspection preserves namespace-specific IDs, conflicts and new revisions',()=>{
+ let reads=0;const shared={get ElementId(){reads++;return '9007199254740993';},Family:'Семейство',UniqueId:'uid'};
+ const one={...e({Other:shared})};delete one.revit;
+ const two={...e({Revit:shared})};delete two.revit;
+ assert.equal(elementIdentity(one).element_id,null);assert.equal(elementIdentity(two).element_id,'9007199254740993');
+ assert.equal(elementIdentity(two).unique_id,'uid');assert.equal(elementLabelMatches(one,'семейство'),true);
+ for(let i=0;i<20;i++)assert.equal(elementIdentity({...two,id:String(i)}).element_id,'9007199254740993');assert.equal(reads,1);
+ const changed={...two,property_sets:{Revit:{ElementId:'77'}}};assert.equal(elementIdentity(changed).element_id,'77');
+ assert.equal(elementIdentity({...two,property_sets:{Revit:shared,Other:{RevitElementId:'88'}}}).status,'conflict');
+});

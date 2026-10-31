@@ -7,8 +7,9 @@ import type {Vec3} from './model';
 import { validatePackage } from './model';
 import { ConstructionSite } from './site';
 import {renderPolicy} from './render-policy';
-import {performanceSample,performanceDiagnostics,individualRendering} from './performance-probe';
+import {performanceSample,performanceDiagnostics,individualRendering,legacyInteractions} from './performance-probe';
 import {ModelBatches} from './model-batches';
+import {ModelPicking} from './model-picking';
 import type { RunPackage } from './simulation';
 
 type ElementMesh = THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial[]>;
@@ -59,6 +60,8 @@ export class Viewer {
     }this.invalidate();
   }
   private currentElements: BimElement[] = [];
+  private elementsById=new Map<string,BimElement>();
+  private picking=new ModelPicking();
   private observer: ResizeObserver;
   private frame = 0;
   private pointerStart = { x: 0, y: 0 };
@@ -112,10 +115,12 @@ export class Viewer {
       if (event.button !== 0 || Math.hypot(event.clientX - this.pointerStart.x, event.clientY - this.pointerStart.y) > 4) return;
       const rect = canvas.getBoundingClientRect();
       this.raycaster.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), this.camera);
-      const targets:THREE.Object3D[] = [...this.meshes.values()].filter((mesh) => mesh.visible);
-      for(const edge of this.edges.values())if(edge.userData.sourceLines&&edge.parent?.visible)targets.push(edge);
+      const pickStart=performance.now();
       this.raycaster.params.Line.threshold=Math.max(.001,this.bounds.getSize(new THREE.Vector3()).length()*.001);
-      const hit = this.raycaster.intersectObjects(targets, false).find((hit) => this.clipPlanes.every(plane=>plane.distanceToPoint(hit.point)>=-1e-7));
+      const accept=(hit:THREE.Intersection)=>this.clipPlanes.every(plane=>plane.distanceToPoint(hit.point)>=-1e-7);
+      const visible=(object:THREE.Object3D)=>object.userData.sourceLines?object.parent?.visible===true:object.visible;
+      const hit=legacyInteractions?this.raycaster.intersectObjects([...this.meshes.values(),...[...this.edges.values()].filter(edge=>edge.userData.sourceLines)].filter(visible),false).find(accept):this.picking.pick(this.raycaster,visible,accept);
+      performanceSample('pick',pickStart,{strategy:legacyInteractions?'linear':'indexed',objects:this.picking.total,candidates:this.picking.candidates,tested:this.picking.tested});
       if(this.measureHandler){if(hit&&this.model){const o=this.model.coordinate_system.render_origin_m;let point=hit.point.clone(),snap:SurfacePoint['snap']='surface',vertex_indices:number[]=[];
         if(this.measureSnap&&hit.face){const mesh=hit.object as ElementMesh,position=mesh.geometry.getAttribute('position'),ids=[hit.face.a,hit.face.b,hit.face.c],vertices=ids.map(i=>new THREE.Vector3().fromBufferAttribute(position,i).applyMatrix4(mesh.matrixWorld));
           const screen=(p:THREE.Vector3)=>{const v=p.clone().project(this.camera);return new THREE.Vector2((v.x+1)*rect.width/2,(1-v.y)*rect.height/2);},cursor=new THREE.Vector2(event.clientX-rect.left,event.clientY-rect.top);
@@ -152,6 +157,7 @@ export class Viewer {
     this.clearModel();
     this.model = pkg;
     this.currentElements = pkg.elements;
+    this.elementsById=new Map(pkg.elements.map(e=>[e.id,e]));
     const quality=renderPolicy(Math.max(pkg.statistics.physical_elements,pkg.statistics.meshes),window.devicePixelRatio);
     this.renderer.shadowMap.enabled=quality.shadows;
     this.renderer.setPixelRatio(quality.pixelRatio);
@@ -166,7 +172,8 @@ export class Viewer {
       geometry.setIndex(new THREE.BufferAttribute(data.primitive==='lines'?new Uint32Array(0):new Uint32Array(binary, data.index_byte_offset, data.index_count), 1));
       // All model materials use flatShading: the shader derives face normals.
       // Computing vertex normals here was wasted main-thread work on every import.
-      geometry.computeBoundingSphere();
+      geometry.computeBoundingBox();
+      geometry.boundingSphere=geometry.boundingBox!.getBoundingSphere(new THREE.Sphere());
       for (const group of data.groups) geometry.addGroup(group.start, group.count, group.material_index);
       const materials = data.styles.map((style) => {
         const isFeature = element.role === 'feature' || element.role === 'space';
@@ -198,6 +205,7 @@ export class Viewer {
     }
     if(batchLarge)this.batches=new ModelBatches(this.root,this.meshes);
     this.root.updateMatrixWorld(true);
+    this.picking.build([...this.meshes.values(),...[...this.edges.values()].filter(edge=>edge.userData.sourceLines)]);
     const origin = pkg.coordinate_system.render_origin_m;
     const convert = (point: number[]) => new THREE.Vector3(point[0] - origin[0], point[2] - origin[2], -(point[1] - origin[1]));
     this.bounds.setFromPoints([convert(pkg.coordinate_system.bounds_min_m), convert(pkg.coordinate_system.bounds_max_m)]);
@@ -271,19 +279,20 @@ export class Viewer {
   }
 
   show(ids: Set<string>) {
-    let count = 0,changed=false;
+    let count = 0;const changed:string[]=[];
     for (const [id, mesh] of this.meshes) {
-      if(mesh.userData.filterVisible!==ids.has(id))changed=true;
+      if(mesh.userData.filterVisible!==ids.has(id))changed.push(id);
       mesh.userData.filterVisible = ids.has(id);
       if (ids.has(id)) count++;
     }
     this.host.dataset.visibleMeshes = String(count);
-    if(!changed)return;
-    this.refreshPresentation();
+    if(!changed.length)return;
+    this.refreshPresentation(changed);
     this.invalidate();
   }
 
   select(id: string | null) {
+    const previous=this.selected;
     this.selected = id ?? undefined;
     if (this.highlight) { this.scene.remove(this.highlight); this.highlight.dispose(); this.highlight = undefined; }
     const mesh = id ? this.meshes.get(id) : undefined;
@@ -291,13 +300,14 @@ export class Viewer {
       this.highlight = new THREE.Box3Helper(new THREE.Box3().setFromObject(mesh), new THREE.Color(0xefb65e));
       this.scene.add(this.highlight);
     }
-    this.refreshPresentation();
+    this.refreshPresentation([...(previous?[previous]:[]),...(id?[id]:[])]);
   }
 
   highlightElements(ids:Set<string>) {
     if(ids.size===this.highlightedElements.size&&[...ids].every(id=>this.highlightedElements.has(id)))return;
+    const changed=[...this.highlightedElements].filter(id=>!ids.has(id));for(const id of ids)if(!this.highlightedElements.has(id))changed.push(id);
     this.highlightedElements = new Set(ids);
-    this.refreshPresentation();
+    this.refreshPresentation(changed);
   }
 
   setXray(active: boolean, elements: BimElement[]) {
@@ -383,8 +393,10 @@ export class Viewer {
 
   modelHeight() { return { min: this.bounds.min.y, max: this.bounds.max.y }; }
 
-  private refreshPresentation() {
-    for (const element of this.currentElements) {
+  private refreshPresentation(ids?:Iterable<string>) {
+    const start=performance.now();
+    const elements=ids&&!legacyInteractions?[...new Set(ids)].flatMap(id=>{const element=this.elementsById.get(id);return element?[element]:[];}):this.currentElements;
+    for (const element of elements) {
       const mesh = this.meshes.get(element.id);
       if (!mesh || !element.mesh) continue;
       const state = this.construction?.get(element.id);
@@ -416,10 +428,12 @@ export class Viewer {
       this.batches?.update(element.id,mesh,this.selected===element.id||this.highlightedElements.has(element.id));
     }
     if(this.highlight)this.highlight.visible=!!this.selected&&this.meshes.get(this.selected)?.visible===true;
+    performanceSample('presentation',start,{strategy:legacyInteractions?'full':'incremental',visited:elements.length,total:this.currentElements.length});
     this.invalidate();
   }
 
   private clearModel() {
+    this.picking.clear();
     this.batches?.dispose();this.batches=undefined;
     this.site?.dispose(); this.site = undefined; this.clipPlanes = [];this.showMeasurement([]);
     this.select(null);
@@ -434,6 +448,7 @@ export class Viewer {
     this.xray = false;
     this.construction = null;
     this.currentElements = [];
+    this.elementsById.clear();
     for (const helper of [this.grid, this.ground]) {
       if (!helper) continue;
       this.scene.remove(helper);

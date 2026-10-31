@@ -17,10 +17,15 @@ export async function federate(members:SceneMember[],progress:(text:string)=>voi
   if(!members.length)throw Error('Добавьте хотя бы одну модель');
   federationBudget(members);let prepared=0,copied=0;
   const ids=new Set<string>();
+  const placements=new Map<SceneMember,(vertices:Float32Array,index:number,out:Vec3)=>Vec3>();
   for(const m of members){
     if(ids.has(m.instanceId)||!m.instanceId||m.model.federation)throw Error('Повторный ID или вложенная сводная модель');
     ids.add(m.instanceId);validatePackage(m.model,m.binary);
     if(m.offset.length!==3||![...m.offset,m.rotation].every(Number.isFinite))throw Error('Смещение и поворот должны быть конечными числами');
+    // Placement is constant for a source. Keep the original arithmetic order,
+    // but do not recompute trigonometry or allocate arrays for every vertex.
+    const a=m.rotation*Math.PI/180,c=Math.cos(a),s=Math.sin(a),o=m.model.coordinate_system.render_origin_m,t=m.offset;
+    placements.set(m,(v,i,out)=>{const x=v[i]+o[0],y=v[i+1]+o[1];out[0]=x*c-y*s+t[0];out[1]=x*s+y*c+t[1];out[2]=v[i+2]+o[2]+t[2];return out;});
   }
   const records=members.map(m=>({model_id:m.model.model_id,source_sha256:m.model.source.sha256,source_format:m.model.source.format??'ifc',importer_version:m.model.importer_version,instance_id:m.instanceId,label:m.model.source.filename,offset_m:m.offset,rotation_deg:m.rotation,coordinate_alignment_verified:false}));
   const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify({version:1,records})))),n=>n.toString(16).padStart(2,'0')).join('');
@@ -29,6 +34,7 @@ export async function federate(members:SceneMember[],progress:(text:string)=>voi
   let size=0;
   for(const member of members){
     const source=member.model,prefix=(id:string)=>member.instanceId+':'+id;
+    const place=placements.get(member)!,point:Vec3=[0,0,0];
     for(const original of source.elements){
       // Source properties are immutable and may be shared by thousands of NWD
       // fragments. Copy only the placement fields that federation changes.
@@ -42,7 +48,7 @@ export async function federate(members:SceneMember[],progress:(text:string)=>voi
         const vertices=new Float32Array(member.binary,original.mesh!.position_byte_offset,mesh.vertex_count*3);
         for(let i=0;i<vertices.length;i+=3){
           if(++prepared%65536===0)progress('Проверка размещения: обработано '+prepared+' вершин');
-          const point=placedPoint([vertices[i]+source.coordinate_system.render_origin_m[0],vertices[i+1]+source.coordinate_system.render_origin_m[1],vertices[i+2]+source.coordinate_system.render_origin_m[2]],member.offset,member.rotation);
+          place(vertices,i,point);
           for(let k=0;k<3;k++){if(!Number.isFinite(point[k]))throw Error('Некорректные координаты геометрии');min[k]=Math.min(min[k],point[k]);max[k]=Math.max(max[k],point[k]);}
         }
         mesh.bbox_min_m=min;mesh.bbox_max_m=max;
@@ -59,12 +65,12 @@ export async function federate(members:SceneMember[],progress:(text:string)=>voi
   if(!geometryReady){if(!elements.some(e=>e.semantic_kind==='source_node'))throw Error('В сцене нет геометрии');low.splice(0,3,0,0,0);high.splice(0,3,0,0,0);}
   const origin:Vec3=[(low[0]+high[0])/2,(low[1]+high[1])/2,low[2]],binary=new ArrayBuffer(size);
   let row=0;
-  for(const m of members)for(const original of m.model.elements){
+  for(const m of members){const place=placements.get(m)!,world:Vec3=[0,0,0];for(const original of m.model.elements){
     const e=elements[row++];if(!e.mesh||!original.mesh)continue;
     const input=new Float32Array(m.binary,original.mesh.position_byte_offset,e.mesh.vertex_count*3),output=new Float32Array(binary,e.mesh.position_byte_offset,input.length);
-    for(let i=0;i<input.length;i+=3){if(++copied%65536===0)progress('Сборка сцены: обработано '+copied+' вершин');const world=placedPoint([input[i]+m.model.coordinate_system.render_origin_m[0],input[i+1]+m.model.coordinate_system.render_origin_m[1],input[i+2]+m.model.coordinate_system.render_origin_m[2]],m.offset,m.rotation);for(let k=0;k<3;k++)output[i+k]=world[k]-origin[k];}
+    for(let i=0;i<input.length;i+=3){if(++copied%65536===0)progress('Сборка сцены: обработано '+copied+' вершин');place(input,i,world);for(let k=0;k<3;k++)output[i+k]=world[k]-origin[k];}
     new Uint32Array(binary,e.mesh.index_byte_offset,e.mesh.index_count).set(new Uint32Array(m.binary,original.mesh.index_byte_offset,e.mesh.index_count));
-  }
+  }}
   const model:ModelPackage={contract:'ModelPackage',contract_version:'0.1.0',importer_version:'browser-federation-1',model_id:hash,
     source:{filename:`Сводная модель · ${members.length} файлов`,sha256:hash,size_bytes:members.reduce((n,m)=>n+m.model.source.size_bytes,0),schema:'Federation',format:'federation',exported_at:'',exporter:'uvyazka'},
     coordinate_system:{length_to_m:1,render_origin_m:origin,up_axis:'Z',bounds_min_m:low,bounds_max_m:high},elements,storeys,relationships,diagnostics,systems,

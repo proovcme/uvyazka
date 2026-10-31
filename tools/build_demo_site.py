@@ -77,7 +77,7 @@ if __name__ == '__main__':
 <h2>Установка</h2><p>Исходный архив содержит Python-инструменты и исходники Rust-декодера.
 Для сборки RVT нужны Rust и инструменты C/C++; готовые нативные программы в эти архивы
 не включены. Wheel содержит Python-пакет, а сборка RVT требует исходного архива.</p>
-<p><a href="https://github.com/proovcme/uvyazka/releases/tag/v0.4.0-alpha.2">Настольная Увязка для Windows x64: установщик и соответствующие исходники</a>.</p>
+<p><a href="https://github.com/proovcme/uvyazka/releases/tag/v0.4.0-alpha.3">Настольная Увязка для Windows x64: установщик и соответствующие исходники</a>.</p>
 <ul>{''.join(links)}<li><a href="https://github.com/proovcme/uvyazka/blob/{revision}/README.md">Инструкция по установке</a></li>
 <li><a href="https://github.com/proovcme/uvyazka/blob/{revision}/docs/RVT_DATA.md">Возможности и ограничения RVT</a></li></ul>
 <p>Версия исходников: <code>{revision}</code>.</p></html>''', encoding='utf-8')

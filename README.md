@@ -1,7 +1,7 @@
 ![Увязка — каждое число со своим источником](docs/assets/cover.svg)
 
 [![Проверки](https://github.com/proovcme/uvyazka/actions/workflows/ci.yml/badge.svg)](https://github.com/proovcme/uvyazka/actions/workflows/ci.yml)
-![Версия: 0.4.0 alpha 2](https://img.shields.io/badge/version-0.4.0--alpha.2-337E86?style=flat-square)
+![Версия: 0.4.0 alpha 3](https://img.shields.io/badge/version-0.4.0--alpha.3-337E86?style=flat-square)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-536971?style=flat-square)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-19323D?style=flat-square)
 ![Локальный MCP, stdio](https://img.shields.io/badge/MCP-local%20stdio-536971?style=flat-square)
@@ -21,7 +21,19 @@
 [Быстрый старт](#быстрый-старт-на-windows) · [Подключение MCP](#подключение-mcp) ·
 [Панель](#панель) · [Веб-демо](https://locia.work/uvyazka/) · [Документация](#документация)
 
-## В 0.4.0-alpha.2
+## В 0.4.0-alpha.3
+
+Ускорены выбор элементов, поиск и обновление выделения в больших сценах.
+Переносимые `.uvz` хранят повторяющиеся свойства совместно; обработку можно
+отменить до применения результата. Исходные ID, параметры и геометрия сохраняются.
+
+MCP и вьювер строят таблицы одним вычислительным движком: параметры, поддержанная
+часть исходных спецификаций RVT и шаблон по ГОСТ. В настольную сборку включён
+runtime таблиц. База результатов и источников общая для человека и ИИ-клиента.
+
+[Состав выпуска, проверка и ограничения](docs/RELEASE_0_4_0_ALPHA_3.md).
+
+## Ранее: 0.4.0-alpha.2
 
 Обновлён настольный комплект: текущие читатели RVT/NWD/NWC, сборка смешанной
 сцены, восстановление сеанса, спецификации и общий доступ к данным моделей
@@ -40,7 +52,7 @@ Revit ID, IFC GlobalId, параметры и копирование исход�
 
 [Проверки и ограничения](docs/CLASHES.md) ·
 [Установка Windows, MCP и обновления](docs/DESKTOP.md) ·
-[Предварительный выпуск](https://github.com/proovcme/uvyazka/releases/tag/v0.4.0-alpha.2).
+[Предварительный выпуск](https://github.com/proovcme/uvyazka/releases/tag/v0.4.0-alpha.3).
 
 Настольная версия включает остальные инструменты Увязки и использует ту же
 базу проекта. Публичное демо считает геометрию на устройстве и хранит результаты
@@ -409,7 +421,7 @@ uv run python -m unittest discover -s tests -v
 uv run python tools/validate_package.py
 uv run python tools/check_public_content.py
 uv build
-uv run python tools/check_public_content.py --archive dist/uvyazka-0.4.0a2.tar.gz --archive dist/uvyazka-0.4.0a2-py3-none-any.whl
+uv run python tools/check_public_content.py --archive dist/uvyazka-0.4.0a3.tar.gz --archive dist/uvyazka-0.4.0a3-py3-none-any.whl
 ```
 
 Фронтенд — каталог `web`: `npm ci`, `npm test`, `npm run build`.

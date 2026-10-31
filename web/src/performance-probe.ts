@@ -1,6 +1,8 @@
 /** Opt-in local diagnostics. No source names, properties or network telemetry. */
 export const performanceDiagnostics=typeof location!=='undefined'&&new URLSearchParams(location.search).get('diagnostics')==='performance';
 export const individualRendering=performanceDiagnostics&&new URLSearchParams(location.search).get('rendering')==='individual';
+/** Explicit local comparison mode, never enabled for normal viewing. */
+export const legacyInteractions=performanceDiagnostics&&new URLSearchParams(location.search).get('interactions')==='legacy';
 const samples=new Map<string,number>();
 export function performanceSample(operation:string,start:number,details:Record<string,number|boolean|string>={}){
  if(!performanceDiagnostics)return;

@@ -39,8 +39,10 @@ def main():
     if args.self_check:
         import ifcopenshell,numpy,pymupdf,openpyxl,docx,xlrd,mcp
         from uvyazka.construction.clashes import REVISION
+        from uvyazka.construction.model_tables import compute,engine_sha
+        compute('describe',{})
         from uvyazka.construction.rvt_runtime import converter_status
-        print(json.dumps({'core':'ok','clashes':REVISION,'native_rvt':converter_status(workspace.home)},ensure_ascii=False));return
+        print(json.dumps({'core':'ok','table_engine_sha256':engine_sha(),'clashes':REVISION,'native_rvt':converter_status(workspace.home)},ensure_ascii=False));return
     if args.demo:
         from uvyazka.demo import create_demo
         from uvyazka.construction.demo import create_engineering_demo

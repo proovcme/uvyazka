@@ -17,8 +17,10 @@ def validate():
     plugin = json.loads((ROOT / "plugin.json").read_text(encoding="utf-8"))
     mcp = json.loads((ROOT / "mcp.json").read_text(encoding="utf-8"))
     assert package["project"]["name"] == plugin["name"] == "uvyazka"
-    assert package["project"]["version"] == "0.4.0a3"
-    assert plugin["version"] == "0.4.0-alpha.3"
+    version = package["project"]["version"]
+    alpha = re.fullmatch(r"(\d+\.\d+\.\d+)a(\d+)", version)
+    expected_plugin_version = f"{alpha[1]}-alpha.{alpha[2]}" if alpha else version
+    assert plugin["version"] == expected_plugin_version, "Plugin and Python versions must match"
     assert '"' + package["project"]["version"] + '"' in (ROOT / "src/uvyazka/__init__.py").read_text(encoding="utf-8")
     assert plugin["extensions"]["com.openai"]["requires_local_executor"] is True
     assert len(plugin["extensions"]["com.openai"]["interface"]["shortDescription"]) <= 30

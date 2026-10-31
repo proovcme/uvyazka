@@ -3,3 +3,4 @@
 src/uvyazka/viewer/assets/* linguist-generated=true -whitespace
 integrations/** text eol=lf
 integrations/rvt-rs/** linguist-vendored=true
+src/uvyazka/resources/*.js text eol=lf

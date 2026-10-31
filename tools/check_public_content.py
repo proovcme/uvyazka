@@ -125,7 +125,12 @@ def check_archive(archive: Path, tracked: set[str]) -> list[str]:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--archive', action='append', type=Path, default=[])
+    parser.add_argument('--dist', action='store_true', help='Check the current wheel and sdist from pyproject.toml')
     args = parser.parse_args()
+    if args.dist:
+        import tomllib
+        version = tomllib.loads((ROOT/'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
+        args.archive.extend([ROOT/'dist'/f'uvyazka-{version}.tar.gz', ROOT/'dist'/f'uvyazka-{version}-py3-none-any.whl'])
     tracked = tracked_files(ROOT)
     issues = check_tree(ROOT, tracked)
     for archive in args.archive:

@@ -1,0 +1,2 @@
+aa8134dfa2972c502f054e6455d29ded7ce8e23c0c8a2751c92de0ab2feddae2  uvyazka-0.4.0a3.tar.gz
+a844f566ed7860b90bda5c68c3576fec53ce4c93034a10a8d87c70d5e5764f51  uvyazka-0.4.0a3-py3-none-any.whl

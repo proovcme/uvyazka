@@ -1,11 +1,11 @@
 {
-  "version": "0.4.0-alpha.2",
-  "notes": "Обновлённые читатели моделей, смешанная сцена, спецификации, MCP/API и понятные сообщения интерфейса. Предварительный выпуск.",
-  "pub_date": "2026-10-31T07:24:41.932757+00:00",
+  "version": "0.4.0-alpha.3",
+  "notes": "Ускоренный выбор и поиск в больших сценах, общий движок таблиц MCP и интерфейса, компактные проекты .uvz с отменой обработки. Предварительный выпуск.",
+  "pub_date": "2026-10-31T11:48:36.923656+00:00",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUSmJOQjNtZU9ocnhTVFBqYzcwM0V3dkc5OGJOekJiUEVOWlBXYXJpdWpCZjdldmZ2Y0M3SGxqUnRzMHdGTzRKTE5sYTNmYnNMYU1SajhSaEVHbVI1clVxREtaS0hmVndFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNDMxNDY2CWZpbGU60KPQstGP0LfQutCwXzAuNC4wLWFscGhhLjJfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuNC4wLWFscGhhLjIKcC9sRFNpUE5MckdWRDg3d3hGdmtYK1FUNk03MUI2SThXRHR5Nm1hN2NzemVyOU16ZGJ0QWNXcE52MFlCNFVhSjJFSTN2dU50ZEJ6S3RGMzBjczhjQXc9PQo=",
-      "url": "https://github.com/proovcme/uvyazka/releases/download/v0.4.0-alpha.2/uvyazka_0.4.0-alpha.2_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUSmJOQjNtZU9ocjN1SkVSYVBIVEs3VVdNcFBrR2dyUEdJVVhWbFBtdE16RGcxRExtZVVMZXlCVmJCbHpld2hLOFh3aWtiWVRISUdFWWhFbmxmWDBkRDliMFVkQ3Nlc2c0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNDQ3MjUxCWZpbGU60KPQstGP0LfQutCwXzAuNC4wLWFscGhhLjNfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuNC4wLWFscGhhLjMKZUFQejRUZWcxN0pvZzJ6cExEbXQxLzRSZjAyT2hmS2xJdFlMMnBva2ZtRXRLTnZkNUtUYldyT2ppTWJLeHlwODM1bklQT0gxTWprZkZLK2JXZkJQQ0E9PQo=",
+      "url": "https://github.com/proovcme/uvyazka/releases/download/v0.4.0-alpha.3/uvyazka_0.4.0-alpha.3_x64-setup.exe"
     }
   }
 }

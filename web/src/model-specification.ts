@@ -9,12 +9,14 @@ import type {ParameterRecord,ValueCell} from './rvt-schedule.ts';
 import {evaluateFilter,compareCells,sumCells} from './rvt-schedule-rules.ts';
 import type {ReviewFilter,FilterDecision} from './rvt-schedule-rules.ts';
 import {validateGostSettings} from './gost-settings.ts';
+import {rvtCategoryNames} from './rvt-category-names.ts';
+import {convertTableCell,tableOutputUnits} from './table-units.ts';
 import type {GostSettings} from './gost-settings.ts';
 
 export interface SpecColumn {id:string;label:string;kind:'base'|'property'|'rvt';path?:string[];scope?:'instance'|'type'|'effective';parameter_id?:string;source_sha256?:string}
 export interface SpecInput {key:string;scene_id:string|null;source_sha256:string;name:string;element?:BimElement;native?:ParameterRecord;type?:ParameterRecord;document?:RvtDocument}
-export interface SpecDataset {model:ModelPackage|null;columns:SpecColumn[];rows:SpecInput[];issues:string[];source_hashes:string[];source_metadata:Record<string,unknown>}
-export interface SpecDefinition {version:1;name:string;model_id:string|null;source_hashes:string[];columns:{id:string;label:string;aggregate:'none'|'sum'|'min'|'max'}[];group_by:string[];filters:ReviewFilter[];sort:{id:string;direction:1|-1}|null;scope:'all'|'matches'|'selection';scope_ids?:string[];gost?:GostSettings}
+export interface SpecDataset {model:ModelPackage|null;columns:SpecColumn[];rows:SpecInput[];issues:string[];source_hashes:string[];source_metadata:Record<string,unknown>;native_categories?:Record<string,ValueCell>}
+export interface SpecDefinition {version:1;name:string;model_id:string|null;source_hashes:string[];columns:{id:string;label:string;aggregate:'none'|'sum'|'min'|'max';unit?:string}[];group_by:string[];filters:ReviewFilter[];sort:{id:string;direction:1|-1}|null;scope:'all'|'matches'|'selection';scope_ids?:string[];gost?:GostSettings}
 export interface SpecRow {keys:string[];scene_ids:string[];membership:'pass'|'unknown';cells:ValueCell[]}
 export interface SpecReport {contract:'UvyazkaParameterSpecification';version:1;source_metadata:Record<string,unknown>;definition:SpecDefinition;coverage:{observed:number;in_scope:number;passed:number;unknown:number;excluded:number;rows:number};selection:{key:string;state:'pass'|'fail'|'unknown';decisions:FilterDecision[]}[];rows:SpecRow[];totals:{id:string;cell:ValueCell}[];issues:string[]}
 const key=(...parts:string[])=>JSON.stringify(parts);
@@ -46,7 +48,22 @@ export function specificationDataset(model:ModelPackage|null,documents:RvtDocume
  for(const c of [...columns.values()])if(c.kind==='rvt'){
   const id=key('rvt',c.source_sha256!,'effective',c.parameter_id!);if(!columns.has(id))columns.set(id,{...c,id,scope:'effective',label:c.label.replace(/RVT · (экземпляр|тип) · /,'RVT · значение · ')});
  }
- return {model,source_metadata:{engine:'uvyazka-parameter-specification-v1',model:model?{model_id:model.model_id,source:model.source,importer_version:model.importer_version,members:model.federation?.members}:null,native_catalogues:[...docs.values()].map(({document:d})=>({source:d.source,schema_version:d.schema_version,schema_sha256:d.schema_sha256,status:d.status,scope:d.schedule_data?.scope,shared_store:d.shared_store}))},columns:[...columns.values()],rows,issues:[...new Set(issues)],source_hashes:[...new Set(rows.map(r=>r.source_sha256))].sort()};
+  // A source-native category belongs to the record, not to its successful mesh.
+  // Resolve its caption only through explicit same-source ElementId joins. Never
+  // infer a category from a family name, and never share captions across RVTs.
+  const native_categories:Record<string,ValueCell>={};
+  for(const row of rows){
+   if(!row.element||!model||!row.native)continue;
+   const label=elementCategory(row.element,model);if(label.format!=='RVT'||label.name.startsWith('Класс RVT:')||label.name==='Категория Revit не прочитана')continue;
+   const category=effectiveParameter(row.native,row.type,'-1140363');if(category.state!=='value')continue;
+   const id=key(row.source_sha256,String(category.value));
+   const caption=valueCell(label.name,row,['property_sets','Other','Category']);
+   const cell:ValueCell={...caption,evidence:[...category.evidence,...caption.evidence.map(e=>({...e,rule:'same_source_native_category_id_caption'}))]};
+   const previous=native_categories[id];
+   if(!previous)native_categories[id]=cell;
+   else if(previous.state==='value'&&previous.value!==cell.value)native_categories[id]={state:'conflict',reason:'Одному ID категории соответствуют разные исходные названия',evidence:[...previous.evidence,...cell.evidence]};
+  }
+  return {model,native_categories,source_metadata:{engine:'uvyazka-parameter-specification-v1',model:model?{model_id:model.model_id,source:model.source,importer_version:model.importer_version,members:model.federation?.members}:null,native_catalogues:[...docs.values()].map(({document:d})=>({source:d.source,schema_version:d.schema_version,schema_sha256:d.schema_sha256,status:d.status,scope:d.schedule_data?.scope,shared_store:d.shared_store}))},columns:[...columns.values()],rows,issues:[...new Set(issues)],source_hashes:[...new Set(rows.map(r=>r.source_sha256))].sort()};
 }
 export function specificationCell(dataset:SpecDataset,row:SpecInput,column:SpecColumn):ValueCell{
  if(column.kind==='rvt'&&column.source_sha256!==row.source_sha256)return missing('Параметр другого исходного файла');
@@ -60,7 +77,18 @@ export function specificationCell(dataset:SpecDataset,row:SpecInput,column:SpecC
   return valueCell(value,row,column.path??[],unit);
  }
  const e=row.element,m=dataset.model;
- const values:Record<string,unknown>={name:row.name,category:e&&m?elementCategory(e,m).name:undefined,class:e?.class??row.native?.class_name,level:m?.storeys.find(s=>s.id===e?.storey_id)?.name,model:row.document?.source?.filename??m?.federation?.members.find(s=>s.source_sha256===row.source_sha256)?.label??m?.source.filename,id:row.scene_id??undefined,revit:e?elementIdentity(e).element_id:row.native?.identity.element_id,global:e?.global_id||undefined,material:e?.materials.length?e.materials.join('; '):undefined,count:1};
+  if(column.id==='category'&&!e){
+   const category=effectiveParameter(row.native,row.type,'-1140363');
+   if(category.state!=='value')return category;
+   const caption=dataset.native_categories?.[key(row.source_sha256,String(category.value))];
+   if(!caption){
+    const label=rvtCategoryNames[String(category.value)];
+    if(label)return {state:'value',value:label,storage_type:'String',evidence:category.evidence.map(e=>({...e,rule:[e.rule,'pinned_rvt_rs_builtin_category_english_caption'].filter(Boolean).join(';')}))};
+    return {...missing('Название нативной категории не прочитано; её ID сохранён в источнике'),evidence:category.evidence};
+   }
+   return {...caption,evidence:[...category.evidence,...caption.evidence]};
+  }
+ const values:Record<string,unknown>={name:row.name,category:e&&m?elementCategory(e,m).name:undefined,class:e?.class??row.native?.class_name,level:m?.storeys.find(s=>s.id===e?.storey_id)?.name,model:row.document?.source?.filename??m?.federation?.members.find(s=>s.source_sha256===row.source_sha256)?.label??m?.source.filename,id:row.scene_id??undefined,revit:e?elementIdentity(e).element_id:row.native?String(row.native.identity.element_id):undefined,global:e?.global_id||undefined,material:e?.materials.length?e.materials.join('; '):undefined,count:1};
  const cell=valueCell(values[column.id],row,[column.id],column.id==='count'?'record':undefined);if(column.id==='count')cell.storage_type='Integer';return cell;
 }
 function merge(cells:ValueCell[]):ValueCell{if(cells.length===1)return cells[0];const evidence=cells.flatMap(c=>c.evidence);if(cells.some(c=>c.state!=='value'))return {state:cells.some(c=>c.state==='conflict')?'conflict':cells.some(c=>c.state==='unsupported')?'unsupported':cells.some(c=>c.state==='mixed')?'mixed':'missing',reason:'Значение прочитано не для всех записей группы',evidence};if(new Set(cells.map(c=>JSON.stringify([c.value,c.storage_type,c.unit]))).size>1)return {state:'mixed',reason:'В группе разные значения',evidence};return {...cells[0],evidence};}
@@ -74,6 +102,7 @@ export function validateSpecification(input:unknown):SpecDefinition{
  if((input as SpecDefinition)?.gost!==undefined)validateGostSettings((input as SpecDefinition).gost);
  const x=input as SpecDefinition;if(!x||x.version!==1||typeof x.name!=='string'||!x.name.trim()||x.name.length>120||!Array.isArray(x.source_hashes)||x.source_hashes.length>1000||x.source_hashes.some(h=>!/^([a-f0-9]{64})$/.test(h))||x.model_id!==null&&!/^[a-f0-9]{64}$/.test(x.model_id))throw Error('Неверная версия или источники спецификации');
  if(!Array.isArray(x.columns)||!x.columns.length||x.columns.length>40||new Set(x.columns.map(c=>c.id)).size!==x.columns.length||x.columns.some(c=>typeof c.id!=='string'||c.id.length>2048||typeof c.label!=='string'||c.label.length>256||!['none','sum','min','max'].includes(c.aggregate)))throw Error('Нужны 1–40 уникальных полей');
+ if(x.columns.some(c=>c.unit!==undefined&&!tableOutputUnits.includes(c.unit)))throw Error('Неизвестная единица столбца');
  if(!Array.isArray(x.group_by)||x.group_by.some(id=>!x.columns.some(c=>c.id===id))||!['all','matches','selection'].includes(x.scope)||x.scope_ids&&(!Array.isArray(x.scope_ids)||x.scope_ids.length>500000||x.scope_ids.some(id=>typeof id!=='string')))throw Error('Неверная область или группировка');
  if(!Array.isArray(x.filters)||x.filters.length>100||x.filters.some(f=>!f||typeof f.field_id!=='string'||!['equal','not_equal','greater','greater_equal','less','less_equal','contains','not_contains','begins','ends','has_value'].includes(f.operator)||f.value!==undefined&&typeof f.value!=='string'&&!(typeof f.value==='number'&&Number.isFinite(f.value))||f.unit!==undefined&&typeof f.unit!=='string'))throw Error('Неверные условия отбора');
  if(x.sort&&(!x.columns.some(c=>c.id===x.sort!.id)||![1,-1].includes(x.sort.direction)))throw Error('Неверная сортировка');return structuredClone(x);
@@ -83,7 +112,7 @@ export function buildSpecification(dataset:SpecDataset,input:SpecDefinition,scop
  const columns=new Map(dataset.columns.map(c=>[c.id,c]));for(const c of definition.columns)if(!columns.has(c.id))throw Error('Поле не найдено в текущих данных: '+c.label);
  const scopes=definition.scope==='all'?null:new Set(scopeIds??definition.scope_ids??[]);if(scopes)definition.scope_ids=[...scopes];
  let passed=0,unknown=0,excluded=0,in_scope=0;const selection:SpecReport['selection']=[];const candidates:{row:SpecInput;cells:Map<string,ValueCell>;membership:'pass'|'unknown'}[]=[];
- for(const row of dataset.rows){if(scopes&&(!row.scene_id||!scopes.has(row.scene_id)))continue;in_scope++;const cells=new Map<string,ValueCell>();const read=(id:string)=>{let c=cells.get(id);if(!c){c=columns.has(id)?specificationCell(dataset,row,columns.get(id)!):missing('Поле фильтра не найдено');cells.set(id,c);}return c;};const decisions=definition.filters.map(f=>{const c=read(f.field_id);if(f.operator!=='has_value'&&typeof c.value==='number'&&c.storage_type!=='ElementId'&&(!c.unit||c.unit==='native'))return {state:'unknown' as const,reason:'Единицы числового значения не подтверждены',filter:f,cell:c};return evaluateFilter(f,c);});if(decisions.some(d=>d.state==='fail')){selection.push({key:row.key,state:'fail',decisions});excluded++;continue;}const membership=decisions.some(d=>d.state==='unknown')?'unknown':'pass';selection.push({key:row.key,state:membership,decisions});if(membership==='pass')passed++;else unknown++;for(const c of definition.columns)read(c.id);candidates.push({row,cells,membership});}
+ for(const row of dataset.rows){if(scopes&&(!row.scene_id||!scopes.has(row.scene_id)))continue;in_scope++;const cells=new Map<string,ValueCell>();const read=(id:string)=>{let c=cells.get(id);if(!c){c=columns.has(id)?specificationCell(dataset,row,columns.get(id)!):missing('Поле фильтра не найдено');cells.set(id,c);}return c;};const decisions=definition.filters.map(f=>{const c=read(f.field_id);if(f.operator!=='has_value'&&typeof c.value==='number'&&c.storage_type!=='ElementId'&&(!c.unit||c.unit==='native'))return {state:'unknown' as const,reason:'Единицы числового значения не подтверждены',filter:f,cell:c};return evaluateFilter(f,c);});if(decisions.some(d=>d.state==='fail')){selection.push({key:row.key,state:'fail',decisions});excluded++;continue;}const membership=decisions.some(d=>d.state==='unknown')?'unknown':'pass';selection.push({key:row.key,state:membership,decisions});if(membership==='pass')passed++;else unknown++;for(const c of definition.columns)cells.set(c.id,convertTableCell(read(c.id),c.unit));candidates.push({row,cells,membership});}
  const groups=new Map<string,typeof candidates>();for(const r of candidates){const values=definition.group_by.map(id=>r.cells.get(id)!);const g=definition.group_by.length&&values.every(c=>c.state==='value')?JSON.stringify([r.membership,...values.map(c=>[c.storage_type,c.value,c.unit])]):r.row.key;const bucket=groups.get(g);if(bucket)bucket.push(r);else groups.set(g,[r]);}
  const rows:SpecRow[]=[...groups.values()].map(rs=>({keys:rs.map(r=>r.row.key),scene_ids:rs.flatMap(r=>r.row.scene_id?[r.row.scene_id]:[]),membership:rs[0].membership,cells:definition.columns.map(c=>c.aggregate==='none'?merge(rs.map(r=>r.cells.get(c.id)!)):rs[0].membership==='unknown'?{state:'unsupported',reason:'Итог группы не рассчитан: отбор не подтверждён',evidence:rs.flatMap(r=>r.cells.get(c.id)!.evidence)}:aggregate(rs.map(r=>r.cells.get(c.id)!),c.aggregate))}));
  if(definition.sort){const i=definition.columns.findIndex(c=>c.id===definition.sort!.id);rows.sort((a,b)=>compareCells(a.cells[i],b.cells[i],definition.sort!.direction));}

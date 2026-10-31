@@ -48,6 +48,7 @@ def build(home, profile='release', with_fixture_generator=False):
     own = ROOT/'integrations/rvt-metadata-reader'
     metadata_files = [own/'Cargo.toml',own/'Cargo.lock',*sorted((own/'src').rglob('*.rs'))]
     metadata_source = {p.relative_to(own).as_posix():canonical_sha(p) for p in metadata_files}
+    metadata_source.update({p.relative_to(ROOT/'integrations').as_posix():canonical_sha(p) for p in sorted((ROOT/'integrations/rvt-shared').glob('*.rs'))})
     identity = {'upstream_revision': source['revision'], 'local_patches':source.get('local_patches',[]), 'upstream_manifest_sha256': canonical_sha(ROOT/'integrations/rvt-rs/UVYAZKA-SOURCE.json'),
         'metadata_source':metadata_source,'compiler':compiler,'profile':profile,'platform':sys.platform,'binaries':hashes}
     release = hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()

@@ -9,6 +9,16 @@ function model():ModelPackage{return {model_id:hash,source:{sha256:hash,filename
 test('missing explicit quantity is not zero; grouping retains proof and grand totals use original rows',()=>{const d=specificationDataset(model()),definition=defaultSpecification(d);const length=d.columns.find(c=>c.label==='Количества · Qto · Length')!;definition.columns=[{id:'name',label:'Имя',aggregate:'none'},{id:'count',label:'Записей',aggregate:'sum'},{id:length.id,label:'Длина',aggregate:'sum'}];definition.group_by=['name'];let r=buildSpecification(d,definition);assert.equal(r.rows.length,1);assert.equal(r.rows[0].keys.length,3);assert.equal(r.totals[0].cell.value,3);assert.notEqual(r.totals[1].cell.state,'value');assert.equal(r.rows[0].cells[2].evidence.length,3);assert.equal(specificationCell(d,d.rows[2],length).state,'missing');});
 test('typed filters keep unknown rows separate and exclude them from control totals',()=>{const m=model();(m.elements[0].quantity_sets.Qto.Length as any).value_si=0;const d=specificationDataset(m),def=defaultSpecification(d),c=d.columns.find(c=>c.label.endsWith('Qto · Length'))!;def.filters=[{field_id:c.id,operator:'greater',value:.5,unit:'m'}];const r=buildSpecification(d,def);assert.deepEqual(r.coverage,{observed:3,in_scope:3,passed:1,unknown:1,excluded:1,rows:2});assert.equal(r.totals[0].cell.value,1);assert.equal(r.rows.find(r=>r.membership==='unknown')!.cells[3].state,'unsupported');});
 test('different units and unknown raw numeric units never yield an engineering sum',()=>{const m=model();(m.elements[1].quantity_sets.Qto.Length as any).unit='ft';(m.elements[2].quantity_sets.Qto.Length as any).value_si=3;const d=specificationDataset(m),def=defaultSpecification(d),c=d.columns.find(c=>c.label.endsWith('Qto · Length'))!;def.columns=[{id:c.id,label:'Длина',aggregate:'sum'}];assert.equal(buildSpecification(d,def).totals[0].cell.state,'conflict');const raw=d.columns.find(c=>c.label==='Свойства · Tech · Raw')!;def.columns=[{id:raw.id,label:'Сырое',aggregate:'sum'}];assert.equal(buildSpecification(d,def).totals[0].cell.state,'unsupported');def.filters=[{field_id:raw.id,operator:'greater',value:1}];assert.equal(buildSpecification(d,def).coverage.unknown,3);});
+test('explicit output units convert cells and totals while keeping source values and filter thresholds',()=>{
+ const m=model();(m.elements[1].quantity_sets.Qto.Length as any).unit='ft';(m.elements[2].quantity_sets.Qto.Length as any).value_si=3;
+ const d=specificationDataset(m),def=defaultSpecification(d),c=d.columns.find(c=>c.label.endsWith('Qto · Length'))!;
+ def.columns=[{id:c.id,label:'Длина',aggregate:'sum',unit:'mm'}];let r=buildSpecification(d,def);
+ assert.equal(r.rows[1].cells[0].value,609.6);assert.equal(r.totals[0].cell.value,4609.6);assert.equal(r.totals[0].cell.unit,'mm');
+ assert.ok(r.rows[1].cells[0].evidence.some(e=>e.storage_type==='conversion'&&(e.value as any).source_unit==='ft'));
+ def.filters=[{field_id:c.id,operator:'equal',value:2,unit:'ft'}];r=buildSpecification(d,def);assert.equal(r.coverage.passed,1);assert.equal(r.rows.find(row=>row.membership==='pass')!.cells[0].value,609.6);
+ def.columns[0].unit='kg';assert.equal(buildSpecification(d,def).totals[0].cell.state,'unsupported');
+ def.columns[0].unit='invented';assert.throws(()=>buildSpecification(d,def),/единица/);
+});
 test('scope snapshots, revision pins and field IDs protect reproducibility',()=>{const d=specificationDataset(model()),def=defaultSpecification(d);def.scope='selection';const r=buildSpecification(d,def,['2']);assert.equal(r.coverage.in_scope,1);assert.deepEqual(r.definition.scope_ids,['2']);assert.equal(buildSpecification(d,r.definition).coverage.in_scope,1);def.model_id=derived;assert.throws(()=>buildSpecification(d,def),/ревизии/);def.model_id=hash;def.columns[0].id='not-present';assert.throws(()=>buildSpecification(d,def),/Поле не найдено/);});
 function document():RvtDocument{const p=(id:number,cls:string,value:number)=>({identity:{element_id:id},class_name:cls,status:'read',source:{stream:'synthetic',offset:id},saved_metadata:{root_references:{m_masterSymbolId:100},parameter_sets:[{parameters:[{serialized_parameter_id:-1001301,raw_value:value,storage_type:'Double'}]}]}});return {source:{filename:'synthetic.rvt',sha256:hash,size_bytes:10},schedule_data:{source_sha256:hash,status:'read',scope:['FamilyInstance','FamilySymbol'],records:[p(10,'FamilyInstance',2),p(11,'FamilyInstance',3),p(100,'FamilySymbol',4)]},records:[],status:'read'}as unknown as RvtDocument;}
 test('RVT original source joins converted IFC and keeps unmeshed instances and type parameters',()=>{const m=model();m.source.format='rvt';m.elements=m.elements.slice(0,1);m.elements[0].source.file_sha256=derived;m.elements[0].revit={element_id:'10',phase_status:'unknown'};const d=specificationDataset(m,[document()]);assert.equal(d.rows.length,2);assert.equal(d.rows[0].native?.identity.element_id,10);const c=d.columns.find(c=>c.kind==='rvt'&&c.scope==='type')!;assert.equal(specificationCell(d,d.rows[0],c).value,4);assert.equal(specificationCell(d,d.rows[0],c).unit,'ft');const def=defaultSpecification(d);def.columns=[{id:c.id,label:'Размер типа',aggregate:'sum'}];assert.equal(buildSpecification(d,def).totals[0].cell.value,8);assert.equal(d.rows[1].scene_id,null);});
@@ -25,4 +35,35 @@ test('deduplicated definition catalogue captions remain scoped to the RVT source
  const r=doc.schedule_data!.records[0];r.saved_metadata!.parameter_definitions_ids=[77];r.saved_metadata!.parameter_sets[0].parameters.push({serialized_parameter_id:77,storage_type:'String',raw_value:'X'});
  const d=specificationDataset(null,[doc]);const c=d.columns.find(c=>c.parameter_id==='77'&&c.scope==='effective')!;
  assert.match(c.label,/Synthetic code/);assert.equal(specificationCell(d,d.rows[0],c).value,'X');
+});
+
+test('native categories retain unmeshed RVT instances in category filters with explicit source evidence',()=>{
+ const doc=document();
+ for(const r of doc.schedule_data!.records.slice(0,2)){
+  r.class_name='RbsPipeCurve';r.saved_metadata!.parameter_sets[0].parameters.push({serialized_parameter_id:-1140363,raw_value:-2008044,storage_type:'ElementId'});
+ }
+ const m=model();m.source.format='rvt';m.elements=m.elements.slice(0,1);m.elements[0].class='IfcFlowSegment';m.elements[0].revit={element_id:'10',phase_status:'unknown'};m.elements[0].property_sets.Other={Category:'Pipes'};
+ const d=specificationDataset(m,[doc]),definition=defaultSpecification(d);
+ definition.filters=[{field_id:'category',operator:'equal',value:'Pipes'}];
+ const report=buildSpecification(d,definition);
+ assert.equal(report.coverage.passed,2);assert.equal(report.coverage.unknown,0);assert.equal(report.totals[0].cell.value,2);
+ const category=d.columns.find(c=>c.id==='category')!,nativeOnly=d.rows.find(r=>r.scene_id===null)!;
+ const cell=specificationCell(d,nativeOnly,category);
+ assert.equal(cell.value,'Pipes');assert.ok(cell.evidence.some(e=>e.owner_id==='11'&&e.value===-2008044));
+ assert.ok(cell.evidence.some(e=>e.rule==='same_source_native_category_id_caption'));
+ const unseen=structuredClone(doc);unseen.source!.sha256=derived;unseen.schedule_data!.source_sha256=derived;
+ const separated=specificationDataset(m,[doc,unseen]);
+ const fallback=specificationCell(separated,separated.rows.find(r=>r.source_sha256===derived)!,category);
+ assert.equal(fallback.value,'Pipes');assert.ok(fallback.evidence.every(e=>!e.rule?.includes('same_source_native_category_id_caption')));
+ assert.ok(fallback.evidence.some(e=>e.rule?.includes('pinned_rvt_rs_builtin_category_english_caption')));
+});
+
+test('conflicting source captions for a native category never resolve an unmeshed record silently',()=>{
+ const doc=document();
+ for(const r of doc.schedule_data!.records.slice(0,2))r.saved_metadata!.parameter_sets[0].parameters.push({serialized_parameter_id:-1140363,raw_value:-2008044,storage_type:'ElementId'});
+ const extra=structuredClone(doc.schedule_data!.records[0]);extra.identity.element_id=12;doc.schedule_data!.records.push(extra);
+ const m=model();m.source.format='rvt';m.elements=m.elements.slice(0,2);
+ m.elements.forEach((e,i)=>{e.revit={element_id:String(10+i),phase_status:'unknown'};e.property_sets.Other={Category:i?'Different source caption':'Pipes'};});
+ const d=specificationDataset(m,[doc]),category=d.columns.find(c=>c.id==='category')!;
+ assert.equal(specificationCell(d,d.rows.find(r=>r.native?.identity.element_id===12)!,category).state,'conflict');
 });

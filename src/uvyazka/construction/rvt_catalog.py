@@ -89,16 +89,16 @@ class RvtCatalog:
         self.workspace = workspace
         self.data = RvtData(workspace)
 
-    def save(self, project_id, document, request_id, artifact=None):
+    def save(self, project_id, document, request_id, artifact=None, *, native=False):
         self.workspace.project(project_id)
         if not isinstance(request_id, str) or not 1 <= len(request_id) <= 128:
             raise ValueError('request_id: 1–128 characters')
         if isinstance(document,dict):document={k:v for k,v in document.items() if k!='shared_store'}
         records, parameters = validate(document)
-        fingerprint = canonical_hash(['rvt-catalog-v1', document, artifact])
+        fingerprint = canonical_hash(['rvt-catalog-v1', document, artifact, native])
         source = dict(document['source'])
-        source['locator'] = 'Saved RVT catalogue imported into project'
-        source['source_verification'] = 'declared_sha256_not_reopened'
+        source['locator'] = 'Direct native RVT table catalogue' if native else 'Saved RVT catalogue imported into project'
+        source['source_verification'] = 'registered_source_at_extraction' if native else 'declared_sha256_not_reopened'
         path = self.data.db(project_id)
         rows = []
         counts = {}
@@ -113,7 +113,7 @@ class RvtCatalog:
             metadata['schedule_data'] = {k: v for k, v in document['schedule_data'].items() if k != 'records'}
         metadata['catalogue_record_count'] = len(records)
         result = {'project_id': project_id, 'extraction_id': fingerprint, 'source': source, 'profile': 'catalog',
-                  'created_at': now(), 'origin': 'browser_catalogue', 'catalog_artifact': artifact,
+                  'created_at': now(), 'origin': 'native_table_catalogue' if native else 'browser_catalogue', 'catalog_artifact': artifact,
                   'status': 'partial' if document.get('status') == 'partial' or (document.get('schedule_data') or {}).get('status') == 'partial' else 'saved_requires_review',
                   'catalog_status': document.get('status'), 'counts': counts, 'record_count': len(rows),
                   'catalogue_record_count': len(records), 'value_semantics': 'serialized_not_evaluated',
@@ -136,6 +136,36 @@ class RvtCatalog:
                 db.execute('insert into events(created_at,kind,payload) values (?,?,?)', (now(), 'rvt_catalog_saved', encode(result)))
             db.execute('insert into rvt_data_requests values (?,?,?)', (request_id, fingerprint, encode(result)))
         return result
+
+    def prepare(self, project_id, doc_id, request_id):
+        """Read both complementary projections from the same immutable RVT version."""
+        if not isinstance(request_id,str) or not 1<=len(request_id)<=100:
+            raise ValueError('request_id: 1–100 characters')
+        parameters=self.data.extract(project_id,doc_id,request_id+':parameters','parameters')
+        schedules=self.data.extract(project_id,doc_id,request_id+':schedules','schedules')
+        if parameters['source']['sha256']!=schedules['source']['sha256']:
+            raise ValueError('RVT changed between parameter and schedule extraction')
+        registered, source=self.workspace.source_record(project_id,doc_id)
+        if digest(source)!=parameters['source']['sha256']:
+            raise ValueError('RVT changed before saving the table catalogue')
+        def report(snapshot):
+            return json.loads(Path(snapshot['summary_file']).read_text(encoding='utf-8'))
+        p,s=report(parameters),report(schedules)
+        if p.get('schema_sha256')!=s.get('schema_sha256'):
+            raise ValueError('Native projections have different schemas')
+        with connection(self.data.db(project_id),readonly=True) as db:
+            def rows(snapshot):
+                return [json.loads(r[0]) for r in db.execute('select payload from rvt_native_records where extraction_id=? order by record_id',(snapshot['extraction_id'],))]
+            elements=rows(parameters);definitions=rows(schedules)
+        document={'schema_version':1,'source':{'sha256':parameters['source']['sha256'],'filename':source.name,'size_bytes':registered['size_bytes']},
+            'schema_sha256':s.get('schema_sha256',''),'status':'partial' if schedules['status']!='extracted_requires_review' else 'extracted_requires_review',
+            'clipped_records':s.get('clipped_records',0),'summary':s.get('summary',{}),
+            'evaluated_schedule_body_available':False,'records':[{**r,'kind':'schedule'} for r in definitions],
+            'schedule_data':{'schema_version':2,'source_sha256':parameters['source']['sha256'],
+                'status':'partial' if parameters['status']!='extracted_requires_review' else 'extracted_requires_review',
+                'scope':[c['name'] for c in p.get('classes',[]) if c.get('table_parameter') is True],'summary':p.get('summary',{}),'records':elements,
+                'clipped_records':p.get('clipped_records',0),'error':p.get('error'),'workset_error':p.get('workset_error')}}
+        return self.save(project_id,document,request_id,{'doc_id':doc_id,'parameter_extraction':parameters['extraction_id'],'schedule_extraction':schedules['extraction_id']},native=True)
 
     def import_document(self, project_id, doc_id, request_id):
         record, path = self.workspace.source_record(project_id, doc_id)
@@ -171,7 +201,7 @@ class RvtCatalog:
                 row=json.loads(stored['payload']);kind=stored['kind']
                 if not meta and kind=='element':
                     fields=objects(row)[0]['fields'] if objects(row) else row.get('root_fields',{})
-                    row={**{k:row.get(k) for k in ['identity','class_name','status','diagnostic','source','saved_metadata','metadata_diagnostic']},
+                    row={**{k:row.get(k) for k in ['identity','class_name','status','diagnostic','source','saved_metadata','metadata_diagnostic','workset']},
                          'root_fields':{k:v for k,v in fields.items() if k in {'m_masterSymbolId','m_familyId','m_createdPhaseId','m_demolishedPhaseId','m_designOptionId','m_name','m_categoryId','m_idType','m_idSystemCategory'}}}
                 size=len(encode(row).encode('utf-8'))
                 if not meta and budget+size>120*1024*1024:

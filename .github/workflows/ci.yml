@@ -59,7 +59,7 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
-      - run: git diff --exit-code -- ../src/uvyazka/viewer
+      - run: git diff --exit-code -- ../src/uvyazka/viewer ../src/uvyazka/resources/table-engine.js
   authoring:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

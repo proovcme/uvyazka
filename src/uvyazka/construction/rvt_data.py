@@ -14,7 +14,7 @@ from .planning import Planning, bounded
 from .rvt_runtime import binary_path, sha256
 from .simulation import canonical_hash
 
-VERSION = '0.3.1'
+VERSION = '0.4.0'
 SYSTEM_CLASSES = {'RbsHvacSystem', 'RbsPipingSystem', 'RbsElectricalSystem'}
 ENGINEERING_ROOTS = {'FamilyInstance', 'RbsCurve', 'RbsSystem', 'Level', 'RoomElem', 'Room'}
 TYPE_ROOTS = {'FamilySymbol', 'RbsPipeType', 'RbsFlexPipeType', 'RbsPipeInsulationType', 'AbsDuctType', 'AbsFlexDuctType', 'RbsDuctInsulationType', 'RbsDuctLiningType'}
@@ -44,6 +44,7 @@ def kind_for(name, classes):
 def selected_classes(profile,classes):
     """Choose by schema ancestry, not by substrings or guessed equipment names."""
     if profile=='all':return []
+    if profile=='parameters':return [name for name,row in classes.items() if row.get('table_parameter') is True]
     if profile in {'engineering','systems','types','objects'}:
         roots=ENGINEERING_ROOTS if profile=='engineering' else TYPE_ROOTS if profile=='types' else OBJECT_ROOTS if profile=='objects' else SYSTEM_CLASSES
         return [name for name in classes if set(ancestry(name,classes)) & roots]
@@ -201,7 +202,7 @@ class RvtData:
         return path
 
     def extract(self,project_id,doc_id,request_id,profile='all'):
-        if profile not in {'all','views','schedules','engineering','systems','types','objects'}:raise ValueError('profile: all, views, schedules, engineering, types, objects or systems')
+        if profile not in {'all','views','schedules','engineering','systems','types','objects','parameters'}:raise ValueError('profile: all, views, schedules, engineering, types, objects, parameters or systems')
         if not request_id or len(request_id)>128:raise ValueError('request_id: 1–128 characters')
         document,source=self.workspace.source_record(project_id,doc_id)
         if source.suffix.lower()!='.rvt' or not 0<source.stat().st_size<=512*1024*1024:raise ValueError('Choose a registered RVT <=512 MiB')
@@ -237,28 +238,52 @@ class RvtData:
         inventory=json.loads(inventory_path.read_text(encoding='utf-8'))
         classes={c['name']:c for c in inventory['classes']}
         selected=selected_classes(profile,classes)
-        output=folder/'records.ndjson';summary_path=folder/'records.summary.json'
-        if profile!='all' and not selected:
-            output.write_text('',encoding='utf-8');summary_path.write_text(encode({'status':'unsupported_profile','record_count':0,'error':'Requested class roots not found; absence of records is not established'}),encoding='utf-8')
-        else:
-            request.write_text(encode({'mode':'records','classes':selected,'max_records':20000}),encoding='utf-8')
-            self.invoke(binary,copied,request,output)
-        report=json.loads(summary_path.read_text(encoding='utf-8'))
+        counts={};records=[];page_reports=[];cursor=0
+        while True:
+            output=folder/('records.ndjson' if cursor==0 else f'records-{cursor}.ndjson')
+            summary_path=output.with_suffix('.summary.json')
+            if profile!='all' and not selected:
+                output.write_text('',encoding='utf-8');summary_path.write_text(encode({'status':'unsupported_profile','record_count':0,'error':'Requested class roots not found; absence of records is not established'}),encoding='utf-8')
+            else:
+                projection='compact' if profile in {'engineering','types','parameters','objects'} else 'graphs' if profile in {'views','schedules'} else 'full'
+                request.write_text(encode({'mode':'records','classes':selected,'max_records':20000,'offset':cursor,'projection':projection}),encoding='utf-8')
+                self.invoke(binary,copied,request,output)
+            page=json.loads(summary_path.read_text(encoding='utf-8'))
+            if inventory.get('schema_sha256') and page.get('schema_sha256')!=inventory['schema_sha256']:
+                raise ValueError('Native page schema changed during extraction')
+            returned=0
+            with output.open(encoding='utf-8') as stream:
+                for line in stream:
+                    if len(line)>33*1024*1024:raise ValueError('Native record exceeds the explicit record budget')
+                    row=json.loads(line);kind=kind_for(row.get('class_name'),classes);counts[kind]=counts.get(kind,0)+1
+                    graph=objects(row);fields=graph[0]['fields'] if graph else row.get('root_fields',{})
+                    name=(row.get('mep_system') or {}).get('name') or fields.get('m_viewName') or fields.get('m_name') or ''
+                    if not isinstance(name,str):name=''
+                    status=row.get('projection_status') or ('partial_mep' if row.get('mep_system_diagnostic') else 'partial_metadata' if row.get('metadata_diagnostic') else row['status'])
+                    records.append((fingerprint,len(records),str(row['identity']['element_id']),row.get('class_name'),kind,name,status,encode(row)));returned+=1
+            page_reports.append(page)
+            pagination=page.get('pagination')
+            if pagination is not None:
+                if pagination.get('offset')!=cursor or pagination.get('returned')!=returned:
+                    raise ValueError('Native page counters do not match its records')
+                if pagination.get('next_offset') is None and not page.get('error') and pagination.get('selected_record_count')!=cursor+returned:
+                    raise ValueError('Native final page does not cover the selected inventory')
+            following=(pagination or {}).get('next_offset')
+            if following is None:break
+            if type(following) is not int or following!=cursor+returned or not returned:
+                raise ValueError('Native page continuation did not advance exactly')
+            cursor=following
         p.validate_sources(project_id,[pointer])
         if sha256(binary)!=reader_hash:raise ValueError('Native reader changed during extraction')
-        counts={};records=[]
-        with output.open(encoding='utf-8') as stream:
-            for index,line in enumerate(stream):
-                if len(line)>3*1024*1024:raise ValueError('Native record exceeds the cache budget')
-                row=json.loads(line);kind=kind_for(row.get('class_name'),classes);counts[kind]=counts.get(kind,0)+1
-                graph=objects(row);fields=graph[0]['fields'] if graph else {}
-                name=(row.get('mep_system') or {}).get('name') or fields.get('m_viewName') or fields.get('m_name') or ''
-                if not isinstance(name,str):name=''
-                status=row.get('projection_status') or ('partial_mep' if row.get('mep_system_diagnostic') else 'partial_metadata' if row.get('metadata_diagnostic') else row['status'])
-                records.append((fingerprint,index,str(row['identity']['element_id']),row.get('class_name'),kind,name,status,encode(row)))
+        report={**page_reports[-1],'record_count':len(records),'page_count':len(page_reports),
+                'clipped_records':sum(v.get('clipped_records',0) for v in page_reports),
+                'status':'partial' if any(v.get('status')!='extracted_requires_review' for v in page_reports) else 'extracted_requires_review',
+                'error':'; '.join(dict.fromkeys(v['error'] for v in page_reports if v.get('error'))) or None,
+                'pagination_complete':not any(v.get('error') for v in page_reports) and (page_reports[-1].get('pagination') or {}).get('next_offset') is None}
+        summary_path=folder/'complete.summary.json';summary_path.write_text(encode(report),encoding='utf-8')
         result={'project_id':project_id,'extraction_id':fingerprint,'profile':profile,'source':pointer,'created_at':now(),
             'reader_version':VERSION,'reader_sha256':reader_hash,'status':report['status'],'counts':counts,
-            'record_count':len(records),'error':report.get('error'),'value_semantics':'serialized_not_evaluated',
+            'record_count':len(records),'error':report.get('error'),'page_count':report['page_count'],'pagination_complete':report['pagination_complete'],'value_semantics':'serialized_not_evaluated',
             'classes_file':str(inventory_path),'summary_file':str(summary_path),
             'requires_revit':False,
             'schedule_body_status':'Saved definitions/cells only; evaluated body rows/totals are not reconstructed by this reader',

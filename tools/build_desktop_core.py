@@ -60,6 +60,7 @@ def build():
                     target=licenses/row['name']/Path(item.name).name
                     if not target.exists():target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(archive.extractfile(item).read())
     shutil.copyfile(source/'desktop/THIRD_PARTY.md',licenses/'DESKTOP-NOTICE.md')
+    if (source/'desktop/licenses').is_dir():shutil.copytree(source/'desktop/licenses',licenses/'additional',dirs_exist_ok=True)
     shutil.copyfile(source/'desktop/sources.lock.json',licenses/'sources.lock.json')
     python_license=Path(sys.base_prefix)/'LICENSE.txt'
     if python_license.is_file():shutil.copyfile(python_license,licenses/'PYTHON-LICENSE.txt')
@@ -75,11 +76,11 @@ from PyInstaller.utils.hooks import collect_all, copy_metadata
 datas = '''+repr(datas)+'''
 binaries = '''+repr(binaries)+'''
 hiddenimports = '''+repr(hidden)+'''
-for package in ('mcp','pymupdf','ifcopenshell','openpyxl','docx','xlrd','ezdxf'):
+for package in ('mcp','pymupdf','ifcopenshell','openpyxl','docx','xlrd','ezdxf','py_mini_racer'):
     d,b,h = collect_all(package,filter_submodules=lambda name: not any(x in name.split('.') for x in ('cli','tests','test','draw','bonsai')))
     b=[entry for entry in b if not any(x in Path(entry[0]).name.lower() for x in ('kernel_cgal','kernel_manifold','manifold.dll'))]
     datas += d; binaries += b; hiddenimports += h
-for package in ('mcp','pymupdf','ifcopenshell','numpy','openpyxl','python-docx','xlrd','ezdxf','pydantic','pillow'):
+for package in ('mcp','pymupdf','ifcopenshell','numpy','openpyxl','python-docx','xlrd','ezdxf','pydantic','pillow','mini-racer'):
     datas += copy_metadata(package)
 a = Analysis(['''+repr(str(source/'desktop/sidecar.py'))+'''], pathex=['''+repr(str(source/'src'))+'''], binaries=binaries, datas=datas, hiddenimports=hiddenimports, excludes=['tkinter','PySide6','PyQt5','PyQt6','matplotlib','scipy','pandas','IPython','pytest','uvyazka._vendor.les_list.tests'])
 a.binaries=[entry for entry in a.binaries if not any(x in Path(entry[0]).name.lower() for x in ('kernel_cgal','kernel_manifold','manifold.dll'))]

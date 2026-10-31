@@ -28,6 +28,32 @@ def fixture():
 
 
 class DataTests(unittest.TestCase):
+    def test_native_page_continuations_keep_every_record_and_reject_incomplete_pages(self):
+        for mode in ['complete','stuck','incomplete']:
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);source=root/'sources';source.mkdir()
+                file=source/'synthetic.rvt';file.write_bytes(bytes.fromhex('D0CF11E0A1B11AE1')+b'synthetic')
+                ws=Workspace(root/'state');ws.create_project('one','One',source);scan(ws,'one')
+                doc=ws.find_documents('one','synthetic.rvt')['documents'][0]
+                binary=root/'reader';binary.write_bytes(b'fixture')
+                def invoke(_,copied,request,output):
+                    args=json.loads(request.read_text(encoding='utf8'))
+                    if args['mode']=='inventory':
+                        output.write_text(encode({'classes':[{'name':'DBViewSchedule','parent':'TableView'},{'name':'TableView','parent':'DBView'},{'name':'DBView','parent':'Element'}]}),encoding='utf8');return
+                    offset=args['offset'];row=fixture();row['identity']['element_id']+=offset
+                    output.write_text(encode(row)+'\n',encoding='utf8')
+                    following=(1 if mode=='complete' else 0 if mode=='stuck' else None) if offset==0 else None
+                    output.with_suffix('.summary.json').write_text(encode({'status':'extracted_requires_review','summary':{},'pagination':{'offset':offset,'returned':1,'next_offset':following,'selected_record_count':2}}),encoding='utf8')
+                with patch('uvyazka.construction.rvt_data.binary_path',return_value=binary),patch.object(RvtData,'invoke',side_effect=invoke):
+                    data=RvtData(ws)
+                    if mode!='complete':
+                        with self.assertRaises(ValueError):data.extract('one',doc['doc_id'],'pages','schedules')
+                    else:
+                        result=data.extract('one',doc['doc_id'],'pages','schedules')
+                        self.assertEqual(result['record_count'],2);self.assertEqual(result['page_count'],2)
+                        self.assertTrue(result['pagination_complete'])
+                        self.assertEqual([r['element_id'] for r in data.read('one',result['extraction_id'],'schedules')['items']],['42','43'])
+
     def test_focused_profiles_use_schema_ancestry_and_exclude_types_and_named_decoys(self):
         classes={'FamilyInstance':{'parent':'Element'},'FamilySymbol':{'parent':'Symbol'},
             'RoomElem':{'parent':'Element'},'RoomTag':{'parent':'Element'},

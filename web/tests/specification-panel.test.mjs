@@ -26,6 +26,10 @@ test('specification edits are read before building/saving; selected scope links 
  assert.equal(panel.definitions()[0].filters[0].value,'IfcPump');assert.equal(panel.definitions()[0].filters[0].operator,'equal');
  document.querySelector('[data-table] tbody tr td button').click();assert.deepEqual(shown,['2']);
  name.value='Изменённая таблица';name.dispatchEvent(new win.Event('change'));assert.equal(document.querySelector('[data-table]').children.length,0);assert.equal(document.querySelector('[data-csv]').disabled,true);assert.equal(document.querySelector('[data-evidence]').open,false);
+ const first=panel.definitions()[0],second=structuredClone(first);second.name='Другая ведомость';panel.restore([first,second]);
+ const picker=document.querySelector('[data-presets]');picker.value='1';panel.definitions();assert.equal(picker.selectedOptions[0].textContent,'Другая ведомость','autosave must not reset the selected recipe');
+ panel.restore([second,first]);assert.equal(picker.selectedOptions[0].textContent,'Другая ведомость','recipe identity survives list reordering');
+ document.querySelector('[data-load]').click();assert.equal(document.querySelector('[data-name]').value,'Другая ведомость');
  panel.restore([]);assert.equal(panel.definitions().length,0);
 });
 

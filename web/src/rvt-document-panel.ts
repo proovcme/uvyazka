@@ -29,7 +29,7 @@ export function rvtDocumentPanel(orient:(record:NativeRecord)=>void,whole:()=>vo
  get('rvt-document-close').onclick=()=>dialog.close();
  get('rvt-whole').onclick=()=>{whole();dialog.close();};
  const download=(value:string,type:string,name:string)=>{if(downloadUrl)URL.revokeObjectURL(downloadUrl);downloadUrl=URL.createObjectURL(new Blob([value],{type}));const a=node('a');a.href=downloadUrl;a.download=name;a.click();};
- get('rvt-export').onclick=()=>{if(data)download(JSON.stringify(data,null,2),'application/json','uvyazka-rvt-document.json');};
+ get('rvt-export').onclick=()=>{if(data)download(JSON.stringify(data),'application/json','uvyazka-rvt-document.json');};
  function details(host:HTMLElement,title:string,value:unknown){const d=node('details'),s=node('summary',title),pre=node('pre',JSON.stringify(value,null,2));d.append(s,pre);host.append(d);}
  function table(host:HTMLElement,headers:string[],rows:unknown[][]){const wrap=node('div'),t=node('table'),head=node('thead'),tr=node('tr'),body=node('tbody');wrap.className='rvt-table-scroll';headers.forEach(h=>tr.append(node('th',h)));head.append(tr);for(const row of rows){const r=node('tr');row.forEach(v=>r.append(node('td',v===null||v===undefined?'Не прочитано':typeof v==='object'?JSON.stringify(v):String(v))));body.append(r);}t.append(head,body);wrap.append(t);host.append(wrap);}
  function show(record:NativeRecord){

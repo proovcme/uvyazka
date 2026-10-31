@@ -138,6 +138,8 @@ def build_server(workspace: Workspace | None = None):
     register_authoring(mcp,memory)
     from .construction.rvt_data_tools import register_tools as register_rvt_data
     register_rvt_data(mcp,memory)
+    from .construction.model_tables import register_tools as register_model_tables
+    register_model_tables(mcp,memory)
     from .measurement_tools import register_tools as register_measurements
     register_measurements(mcp, memory)
     from .document_table_tools import register_tools as register_document_tables

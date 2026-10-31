@@ -18,7 +18,8 @@ readers = ["PyMuPDF>=1.26,<2", "python-docx>=1.1,<2", "openpyxl>=3.1,<4", "xlrd>
 authoring = ["ifcopenshell>=0.8.3,<1", "numpy>=2,<3", "pydantic>=2.11,<3", "pillow>=11,<13", "ezdxf>=1.4,<2", "PyMuPDF>=1.26,<2"]
 ifc = ["ifcopenshell>=0.8.3,<1", "numpy>=2,<3"]
 search = ["numpy>=2,<3"]
-all = ["mcp>=1.12,<2", "PyMuPDF>=1.26,<2", "python-docx>=1.1,<2", "openpyxl>=3.1,<4", "xlrd>=2.0.1,<3"]
+tables = ["mini-racer==0.14.1"]
+all = ["mcp>=1.12,<2", "PyMuPDF>=1.26,<2", "python-docx>=1.1,<2", "openpyxl>=3.1,<4", "xlrd>=2.0.1,<3", "mini-racer==0.14.1"]
 
 [project.scripts]
 uvyazka = "uvyazka.cli:main"
@@ -31,7 +32,7 @@ Repository = "https://github.com/proovcme/uvyazka"
 where = ["src"]
 
 [tool.setuptools.package-data]
-uvyazka = ["ui/*", "resources/*.json", "viewer/*", "viewer/assets/*"]
+uvyazka = ["ui/*", "resources/*.json", "resources/*.js", "viewer/*", "viewer/assets/*"]
 "uvyazka._vendor.les_list" = ["LICENSE.txt", "provenance.json"]
 
 [tool.setuptools.data-files]

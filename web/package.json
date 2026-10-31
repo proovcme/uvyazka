@@ -5,7 +5,8 @@
   "version": "0.4.0-alpha.2",
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && node build-tables.mjs && vite build",
+    "build:tables": "tsc --noEmit && node build-tables.mjs",
     "test": "node --experimental-strip-types --test tests/*.test.mjs tests/*.test.ts"
   },
   "dependencies": {

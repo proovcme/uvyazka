@@ -1,0 +1,5 @@
+V8 notice accompanying mini-racer 0.14.1.
+Upstream selects branch-heads/14.4 in builder/v8_build.py.
+https://chromium.googlesource.com/v8/v8/+/refs/branch-heads/14.4/LICENSE?format=TEXT
+SHA-256: 6ab33af8774a0f396ee3aeeb761e3229057682d6f9fa7f572e390c2cb3a6e509
+PyMiniRacer source: https://github.com/bpcreech/PyMiniRacer/tree/95b89887e74103a91747bca45a1e35ff0e1b81c3

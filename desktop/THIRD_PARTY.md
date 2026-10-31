@@ -19,6 +19,7 @@ Apache-2.0 отдельных исходных файлов не отменяе�
 | IfcOpenShell 0.9.0.post1, b5e509b | LGPL-3.0-or-later | Зафиксированный исходный архив, `win/build-all.cmd` и `win/build-deps.cmd` |
 | Open CASCADE 7.8.1 | LGPL-2.1 с исключением OCCT | Зафиксированный исходный архив; DLL можно заменить совместимой собственной сборкой |
 | rvt-rs и адаптеры Увязки | Apache-2.0 | `integrations/rvt-rs`, `rvt-metadata-reader`, `rvt-browser-bridge` |
+| mini-racer 0.14.1 / V8 | ISC / BSD и уведомления V8 | Встроенный локальный движок общего табличного ядра; лицензии Python-пакета и V8 входят в каталог `uvyazka-runtime/licenses` |
 | DWG-приложение / LibreDWG | GPL-3.0-or-later | Отдельное iframe-приложение; архивы исходников, патч и lock-файл вложены в `viewer/cad/sources` |
 | Python, MCP, Tauri, NumPy и другие библиотеки | Их собственные лицензии | Уведомления в установленном каталоге `uvyazka-runtime/licenses`; Python-зависимости фиксирует `uv.lock`, Rust — Cargo.lock, веб — package-lock.json |
 

@@ -3,6 +3,7 @@ include AGENTS.md
 include LICENSE NOTICE
 include uv.lock
 recursive-include desktop *.py *.rs *.toml *.lock *.json *.md *.html *.js *.css *.mjs *.ico
+recursive-include desktop/licenses *.txt
 prune desktop/node_modules
 prune desktop/ui-dist
 prune desktop/src-tauri/target
@@ -26,7 +27,8 @@ recursive-include clients *.json *.toml
 recursive-include docs *.md *.json
 recursive-include docs/assets *.jpg *.svg *.png *.gif
 recursive-include src/uvyazka/ui *.html *.js *.css
-recursive-include src/uvyazka/resources *.json
+recursive-include src/uvyazka/resources *.json *.js
+recursive-include integrations/rvt-shared *.rs
 recursive-include src/uvyazka/viewer *
 prune src/uvyazka/viewer/updates
 recursive-include web *.ts *.css *.html *.json *.mjs *.txt

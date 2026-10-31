@@ -4,14 +4,22 @@ import type {SpecDataset,SpecInput,SpecColumn,SpecDefinition} from './model-spec
 import type {ValueCell} from './rvt-schedule.ts';
 import {evaluateFilter} from './rvt-schedule-rules.ts';
 import {elementCategory} from './element-category.ts';
+import {effectiveParameter,nativeInstanceClasses} from './rvt-schedule.ts';
+import {rvtCategoryNames} from './rvt-category-names.ts';
 import {gostColumns,mappedFields,emptyGostSettings,validateGostSettings} from './gost-settings.ts';
 import type {GostSettings,GostField,MappedField,GostBinding} from './gost-settings.ts';
 export interface GostCell extends ValueCell {blank?:boolean;confirmed?:boolean}
 export interface GostRow {number:number;keys:string[];scene_ids:string[];cells:Record<GostField,GostCell>}
 export interface GostIssue {kind:'question'|'conflict'|'coverage';message:string;keys:string[];field?:GostField}
 export interface GostReport {project_id:string;contract:'UvyazkaGostSpecification';version:1;definition:SpecDefinition;settings:GostSettings;source_metadata:Record<string,unknown>;rows:GostRow[];issues:GostIssue[];selection:{key:string;scene_id:string|null;state:'pass'|'excluded'|'unknown';reason:string}[];coverage:{read:number;eligible:number;included:number;excluded:number;unknown:number;positions:number};release_ready:boolean}
-export function physicalRow(row:SpecInput):boolean{return !!row.element&&row.element.role==='element'&&row.element.semantic_kind!=='geometry_fragment'&&(row.element.hierarchy?.includes('IfcElement')??false);}
-export function rowCategory(row:SpecInput,model?:ModelPackage|null):string{return row.element?(model?elementCategory(row.element,model).name:row.element.class):row.native?.class_name??'Не прочитана';}
+// Native physical owner classes plus an explicit resolved category establish an
+// instance even when tessellation failed. A name or geometry fragment cannot.
+export function physicalRow(row:SpecInput):boolean{
+ if(row.element)return row.element.role==='element'&&row.element.semantic_kind!=='geometry_fragment'&&(row.element.hierarchy?.includes('IfcElement')??false);
+ const category=effectiveParameter(row.native,row.type,'-1140363');
+ return !!row.native&&nativeInstanceClasses.has(row.native.class_name)&&category.state==='value'&&!!rvtCategoryNames[String(category.value)]&&!['-2000045','-2000051'].includes(String(category.value));
+}
+export function rowCategory(row:SpecInput,model?:ModelPackage|null):string{const category=effectiveParameter(row.native,row.type,'-1140363');return row.element?(model?elementCategory(row.element,model).name:row.element.class):category.state==='value'?rvtCategoryNames[String(category.value)]??row.native?.class_name??'Не прочитана':row.native?.class_name??'Не прочитана';}
 export function rowModel(row:SpecInput){return row.source_sha256;}
 export function fieldStats(dataset:SpecDataset,column:SpecColumn){let filled=0;const examples:string[]=[];for(const row of dataset.rows){const c=specificationCell(dataset,row,column);if(c.state==='value'){filled++;const s=String(c.value);if(!examples.includes(s)&&examples.length<3)examples.push(s.slice(0,110));}}return {filled,total:dataset.rows.length,examples};}
 const captions:Record<MappedField,string[]>={position:['ADSK_Позиция','Марка','Марка типа','Mark','Tag'],name:['ADSK_Наименование','Наименование','Наименование и техническая характеристика','Описание','Description'],type:['ADSK_Марка','Тип','Type','Type Name','Типоразмер'],code:['ADSK_Код изделия','Код продукции','Product Code','Article Number'],supplier:['ADSK_Завод-изготовитель','Поставщик','Изготовитель','Manufacturer','Supplier'],mass:['ADSK_Масса','Масса','Масса 1 ед., кг','Mass','Weight'],note:['ADSK_Примечание','Примечание','Комментарии','Comments']};

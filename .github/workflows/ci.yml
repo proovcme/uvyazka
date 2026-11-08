@@ -125,6 +125,7 @@ jobs:
       - run: python tools/build_browser_runtime.py
       - run: npm ci
         working-directory: integrations/cad-viewer
+      - run: node --test integrations/cad-viewer/read-data.test.mjs
       - run: python tools/build_demo_site.py
       - run: python tools/fetch_cad_fixtures.py
       - run: node tools/check_cad_worker.mjs

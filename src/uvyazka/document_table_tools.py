@@ -9,7 +9,8 @@ def register_tools(mcp, workspace):
     def index_document_tables(project_id: str, doc_id: str, sha256: str,
                               start_page: int = 1, page_limit: int = 5, refresh: bool = False) -> dict:
         """Index 1–10 pages of a registered PDF into the project database: separate tables and
-        candidate volume contents/project composition/TOC. LIST heuristics are navigation, not accepted facts.
+        candidate volume contents/project composition/TOC and SPDS title block fields.
+        Cached tables keep their IDs when the title block profile is added.
         Same byte snapshot is hashed and parsed; no OCR, automatic merging or source writes.
         Resume with next_page and get_document_structure coverage. Warnings mean unresolved coverage.
         refresh retries/replaces this page range's derived catalogue; observations stay unchanged."""
@@ -26,7 +27,8 @@ def register_tools(mcp, workspace):
     @mcp.tool(annotations=read)
     def get_document_structure(project_id: str, doc_id: str, sha256: str, section: str = "pages",
                                 offset: int = 0, limit: int = 40) -> dict:
-        """Resume indexed document navigation: pages|volume_contents|project_composition|pz_toc.
+        """Resume indexed document navigation: pages|volume_contents|project_composition|pz_toc|title_block.
+        Title block field candidates include raw values and unrotated PDF bounding boxes.
         Returns candidate entries, indexing coverage and next missing page. A printed target_sheet is
         not a verified PDF page number. Cached navigation is not source evidence or engineering review."""
         return DocumentTables(workspace, project_id).structure(doc_id, sha256, section, offset, limit)

@@ -78,8 +78,14 @@ class DocumentTableTests(unittest.TestCase):
         reopened = DocumentTables(Workspace(self.workspace.home),"a")
         coverage = reopened.structure(self.doc_id,self.sha)["coverage"]
         self.assertEqual((coverage["indexed_pages"],coverage["next_unindexed_page"]),(1,2))
+        table_ids = [item["table_id"] for item in reopened.find()["items"]]
+        with connection(self.workspace.db_path("a")) as db:
+            db.execute("update pdf_catalog_pages set payload=json_remove(payload,'$.title_block_profile','$.navigation.title_block')")
+        self.assertEqual(reopened.structure(self.doc_id,self.sha,"title_block")["coverage"]["title_block_pages_checked"],0)
         with patch("uvyazka.document_tables.detect",side_effect=AssertionError("cached page must not reparse")):
             reopened.index(self.doc_id,self.sha,page_limit=1)
+        self.assertEqual([item["table_id"] for item in reopened.find()["items"]],table_ids)
+        self.assertEqual(reopened.structure(self.doc_id,self.sha,"title_block")["coverage"]["title_block_pages_checked"],1)
         reopened.index(self.doc_id,self.sha,start_page=2,page_limit=2)
         info = reopened.structure(self.doc_id,self.sha)
         self.assertEqual(info["coverage"]["indexed_pages"],3)

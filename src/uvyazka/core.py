@@ -1,7 +1,7 @@
 """Project-scoped SQLite memory; source files are opened only for reading."""
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
@@ -200,8 +200,8 @@ class Workspace:
                                  "note": "Recorded work only; read records for source freshness, unresolved questions and revisions."},
                 "limitations": ["Text indexing is not a complete numerical or engineering audit.", "Observations are unconfirmed; source metadata matches do not approve a revision.", "RVT/IFC extraction and scheduling have separate coverage; Selected PDF pages support local OCR via ocr_pdf_pages; OCR and automatic engineering acceptance remain separate."]}
 
-    def source_record(self, project_id: str, doc_id: str) -> tuple[dict, Path]:
-        with connection(self.db_path(project_id), readonly=True) as db:
+    def source_record(self, project_id: str, doc_id: str, *, _db=None) -> tuple[dict, Path]:
+        with (connection(self.db_path(project_id), readonly=True) if _db is None else nullcontext(_db)) as db:
             row = db.execute("select * from documents where doc_id=?", (doc_id,)).fetchone()
             uploaded = None
             if db.execute("select 1 from sqlite_master where name='uploaded_sources'").fetchone():
@@ -220,8 +220,8 @@ class Workspace:
             raise ValueError("Source is outside the project's source root")
         return record, target
 
-    def source_state(self, project_id: str, doc_id: str, *, full_hash: bool = False) -> dict:
-        record, target = self.source_record(project_id, doc_id)
+    def source_state(self, project_id: str, doc_id: str, *, full_hash: bool = False, _db=None) -> dict:
+        record, target = self.source_record(project_id, doc_id, _db=_db)
         if not target.is_file():
             return {"status": "source_unavailable"}
         stat = target.stat()
@@ -232,10 +232,13 @@ class Workspace:
         return {"status": "content_hash_matches" if full_hash else "snapshot_metadata_matches", "note": "Source freshness is separate from revision acceptance."}
 
     def find_documents(self, project_id: str, query: str = "", limit: int = 20, offset: int = 0) -> dict:
+        from .design_navigation import path_hints
         limit = max(1, min(int(limit), 50)); offset = max(0, int(offset))
         with connection(self.db_path(project_id), readonly=True) as db:
             total = db.execute("select count(*) from documents where casefold(relative_path) like casefold(?)", ("%" + query + "%",)).fetchone()[0]
             rows = [dict(r) for r in db.execute("select * from documents where casefold(relative_path) like casefold(?) order by relative_path limit ? offset ?", ("%" + query + "%", limit, offset))]
+        for row in rows:
+            row["navigation_hints"] = path_hints(row["relative_path"])
         return {"project_id": project_id, "documents": rows, "total": total, "offset": offset, "limit": limit, "next_offset": offset + len(rows) if offset + len(rows) < total else None}
 
     def search_project(self, project_id: str, query: str, limit: int = 6, doc_id: str | None = None) -> dict:
@@ -315,13 +318,17 @@ class Workspace:
 
     def record_observations(self, project_id: str, observations: list[dict], request_id: str) -> dict:
         """Append source-backed, unapproved observations; retry is idempotent."""
+        return self._record_observations(project_id, observations, request_id)
+
+    def _record_observations(self, project_id, observations, request_id, *, transaction=None):
         if not request_id or len(request_id) > 128 or not 1 <= len(observations) <= 40:
             raise ValueError("request_id and a batch of 1–40 observations are required")
         if len(encode(observations)) > 100000:
             raise ValueError("Observation batch exceeds 100000 characters")
         fingerprint = hashlib.sha256(encode(observations).encode()).hexdigest()
-        with connection(self.db_path(project_id)) as db:
-            db.execute("begin immediate")
+        with (connection(self.db_path(project_id)) if transaction is None else nullcontext(transaction)) as db:
+            if transaction is None:
+                db.execute("begin immediate")
             previous = db.execute("select * from requests where request_id=?", (request_id,)).fetchone()
             if previous:
                 if previous["payload_hash"] != fingerprint:

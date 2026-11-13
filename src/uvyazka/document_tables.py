@@ -11,6 +11,7 @@ from .core import connection, encode, now
 from .pdf_source import open_pdf
 from .measurements import COORDINATES
 from ._vendor.les_list import tables as heuristics, structure
+from .design_navigation import TITLE_BLOCK_PROFILE, title_block_hints
 
 ALGORITHM = "uvyazka-list-selected-v1"
 SQL = """
@@ -104,20 +105,31 @@ class DocumentTables:
                                         (doc_id, sha256, version, page_number)).fetchone()
                 if cached and not refresh:
                     summary = json.loads(cached[0])
+                    if summary.get("title_block_profile") != TITLE_BLOCK_PROFILE:
+                        candidates = title_block_hints(pdf[page_number-1])
+                        with connection(self.path) as db:
+                            db.execute("""update pdf_catalog_pages set payload=json_set(payload,
+                                '$.navigation.title_block',json(?),'$.title_block_profile',?)
+                                where doc_id=? and sha256=? and engine=? and page_number=?""",
+                                (encode(candidates), TITLE_BLOCK_PROFILE, doc_id, sha256, version, page_number))
+                        summary["title_block_profile"] = TITLE_BLOCK_PROFILE
                     result.append({k:v for k,v in summary.items() if k != "navigation"})
                     continue
                 page = pdf[page_number-1]
                 rotation = page.rotation
+                title_block = title_block_hints(page)
                 page.set_rotation(0)
                 source = {"doc_id": doc_id, "sha256": sha256, "page_number": page_number}
                 summary = {**source, "engine": version, "page_count": total,
                            "coordinate_system": COORDINATES, "page_bounds": list(page.rect),
                            "original_rotation": rotation, "indexed_at": now(), "warnings": [], "navigation": {}}
+                summary["title_block_profile"] = TITLE_BLOCK_PROFILE
                 text = page.get_text("text")
                 if len(text) > 1000000:
                     summary["warnings"].append("navigation_skipped_text_exceeds_1M_characters")
                 else:
                     summary["navigation"] = navigation(text, page_number)
+                summary["navigation"]["title_block"] = title_block
                 if not text.strip():
                     summary["warnings"].append("no_text_layer_visual_or_OCR_read_needed")
                 cards = []
@@ -190,7 +202,7 @@ class DocumentTables:
 
     def structure(self, doc_id, sha256, section="pages", offset=0, limit=40):
         number(offset, "offset"); number(limit, "limit", 1, 100)
-        if section not in {"pages", "volume_contents", "project_composition", "pz_toc"}:
+        if section not in {"pages", "volume_contents", "project_composition", "pz_toc", "title_block"}:
             raise ValueError("Unknown structure section")
         record, _ = self.workspace.source_record(self.project_id, doc_id)
         with connection(self.path, readonly=True) as db:
@@ -204,14 +216,18 @@ class DocumentTables:
                 items.append({k:v for k,v in page.items() if k != "navigation"})
             else:
                 for entry in page["navigation"].get(section, []):
+                    locator = ({"coordinate_system": COORDINATES, "profile": page.get("title_block_profile")}
+                               if section == "title_block" else {"target_sheet_is_not_verified_pdf_page": True})
                     items.append({**entry, "source": {"doc_id": doc_id, "sha256": sha256, "page_number": page["page_number"]},
                                   "interpretation_status": "heuristic_candidate", "is_evidence": False,
-                                  "target_sheet_is_not_verified_pdf_page": True})
+                                  **locator})
         return bounded({"project_id": self.project_id, "doc_id": doc_id, "sha256": sha256, "section": section,
                         "items": items[offset:offset+limit], "total": len(items),
                         "next_offset": offset+limit if offset+limit < len(items) else None,
                         "coverage": {"indexed_pages": len(pages), "page_count": total_pages,
                                      "pages_with_warnings": sum(bool(p["warnings"]) for p in pages),
+                                     "title_block_pages_checked": sum(
+                                         p.get("title_block_profile") == TITLE_BLOCK_PROFILE for p in pages),
                                      "next_unindexed_page": missing if pages else 1,
                                      "reviewed_pages": None},
                         "freshness": "registered_version_changed" if record["sha256"] != sha256 else "catalog_navigation_only_actual_bytes_not_checked"})

@@ -264,10 +264,7 @@ class ProjectStructure:
                     reviews=[json.loads(r[0]) for r in db.execute('select payload from structure_reviews where cell_id=? order by revision',(c['cell_id'],))]
                     c['readings']={r['reader']:r for r in reviews}
                 rows.append(cells)
-        registered,_=self.workspace.source_record(self.project_id,source['doc_id'])
-        current=registered['sha256']==source['sha256'] and card['engine']==engine(registered['extension'])
-        freshness=self.workspace.source_state(self.project_id,source['doc_id'],full_hash=True) if verify_source else {'status':'not_verified'}
-        current=current and (freshness['status']=='content_hash_matches' if verify_source else True)
+        freshness,current=self.table_freshness(card,verify_source)
         if not current:
             for row in rows:
                 for c in row:
@@ -280,6 +277,13 @@ class ProjectStructure:
                             next_offset=offset+limit if offset+limit<card['row_count'] else None,
                             next_column_offset=column_offset+column_limit if column_offset+column_limit<card['column_count'] else None,
                             accepted=False))
+
+    def table_freshness(self, card, verify_source):
+        source=card['source']
+        registered,_=self.workspace.source_record(self.project_id,source['doc_id'])
+        current=registered['sha256']==source['sha256'] and card['engine']==engine(registered['extension'])
+        freshness=self.workspace.source_state(self.project_id,source['doc_id'],full_hash=True) if verify_source else {'status':'not_verified'}
+        return freshness,current and (freshness['status']=='content_hash_matches' if verify_source else True)
 
     def review(self,cell_id,reader,observed_text,state,method,request_id,reason='',expected_revision=0):
         text(cell_id,'cell_id',100,False);text(request_id,'request_id',100,False)

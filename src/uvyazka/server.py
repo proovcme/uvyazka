@@ -152,6 +152,8 @@ def build_server(workspace: Workspace | None = None):
     register_semantic(mcp,memory)
     from .model_data_tools import register_tools as register_model_data
     register_model_data(mcp,memory)
+    from .cad_conversion_tools import register_tools as register_cad_conversion
+    register_cad_conversion(mcp,memory)
     return mcp
 
 

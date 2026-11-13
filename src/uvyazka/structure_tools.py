@@ -21,6 +21,20 @@ def register_tools(mcp,workspace):
         return ReviewReport(workspace,project_id).export(task_id,format,revision,panel_url)
 
     @mcp.tool(annotations=read)
+    def read_specification_rows(project_id: str, table_id: str, offset: int = 0, limit: int = 30,
+                                header_table_id: str | None = None, verify_source: bool = True) -> dict:
+        """Read equipment, products and materials specification candidates from the shared source grid.
+        Get table_id from get_project_structure(kind='tables'). Every source row stays in pagination.
+        PDF includes physical page, cell coordinates and page stamp candidates when available.
+        Office includes source cell IDs, raw quantity/unit, separate formula cache and issue sheet candidates.
+        For a headerless continuation explicitly provide a compatible header_table_id from the same snapshot.
+        Rows, section scope, reserves, revisions and ambiguous layouts require source review.
+        Uses stored literal cells without summing, substituting merged values or approving a quantity."""
+        from .specification_source import read_specification
+        return read_specification(ProjectStructure(workspace, project_id), table_id, offset, limit,
+                                  header_table_id, verify_source)
+
+    @mcp.tool(annotations=read)
     def calculate_structure_expression(project_id: str,table_id: str,expression: str) -> dict:
         """Recalculate chosen XLSX/XLSM scalar arithmetic from stored literal cells, with exact fractions and source trace.
         Supports same-worksheet A1/$A$1 references, numbers, + - * / and parentheses, including referenced

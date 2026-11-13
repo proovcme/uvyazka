@@ -17,12 +17,17 @@ S = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
 
 @lru_cache(maxsize=32)
 def engine(suffix):
+    revision = REVISION
+    if suffix == '.pdf':
+        from .design_navigation import TITLE_BLOCK_PROFILE
+        # Rebuild older PDF snapshots without invalidating Office/CSV grids.
+        revision += '/' + TITLE_BLOCK_PROFILE
     package = {'.pdf': 'PyMuPDF', '.xlsx': 'openpyxl', '.xlsm': 'openpyxl', '.xls':'xlrd'}.get(suffix)
     try:
         dependency = version(package) if package else 'stdlib'
     except PackageNotFoundError:
         dependency = 'unavailable'
-    return f'{REVISION}/{package or "xml-csv"}:{dependency}'
+    return f'{revision}/{package or "xml-csv"}:{dependency}'
 
 
 def archive(data):
@@ -287,16 +292,21 @@ def xls_units(data,start,limit):
 
 def pdf_units(pdf, start, limit):
     from .document_tables import detect, table_matrix, navigation
+    from .design_navigation import TITLE_BLOCK_PROFILE, title_block_hints
     from .measurements import COORDINATES
     output = []
     for index in range(start,min(len(pdf),start+limit)):
-        page = pdf[index]; rotation = page.rotation; page.set_rotation(0)
+        page = pdf[index]; rotation = page.rotation
+        title_block = title_block_hints(page)
+        page.set_rotation(0)
         text = page.get_text('text')
         unit = dict(index=index+1,kind='pdf_page',name=f'Страница PDF {index+1}',physical_page=True,
                     original_rotation=rotation,bounds=list(page.rect),crop_box=list(page.cropbox),
                     coordinate_system=COORDINATES,warnings=[],tables=[],
                     navigation_candidates=navigation(text[:1000000],index+1),
                     printed_sheet_number=None,views_status='requires_identification_and_separate_scales')
+        unit['navigation_candidates']['title_block'] = title_block
+        unit['title_block_profile'] = TITLE_BLOCK_PROFILE
         if not text.strip(): unit['warnings'].append('no_text_layer_OCR_or_visual_read_required')
         try:
             for ordinal,t in enumerate(detect(page).tables,1):

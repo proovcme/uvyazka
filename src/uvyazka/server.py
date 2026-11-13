@@ -76,7 +76,8 @@ def build_server(workspace: Workspace | None = None):
 
     @mcp.tool(annotations=read)
     def find_documents(project_id: str, query: str = "", limit: int = 20, offset: int = 0) -> dict:
-        """Find source IDs, content hashes and format statuses by filename, with a continuation cursor."""
+        """Find source IDs, hashes and format statuses by filename, with a continuation cursor.
+        Navigation hints from path components are candidates, independent of title block fields."""
         return memory.find_documents(project_id, query, limit, offset)
 
     @mcp.tool(annotations=read)
@@ -113,6 +114,37 @@ def build_server(workspace: Workspace | None = None):
         Reuse request_id only for an identical retry. This tool never approves a technical decision or edits originals.
         """
         return memory.record_observations(project_id, observations, request_id)
+
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True})
+    def start_project_parse(project_id: str, job_id: str, doc_ids: list[str], purpose: str) -> dict:
+        """Freeze all current literal blocks for 1–20 selected documents as a model parsing job.
+        Run intake or scan first. Documents with no literal blocks remain visible as blocked.
+        Use purpose to specify the values and scope to extract. Same job_id and scope resume this snapshot.
+        The host model does the reading; the server runs no model and starts no background parsing."""
+        from .parse_work import ParseWork
+        return ParseWork(memory, project_id).start(job_id, doc_ids, purpose)
+
+    @mcp.tool(annotations=read)
+    def get_project_parse(project_id: str, job_id: str | None = None, state: str = "pending",
+                          offset: int = 0, limit: int = 20, verify_sources: bool = False) -> dict:
+        """List saved jobs or read exact evidence locators, progress and remaining units for one job.
+        Use read_evidence with each unit's source. States: pending, observed, no_data, blocked, stale, all.
+        After submissions reload pending at offset=0. Use verify_sources=true for a final actual byte check.
+        Counts cover selected extracted blocks, including separate entries for unreadable documents."""
+        from .parse_work import ParseWork
+        return ParseWork(memory, project_id).get(job_id, state, offset, limit, verify_sources)
+
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True})
+    def submit_project_parse(project_id: str, job_id: str, request_id: str, results: list[dict]) -> dict:
+        """Save 1–20 model outcomes atomically with up to 40 literal source observations.
+        Each result has unit_number and state=observed|no_data|blocked. no_data/blocked require a note.
+        observed needs observations with name, group, value, raw_value, unit, basis and optional
+        entity/property/revision_set/specification. The exact source is taken from the job, not the model.
+        For no_data on sparse PDFs provide method=visual_original and a note after visual inspection.
+        Inspect corrupt pages before marking no_data. After OCR or source changes start a new
+        job for the changed snapshot. Retry only identical request_id and payload. No engineering approval."""
+        from .parse_work import ParseWork
+        return ParseWork(memory, project_id).submit(job_id, request_id, results)
 
     @mcp.tool(annotations=read)
     def get_unit_catalog(dimension: str | None = None) -> dict:

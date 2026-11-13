@@ -110,6 +110,57 @@ class StructureTests(unittest.TestCase):
         self.assertIsNotNone(table['rows'][1][1]['locator']['bbox'])
         self.assertEqual(table['rows'][1][1]['locator']['coordinate_system'],'pdf_unrotated_top_left_points')
 
+    def test_pdf_upgrade_rebuilds_stamp_fields_and_preserves_previous_readings(self):
+        import pymupdf
+        from unittest.mock import patch
+        from test_document_tables import grid
+        from uvyazka.structured_readers import engine
+
+        source=self.sources/'upgrade.pdf'
+        with pymupdf.open() as pdf:
+            page=pdf.new_page(width=595,height=842)
+            font=pymupdf.Font('cjk')
+            page.insert_font(fontname='fixture',fontbuffer=font.buffer)
+            grid(page,30,30,[['Марка','Кол.'],['П1','0']],[70,60])
+            pt=72/25.4
+            for word,x,y in [('Изм.',182,36),('Дата',128,36),
+                             ('DEMO-12-ОВ',71,54),('Стадия',47,31),('Р',47,24)]:
+                center=pymupdf.Point(page.rect.x1-x*pt,page.rect.y1-y*pt)
+                origin=center+(-font.text_length(word,fontsize=8)/2,2)
+                page.insert_text(origin,word,fontname='fixture',fontsize=8)
+            pdf.save(source)
+        original=source.read_bytes()
+        store=self.prepare()
+        legacy_engine='source-grids-v3/PyMuPDF:'+pymupdf.VersionBind
+        with patch('uvyazka.project_structure.engine',return_value=legacy_engine):
+            store.build()
+            previous=store.catalog()['items'][0]
+            table_id=previous['table_ids'][0]
+            cell=store.read(table_id)['rows'][1][1]
+            store.review(cell['cell_id'],'model','0','value','visual_original','before-upgrade')
+        # The previous release did not store either stamp field.
+        with connection(store.path) as db:
+            payload=json.loads(db.execute('select payload from structure_units where unit_id=?',
+                                          (previous['unit_id'],)).fetchone()[0])
+            payload.pop('title_block_profile')
+            payload['navigation_candidates'].pop('title_block')
+            db.execute('update structure_units set payload=? where unit_id=?',
+                       (json.dumps(payload,ensure_ascii=False),previous['unit_id']))
+
+        self.assertNotEqual(engine('.pdf'),legacy_engine)
+        self.assertEqual(store.coverage()['pending_documents'],1)
+        self.assertEqual(store.build()['processed'][0]['processed_units'],1)
+        current=store.catalog()['items'][0]
+        self.assertNotEqual(current['unit_id'],previous['unit_id'])
+        fields={item['field']:item['value'] for item in current['navigation_candidates']['title_block']}
+        self.assertEqual(fields['designation'],'DEMO-12-ОВ')
+        self.assertEqual(fields['stage'],'Р')
+        historical=store.read(table_id)
+        self.assertFalse(historical['current_registered_version'])
+        self.assertEqual(historical['rows'][1][1]['readings']['model']['observed_text'],'0')
+        self.assertEqual(source.read_bytes(),original)
+        self.assertEqual(store.build()['processed'],[])
+
     def test_two_reading_lanes_history_idempotence_stale_and_project_boundary(self):
         source=self.sources/'data.csv';source.write_text('Площадь,12.50\nПусто,\n',encoding='utf-8')
         store=self.prepare();store.build();tid=store.catalog('tables')['items'][0]['table_id']

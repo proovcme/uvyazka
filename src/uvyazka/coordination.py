@@ -344,8 +344,10 @@ def register_tools(mcp,workspace):
     @mcp.tool(annotations=read)
     def list_project_checks() -> dict:
         """List implemented project-check families and explicit coverage limits. This is an extensible rule framework, not a declaration that every discipline has been checked."""
-        return {"implemented":["document/discipline scope coverage","shared room/entity claims, units, measurement bases and revisions","ambiguous room identity and missing expected discipline","required connections and directed paths to declared sources","cabinet internal routing, operating modes and provided port-parameter compatibility","entity requirements: required_property, allowed_values, numeric_range with explicit units/basis and source or assumption"],
-            "not_implemented":["automatic full drawing/model extraction","native CAD/BIM corrections","electrical/hydraulic/network sizing","geometric collision and service-clearance calculations","automatic statutory applicability/approval"],
+        return {"implemented":["document/discipline scope coverage","shared room/entity claims, units, measurement bases and revisions","ambiguous room identity and missing expected discipline","required connections and directed paths to declared sources","cabinet internal routing, operating modes and provided port-parameter compatibility","entity requirements: required_property, allowed_values, numeric_range with explicit units/basis and source or assumption",
+            "ten bounded engineering kernels via list_engineering_methods/run_engineering_calculation, with explicit tolerances and caller-established criteria",
+            "working PDF calculation reports/vector sheets and actual PDF page/frame/font/text checks via engineering_document_schema/build_engineering_document/check_engineering_document"],
+            "not_implemented":["automatic full drawing/model extraction","native CAD/BIM corrections","complete coupled electrical/hydraulic/network sizing and automatic equipment/protection selection","full SPDS forms, normative font and UGO semantic certification","geometric collision and service-clearance calculations within this graph audit","automatic statutory applicability/approval"],
             "extension":"Additional disciplines supply shared entities, claims, ports and requirements. Unsupported rule kinds remain explicit issues; document coverage and missing inputs stay visible."}
     @mcp.tool(annotations=read)
     def project_graph_schema() -> dict:

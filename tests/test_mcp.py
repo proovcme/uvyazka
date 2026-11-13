@@ -34,6 +34,9 @@ with tempfile.TemporaryDirectory() as directory:
     server = build_server(Workspace(Path(directory)/'state'))
     names = {tool.name for tool in asyncio.run(server.list_tools())}
     assert {'cad_converter_status', 'convert_cad_document', 'get_cad_conversion'} <= names
+    assert {'list_engineering_methods','run_engineering_calculation','get_engineering_work',
+            'engineering_document_schema','build_engineering_document','check_engineering_document'} <= names
+    asyncio.run(server.call_tool('list_engineering_methods', {}))
     asyncio.run(server.call_tool('construction_schema', {}))
     asyncio.run(server.call_tool('get_unit_catalog', {'dimension': 'flow'}))
     asyncio.run(server.call_tool('rvt_converter_status', {}))

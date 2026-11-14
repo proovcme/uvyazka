@@ -97,6 +97,9 @@ jobs:
         with:
           python-version: '3.12'
       - run: python tools/setup_rvt.py --profile dev --with-fixture-generator
+      - run: cargo test --locked --manifest-path integrations/rvt-rs/Cargo.toml --lib --features unstable-research
+        env:
+          CARGO_TARGET_DIR: .uvyazka-build/rvt-target
       - run: cargo test --locked --manifest-path integrations/rvt-metadata-reader/Cargo.toml --test mep_systems
         env:
           CARGO_TARGET_DIR: .uvyazka-build/rvt-target

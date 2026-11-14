@@ -1,4 +1,7 @@
 import {sameReadSource,rvtMode} from './browser-rvt-direct';
+import {lesTarget,showLesSource} from './les-source';
+let lesSourceTarget:ReturnType<typeof lesTarget>=null,lesSourceError='';
+try{lesSourceTarget=lesTarget(new URL(location.href));}catch(e){lesSourceError=String(e);}
 import {geometryQuality} from './geometry-quality';
 import {sourceFormatLabel,addDiagnostics,userMessage,displayClass,displayElementName} from './ui-language.ts';
 import {propertySections} from './property-sections.ts';
@@ -563,6 +566,9 @@ async function demoExamples(){
   else {if(!model&&examples[0]?.kind==='model')await loadModel(examples[0].id);picker.value=model?.model_id||examples[0]?.id||'';document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:model}));}
 }
 initialLoad=(async()=>{try{const r=await fetch(DEMO?'./demo/projects.json':'/api/projects');const d=await r.json();if(project==='browser-local')return;el<HTMLSelectElement>('projects').innerHTML=d.projects.map((p:{id:string;name:string})=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');project=project||d.default_project;if(project){el<HTMLSelectElement>('projects').value=project;await loadProject(project,DEMO&&!!initialExample);await demoExamples();}else error('Сначала зарегистрируйте проект или запустите uvyazka demo.');}catch(e){error(e);}})();
+
+if(lesSourceTarget&&!DEMO)void initialLoad.then(()=>showLesSource(lesSourceTarget,()=>model,id=>{setMode('view');selectElement(id);viewer?.focusTargets([id]);})).catch(error);
+if(lesSourceError)void initialLoad.then(()=>error(lesSourceError));
 
 function setPanel(panel:'tree'|'inspector',open:boolean) {
   if(open&&matchMedia('(max-width: 650px)').matches){

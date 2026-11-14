@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import subprocess
 import tempfile
+import threading
 import unittest
 
 from uvyazka.core import Workspace
@@ -19,6 +20,29 @@ except ImportError:
 
 @unittest.skipIf(ClientSession is None, "MCP extra not installed")
 class ProtocolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_slow_native_operation_does_not_block_status(self):
+        from uvyazka.server import build_server
+        started, release = threading.Event(), threading.Event()
+        with tempfile.TemporaryDirectory() as directory:
+            server = build_server(Workspace(Path(directory)/'state'))
+
+            @server.tool()
+            def synthetic_slow_read() -> dict:
+                started.set()
+                if not release.wait(5):
+                    raise RuntimeError('Synthetic operation was not released')
+                return {'finished': True}
+
+            slow = asyncio.create_task(server.call_tool('synthetic_slow_read', {}))
+            try:
+                self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                status = await asyncio.wait_for(server.call_tool('list_projects', {}), 1)
+                self.assertTrue(status)
+                self.assertFalse(slow.done())
+            finally:
+                release.set()
+                await slow
+
     def test_server_without_optional_bim_libraries(self):
         code = '''
 import asyncio, importlib.abc, sys, tempfile

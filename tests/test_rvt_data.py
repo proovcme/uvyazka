@@ -28,6 +28,22 @@ def fixture():
 
 
 class DataTests(unittest.TestCase):
+    def test_missing_profile_is_reported_without_false_schema_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'sources';source.mkdir()
+            (source/'synthetic.rvt').write_bytes(bytes.fromhex('D0CF11E0A1B11AE1')+b'synthetic')
+            ws=Workspace(root/'state');ws.create_project('one','One',source);scan(ws,'one')
+            doc=ws.find_documents('one','synthetic.rvt')['documents'][0]
+            binary=root/'reader';binary.write_bytes(b'fixture')
+            def invoke(_,copied,request,output):
+                self.assertEqual(json.loads(request.read_text(encoding='utf8'))['mode'],'inventory')
+                output.write_text(encode({'schema_sha256':'a'*64,'classes':[{'name':'Element','parent':None}]}),encoding='utf8')
+            with patch('uvyazka.construction.rvt_data.binary_path',return_value=binary),patch.object(RvtData,'invoke',side_effect=invoke):
+                result=RvtData(ws).extract('one',doc['doc_id'],'missing','parameters')
+            self.assertEqual(result['record_count'],0)
+            self.assertFalse(result['pagination_complete'])
+            self.assertIn('Requested class roots not found',result['error'])
+
     def test_native_page_continuations_keep_every_record_and_reject_incomplete_pages(self):
         for mode in ['complete','stuck','incomplete']:
             with self.subTest(mode=mode),tempfile.TemporaryDirectory() as directory:
@@ -117,6 +133,8 @@ class DataTests(unittest.TestCase):
             data=RvtData(ws)
             with patch('uvyazka.construction.rvt_data.binary_path',return_value=binary),patch.object(RvtData,'invoke',side_effect=invoke) as native:
                 result=data.extract('one',doc['doc_id'],'extract','views')
+                self.assertEqual(ws.source_record('one',doc['doc_id'])[0]['sha256'],result['source']['sha256'])
+                self.assertEqual(ws.source_state('one',doc['doc_id'],full_hash=True)['status'],'content_hash_matches')
                 self.assertEqual(data.extract('one',doc['doc_id'],'extract','views'),result)
                 self.assertEqual(data.extract('one',doc['doc_id'],'another','views'),result)
                 self.assertEqual(native.call_count,2)

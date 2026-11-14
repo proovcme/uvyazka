@@ -476,7 +476,8 @@
     },
     {
       "path": "src/research/native_index.rs",
-      "sha256": "5d190734d6004c3f7d5b944731df527d964d3962bb5d6c3bc83e1b7d2e5d2a6e"
+      "sha256": "01ccd501ac3ba4424338524bd116ee3fc69d72a598f5348e4995bf608bd1225e",
+      "upstream_sha256": "5d190734d6004c3f7d5b944731df527d964d3962bb5d6c3bc83e1b7d2e5d2a6e"
     },
     {
       "path": "src/research/native_instance_materials.rs",
@@ -501,7 +502,8 @@
     },
     {
       "path": "src/research/native_parameters.rs",
-      "sha256": "bd061c18f3b4fa03f62ad1e9fcc1b1eceb25b921d66d015271eb51fdcbe93c60"
+      "sha256": "d496dbeb23bbc11512b82987d66122ba656a856a3dabe079a4e25a795a94ac6c",
+      "upstream_sha256": "bd061c18f3b4fa03f62ad1e9fcc1b1eceb25b921d66d015271eb51fdcbe93c60"
     },
     {
       "path": "src/research/native_parametric_mesh.rs",
@@ -790,6 +792,20 @@
       "files": [
         "Cargo.toml",
         "Cargo.lock"
+      ]
+    },
+    {
+      "id": "uvyazka-empty-local-saves-v1",
+      "description": "Use local physical ordinals for a compacted-base suffix only when its base routing is identical to the terminal global base, all global episodes route there, and subsequent local saves add neither episodes nor records. Other divergent tables still refuse.",
+      "files": [
+        "src/research/native_index.rs"
+      ]
+    },
+    {
+      "id": "uvyazka-bounded-byte-arrays-v1",
+      "description": "Permit scalar byte arrays above the generic container cap only within both the independently bounded body and the explicit remaining graph-value budget. Keep other container limits and truncation checks.",
+      "files": [
+        "src/research/native_parameters.rs"
       ]
     }
   ]

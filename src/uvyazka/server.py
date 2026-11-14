@@ -1,6 +1,10 @@
 """Local MCP interface. The host supplies the model; this server has no model client."""
 from __future__ import annotations
 
+import asyncio
+from functools import wraps
+import inspect
+
 from .core import Workspace
 
 
@@ -9,8 +13,22 @@ def build_server(workspace: Workspace | None = None):
         from mcp.server.fastmcp import FastMCP
     except ImportError as exc:
         raise RuntimeError("Install the MCP extra: pip install 'uvyazka[mcp]'") from exc
+    class ResponsiveFastMCP(FastMCP):
+        def add_tool(self, fn, *args, **kwargs):
+            # FastMCP 1.x executes synchronous functions on its event loop.
+            # Native reads/IFC validation must not block status or cancellation.
+            if not inspect.iscoroutinefunction(fn):
+                original = fn
+
+                @wraps(original)
+                async def worker(*arguments, **keywords):
+                    return await asyncio.to_thread(original, *arguments, **keywords)
+
+                fn = worker
+            return super().add_tool(fn, *args, **kwargs)
+
     memory = workspace or Workspace()
-    mcp = FastMCP("uvyazka")
+    mcp = ResponsiveFastMCP("uvyazka")
     read = {"readOnlyHint": True, "idempotentHint": True}
 
     from .intake import ProjectIntake

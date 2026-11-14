@@ -46,6 +46,8 @@ def _locate(name, home=None):
         manifest = json.loads((folder/"manifest.json").read_text(encoding='utf-8'))
         if manifest.get("schema_version") != 1 or manifest.get("release") != release:
             raise ValueError("RVT runtime manifests disagree; rerun tools/setup_rvt.py")
+        if manifest.get("upstream_revision") != UPSTREAM_REVISION:
+            raise ValueError("RVT runtime is outdated for this Uvyazka version; rerun tools/setup_rvt.py")
         return folder/binary_name(name), "managed", manifest
     root = Path(__file__).resolve().parents[3]/"integrations"
     crate = 'rvt-metadata-reader' if name == 'ifccs-rvt-metadata' else 'rvt-rs'

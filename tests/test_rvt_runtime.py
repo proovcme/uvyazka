@@ -23,6 +23,12 @@ class RuntimeTests(unittest.TestCase):
             status=converter_status(home)
             self.assertTrue(status['available']); self.assertTrue(status['phase_reader_available'])
             self.assertEqual(status['binaries']['rvt-ifc']['source_revision'],UPSTREAM_REVISION)
+            manifest['upstream_revision']='outdated'
+            (folder/'manifest.json').write_text(json.dumps(manifest),encoding='utf-8')
+            self.assertFalse(converter_status(home)['available'])
+            with self.assertRaisesRegex(ValueError, 'outdated'): binary_path('ifccs-rvt-metadata',home)
+            manifest['upstream_revision']=UPSTREAM_REVISION
+            (folder/'manifest.json').write_text(json.dumps(manifest),encoding='utf-8')
             (folder/binary_name('rvt-ifc')).write_bytes(b'changed executable')
             self.assertFalse(converter_status(home)['available'])
             with self.assertRaises(ValueError): binary_path('rvt-ifc',home)

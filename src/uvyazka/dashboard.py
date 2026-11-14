@@ -26,7 +26,7 @@ def make_handler(workspace: Workspace):
             elif isinstance(data, str):
                 data = data.encode("utf-8")
             self.send_response(status)
-            frame="'self' http://tauri.localhost https://tauri.localhost tauri://localhost" if getattr(self.server,'desktop_embed',False) else "'self'" if self.path.startswith('/simulation/cad/') else "'none'"
+            frame="'self' http://tauri.localhost https://tauri.localhost tauri://localhost" if getattr(self.server,'desktop_embed',False) else "'self'" if self.path.startswith(('/simulation/cad/','/norms/')) else "'none'"
             for key, value in {"Content-Type": content_type, "Content-Length": str(len(data)), "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'self'; frame-ancestors "+frame}.items():
                 self.send_header(key, value)
             from .desktop_http import ORIGINS
@@ -47,6 +47,8 @@ def make_handler(workspace: Workspace):
             try:
                 from .desktop_http import serve_get as desktop_get
                 if desktop_get(self,workspace,uploads.token,request.path):return
+                from .norms_http import serve_get as norms_get
+                if norms_get(self,workspace,uploads.token,request.path,q):return
                 from .construction.clash_http import serve_get as clash_get
                 if clash_get(self,workspace,uploads.token,request.path,q):return
                 from .semantic_http import serve_get as semantic_get
@@ -75,6 +77,7 @@ def make_handler(workspace: Workspace):
                                "/measurements.css": ("measurements.css", "text/css")})
                 static.update({"/structure.js": ("structure.js", "text/javascript"), "/structure.css": ("structure.css", "text/css")})
                 static.update({"/search.js": ("search.js", "text/javascript"), "/search.css": ("search.css", "text/css")})
+                static['/norms.js'] = ('norms.js', 'text/javascript')
                 if request.path in static:
                     name, mime = static[request.path]
                     return self.send((STATIC / name).read_bytes(), mime + "; charset=utf-8")
@@ -150,15 +153,19 @@ def make_handler(workspace: Workspace):
             structure = request.path.startswith('/api/structure/')
             semantic = request.path=='/api/semantic/build'
             model_data = request.path=='/api/models/read'
+            norms = request.path.startswith('/norms/api/')
             review3d = request.path.startswith('/api/review3d/')
             desktop = request.path=='/api/desktop/backup' and getattr(self.server,'desktop_embed',False)
-            if request.path!='/api/rvt/upload' and not measurement and not intake_request and not catalogue and not structure and not semantic and not viewer_workspace and not review3d and not desktop and not model_data:
+            if request.path!='/api/rvt/upload' and not measurement and not intake_request and not catalogue and not structure and not semantic and not viewer_workspace and not review3d and not desktop and not model_data and not norms:
                 return self.send({"error": "Use explicit MCP tools for observations"}, status=405)
             origin=self.headers.get('Origin')
             from .desktop_http import ORIGINS
             if (origin and origin!='http://'+self.headers['Host'] and not (desktop and origin in ORIGINS)) or not hmac.compare_digest(self.headers.get('X-Uvyazka-Token',''),uploads.token):
                 return self.send({'error':'Open the local dashboard before writing'},status=403)
             try:
+                if norms:
+                    from .norms_http import serve_post as norms_post
+                    return norms_post(self,workspace,request.path)
                 if model_data:
                     from .model_data_http import serve_post as model_data_post
                     query={k:v[0] for k,v in parse_qs(request.query).items()}

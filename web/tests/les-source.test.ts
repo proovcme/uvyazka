@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {lesTarget,geometryTarget,exactObjectJson} from '../src/les-source.ts';
 import type {ModelPackage,BimElement} from '../src/model.ts';
 const target={project:'example',dataset:'snapshot',object:'elements:42',sha256:'a'.repeat(64)};
-const element={id:'mesh42',source:{file_sha256:target.sha256},revit:{element_id:'42'}} as BimElement;
+const element={id:'mesh42',source:{file_sha256:target.sha256},revit:{element_id:'42'},mesh:{}} as BimElement;
 const model={project_id:'example',source:{format:'rvt'},elements:[element]} as ModelPackage;
 test('handoff pins the exact project snapshot object and source hash',()=>{
   const url=new URL('http://127.0.0.1:8765/simulation/');
@@ -18,6 +18,8 @@ test('native focus requires the same revision, project, and one unambiguous geom
   assert.equal(geometryTarget(model,{...target,project:'other'},record),null);
   assert.equal(geometryTarget({...model,elements:[element,element]},target,record),null);
   assert.equal(geometryTarget(model,target,{section:'types',native_id:'42'}),null);
+  assert.equal(geometryTarget({...model,elements:[{...element,mesh:null}]},target,record),null);
+  assert.equal(geometryTarget(model,target,{...record,identifiers:{element_id:'42',unique_id:'another-owner'}}),null);
 });
 test('large native integer properties remain exact and quoted strings are unchanged',()=>{
   assert.deepEqual(exactObjectJson('{"big":9007199254740993,"zero":0,"null":null,"name":"ID 9007199254740993"}'),

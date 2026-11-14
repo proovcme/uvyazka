@@ -33,7 +33,15 @@ def make_handler(workspace: Workspace):
             origin=self.headers.get('Origin')
             if getattr(self.server,'desktop_embed',False) and self.path.startswith('/api/desktop/') and origin in ORIGINS:
                 self.send_header('Access-Control-Allow-Origin',origin);self.send_header('Vary','Origin')
-            self.end_headers(); self.wfile.write(data)
+            self.end_headers()
+            if self.command != 'HEAD': self.wfile.write(data)
+
+        def do_HEAD(self):
+            # The CAD SDK probes local workers with HEAD before opening a file.
+            # Reuse the protected static GET route and its headers, never API actions.
+            if urlparse(self.path).path.startswith('/simulation/'):
+                return self.do_GET()
+            self.send({'error': 'HEAD is available for viewer resources only'}, status=405)
 
         def do_OPTIONS(self):
             from .desktop_http import ORIGINS

@@ -47,8 +47,15 @@ addEventListener('message',async event=>{
         if(command.visible){hiddenObjects.delete(command.id);const layer=layersList().find(l=>l.name===entity.layer);if(layer){layer.isOff=false;layer.isFrozen=false;}}
         else hiddenObjects.add(command.id);
         if(!manager.curView.setEntitySceneVisible(entity.objectId,Boolean(command.visible)))throw Error('Объект не представлен в сцене');applyHidden();
-      }else if(command.kind==='select-entity'){
+      }else if(command.kind==='select-entity'||command.kind==='select-source-entity'){
         const entity=entityList().find(e=>String(e.objectId)===command.id);if(!entity)throw Error('Объект не найден');
+        if(command.kind==='select-source-entity'){
+          if(!await manager.curView.waitUntilIdle(30000))throw Error('Графическая сцена ещё готовится. Повторите открытие объекта.');
+          if(manager.curView.getEntityVisible(entity.objectId)==null)throw Error('Объект не прочитан в графической сцене. Доступны только сохранённые свойства.');
+          const layer=layersList().find(l=>l.name===entity.layer);if(layer){layer.isOff=false;layer.isFrozen=false;}
+          hiddenObjects.delete(command.id);
+          if(!manager.curView.setEntitySceneVisible(entity.objectId,true))throw Error('Объект не представлен в сцене.');
+        }
         if(lastHighlight)manager.curView.unhighlight([lastHighlight]);manager.curView.highlight([entity.objectId]);lastHighlight=String(entity.objectId);
         send({kind:'entity-selected',job:activeJob,entity:{id:String(entity.objectId),type:entity.dxfTypeName||entity.type,layer:entity.layer}});
       }else if(command.kind==='reset-visibility'){

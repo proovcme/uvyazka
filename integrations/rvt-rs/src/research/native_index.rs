@@ -1,3 +1,4 @@
+//! Uvyazka: qualify an unchanged compacted base with empty local saves.
 //! Native project identities and creation-episode UniqueIds.
 //! Explicit four-field (2023) and five-field (2024 to 2027) ElemTable contracts.
 //! Original identity suffixes are retained; they are not current record locators.
@@ -106,11 +107,73 @@ fn reconcile_increment_rows(
     // unrelated stream revision counters are not routing equivalence evidence.
     let increments = decode_increment_rows(global)?;
     let local_increments = decode_increment_rows(local)?;
+    // A local file may retain the complete central history while its local
+    // table contains only the compacted base and subsequent empty saves.
+    // Qualify this narrow shape structurally: the base is identical, every
+    // preceding global increment routes to that base, and no local save adds
+    // an episode or any element. Substantive local changes still refuse.
+    if increments != local_increments
+        && unchanged_compacted_local_base(&increments, &local_increments)
+    {
+        // The local table's base has local physical ordinal zero. Keeping
+        // the central history's ordinal here would address a missing stream.
+        return Ok(local_increments);
+    }
     ensure!(
         increments == local_increments,
         "global/local increment routing tables differ"
     );
     Ok(increments)
+}
+
+fn unchanged_compacted_local_base(global: &[Increment], local: &[Increment]) -> bool {
+    let Some(base) = global.last() else { return false; };
+    if local.len() < 2 || local.first() != Some(base) || base.stored_elements == 0
+        || base.redirects != [(-1, base.stored_elements)]
+        || local[1..].iter().any(|row| row.greatest_episode != base.greatest_episode
+            || row.total_episodes != base.total_episodes || row.stored_elements != 0
+            || row.redirects != [(-1, 0)] || !row.episode_permutation.is_empty())
+    {
+        return false;
+    }
+    let target = (global.len() - 1) as u32;
+    let present = BTreeSet::from([target]);
+    global.iter().filter(|row| row.greatest_episode >= 0).all(|row| {
+        u32::try_from(row.greatest_episode).ok()
+            .and_then(|episode| route_episode(episode, global, &present).ok()) == Some(target)
+    })
+}
+
+#[cfg(test)]
+mod local_compacted_history_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn row(episode: i64, count: u64, redirects: Vec<(i64, u64)>) -> Value {
+        json!({"m_greatest":{"m_id":episode},"m_totalEpisodes":episode+1,
+            "m_totalElements":count,"m_incrementVersions":redirects.into_iter()
+                .map(|(cause, n)|json!({"m_causedByIncrementNumber":cause,"m_totalElements":n})).collect::<Vec<_>>()})
+    }
+
+    #[test]
+    fn local_compacted_history_accepts_only_empty_saves_on_identical_base() {
+        let base=row(8,42,vec![(-1,42)]);
+        let global=json!([row(3,0,vec![(-1,30),(2,0)]),row(5,0,vec![(-1,12),(2,0)]),base]);
+        let local=json!([base,row(8,0,vec![(-1,0)])]);
+        let decoded=reconcile_increment_rows(&global,&local).unwrap();
+        let present=BTreeSet::from([0]);
+        for episode in 0..=8 { assert_eq!(route_episode(episode,&decoded,&present).unwrap(),0); }
+        for changed in [
+            json!([base,row(8,1,vec![(-1,1)])]),
+            json!([base,row(9,0,vec![(-1,0)])]),
+            json!([row(8,41,vec![(-1,41)]),row(8,0,vec![(-1,0)])]),
+            json!([base,row(8,0,vec![(-1,1),(1,0)])]),
+        ] { assert!(reconcile_increment_rows(&global,&changed).is_err()); }
+        let ambiguous=json!([row(3,7,vec![(-1,7)]),row(5,0,vec![(-1,12),(2,0)]),base]);
+        assert!(reconcile_increment_rows(&ambiguous,&local).is_err());
+        assert!(reconcile_increment_rows(&global,&json!([])).is_err());
+        assert!(reconcile_increment_rows(&global,&global).is_ok());
+    }
 }
 
 fn decode_increment_rows(value: &serde_json::Value) -> Result<Vec<Increment>> {

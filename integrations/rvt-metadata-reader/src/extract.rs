@@ -1,6 +1,6 @@
 //! Addressable, paged extraction. Saved fields, never evaluated API values.
 use rvt::{RevitFile};
-use rvt::research::{native_document, schema_registry};
+use rvt::research::{native_document, native_parameters, schema_registry};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, fs, io::Write, path::Path};
 #[path="../../rvt-shared/metadata_projection.rs"]
@@ -54,11 +54,22 @@ pub fn run(input: &str, request_path: &str, output: &str) -> Result<(), Box<dyn 
     writer.flush()?;
     if offset>observed{return Err("Native page offset exceeds the selected inventory".into());}
     let (summary,error)=match result{Ok(s)=>(serde_json::to_value(s)?,None),Err(e)=>(Value::Null,Some(e.to_string()))};
+    let routing_diagnostic=if error.as_deref().is_some_and(|e|e.contains("increment")) {
+        (|| -> anyhow::Result<Value> {
+            let bytes=native_document::read_single(&mut file,"Global/DocumentIncrementTable")?;
+            let tag=u16::from_le_bytes(bytes.get(..2).ok_or_else(||anyhow::anyhow!("Missing increment root"))?.try_into()?);
+            anyhow::ensure!(registry.class(tag).is_some_and(|c|c.name=="DocumentIncrementTable"),"Unexpected increment root");
+            let defaults=native_parameters::GraphLimits::default();
+            let limits=native_parameters::GraphLimits{max_values:defaults.max_values.max(bytes.len()),..defaults};
+            let root=native_parameters::decode_object_fields_with_limits(&bytes,&registry,2,tag,&limits)?;
+            Ok(json!({"global":root.fields["m_increments"],"local":root.fields["m_localIncrements"],"permutation":root.fields["m_permutation"],"physical_partitions":file.stream_names().into_iter().filter(|n|n.starts_with("Partitions/")).collect::<Vec<_>>(),"source_stream":"Global/DocumentIncrementTable","interpreted":false}))
+        })().unwrap_or_else(|e|json!({"diagnostic_error":e.to_string()}))
+    } else {Value::Null};
     let unsupported=summary["unsupported_graph_records"].as_u64().unwrap_or(0);
     let metadata=if graphs{0}else{summary["unsupported_metadata_records"].as_u64().unwrap_or(0)};
     let report=json!({"schema_version":2,"status":if error.is_none()&&clipped==0&&unsupported==0&&metadata==0&&mep_errors==0{"extracted_requires_review"}else{"partial"},
         "value_semantics":"serialized_not_evaluated","record_count":count,"output_bytes":bytes,"clipped_records":clipped,"error":error,"workset_error":workset_error,
-        "mep_projection_errors":mep_errors,"summary":summary,"schema_sha256":registry.source_sha256,"classes":inventory,
+        "mep_projection_errors":mep_errors,"summary":summary,"routing_diagnostic":routing_diagnostic,"schema_sha256":registry.source_sha256,"classes":inventory,
         "pagination":{"offset":offset,"returned":count,"next_offset":if full{Some(offset+count)}else{None},"selected_record_count":observed}});
     fs::write(Path::new(output).with_extension("summary.json"),serde_json::to_vec(&report)?)?;Ok(())
 }

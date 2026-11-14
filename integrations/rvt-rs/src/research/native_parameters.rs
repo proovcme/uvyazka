@@ -1,3 +1,4 @@
+//! Uvyazka: bounded scalar byte arrays use the caller's explicit value budget.
 //! Schema-directed native value prefixes and deferred parameter sets.
 //! This decoder requires an independently bounded body. IDs remain serialized
 //! references until the caller establishes the file's current identity mapping.
@@ -614,7 +615,14 @@ impl Cursor<'_> {
                 } else {
                     self.u32()?
                 };
-                ensure!(n <= 100_000, "native container count budget exceeded");
+                let count = n as usize;
+                let scalar_byte = f.base == 2 && (f.modifier & 0xf) == 0;
+                ensure!(
+                    count <= 100_000 || (scalar_byte
+                        && count <= self.body.len().saturating_sub(self.pos)
+                        && count <= self.limits.max_values.saturating_sub(self.items)),
+                    "native container count budget exceeded"
+                );
                 let mut item = f.clone();
                 item.modifier &= 0xf;
                 item.array_count = None;
@@ -663,6 +671,37 @@ impl Cursor<'_> {
             },
             _ => anyhow::bail!("unsupported native modifier {}", f.modifier),
         }
+    }
+}
+
+#[cfg(test)]
+mod byte_container_budget_tests {
+    use super::*;
+
+    fn decode_bytes(count: u32, payload: usize, budget: usize, base: u8) -> Result<Value> {
+        let mut body = count.to_le_bytes().to_vec();
+        body.resize(4 + payload, 17);
+        let registry = Registry { source_sha256: String::new(), consumed_bytes: 0,
+            reference_count: 0, terminator_offset: 0, classes: Vec::new() };
+        let mut cursor = Cursor { body: &body, registry: &registry, catalog: None,
+            pos: 0, items: 0, pending: Vec::new(), spans: Vec::new(),
+            limits: GraphLimits { max_values: budget, ..GraphLimits::default() } };
+        let field = Field { offset: 0, name: "synthetic_bytes".into(), descriptor_offset: 0,
+            raw_descriptor: 0x5000 | u32::from(base), base, modifier: 0x50,
+            uninterpreted_flags: 0, array_count: None, references: Vec::new(),
+            nested_descriptor: None, end: 0 };
+        cursor.field(&field, 0)
+    }
+
+    #[test]
+    fn byte_container_budget_accepts_bounded_bytes_but_not_truncation_or_other_types() {
+        let values=decode_bytes(100_001,100_001,100_002,2).unwrap();
+        assert_eq!(values.as_array().unwrap().len(),100_001);
+        assert_eq!(values[100_000],json!(17));
+        assert!(decode_bytes(100_001,100_000,100_002,2).is_err());
+        assert!(decode_bytes(100_001,100_001,100_001,2).is_err());
+        assert!(decode_bytes(100_001,400_004,500_000,4).is_err());
+        assert!(decode_bytes(u32::MAX,0,1_000_000,2).is_err());
     }
 }
 fn identifier(value: &Value) -> Result<i64> {

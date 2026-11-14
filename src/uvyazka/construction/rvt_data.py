@@ -215,6 +215,15 @@ class RvtData:
         reader_hash=sha256(binary)
         fingerprint=canonical_hash([doc_id,pointer['sha256'],reader_hash,profile,VERSION])
         path=self.db(project_id)
+        # Native-only reads must publish the same deferred source anchor as
+        # the common model catalogue, including when reusing a saved snapshot.
+        # Verify registration metadata before filling a previously absent hash.
+        from ..model_data import ModelData
+        stat=source.stat()
+        with connection(path) as db:
+            db.execute('begin immediate')
+            ModelData._pin_source(db,{'doc_id':doc_id,'sha256':pointer['sha256'],
+                'size_bytes':stat.st_size,'mtime_ns':stat.st_mtime_ns})
         with connection(path,readonly=True) as db:
             previous=db.execute('select * from rvt_data_requests where request_id=?',(request_id,)).fetchone()
             if previous:
@@ -243,7 +252,7 @@ class RvtData:
             output=folder/('records.ndjson' if cursor==0 else f'records-{cursor}.ndjson')
             summary_path=output.with_suffix('.summary.json')
             if profile!='all' and not selected:
-                output.write_text('',encoding='utf-8');summary_path.write_text(encode({'status':'unsupported_profile','record_count':0,'error':'Requested class roots not found; absence of records is not established'}),encoding='utf-8')
+                output.write_text('',encoding='utf-8');summary_path.write_text(encode({'status':'unsupported_profile','record_count':0,'schema_sha256':inventory.get('schema_sha256'),'error':'Requested class roots not found; absence of records is not established'}),encoding='utf-8')
             else:
                 projection='compact' if profile in {'engineering','types','parameters','objects'} else 'graphs' if profile in {'views','schedules'} else 'full'
                 request.write_text(encode({'mode':'records','classes':selected,'max_records':20000,'offset':cursor,'projection':projection}),encoding='utf-8')

@@ -9,6 +9,8 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
     env:
       UVYAZKA_HOME: ${{ github.workspace }}/.uvyazka-build/desktop-ci-home
       RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=C:/uvyazka-source
@@ -48,6 +50,13 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - name: Stage first-install contract for LES
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*-setup.exe)
+          if ($installers.Count -ne 1) { throw 'Expected one Windows x64 installer' }
+          python tools/create_install_manifest.py $installers[0].FullName --output .uvyazka-build/first-install
+          if ($LASTEXITCODE -ne 0) { throw 'Invalid first-install contract' }
       - uses: actions/upload-artifact@v4
         with:
           name: uvyazka-windows-x64
@@ -56,4 +65,29 @@ jobs:
             desktop/src-tauri/target/release/bundle/nsis/*.sig
             .uvyazka-build/desktop/uvyazka-source.zip
             .uvyazka-build/desktop-sources/*.tar.gz
+            .uvyazka-build/first-install/*
           if-no-files-found: error
+      - name: Prepare draft GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $manifest = Get-Content .uvyazka-build/first-install/uvyazka-install.json -Raw | ConvertFrom-Json
+          if ($manifest.release_tag -cne $env:RELEASE_TAG) { throw 'Tag and installer version differ' }
+          $releases = gh release list --limit 100 --json tagName,isDraft | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect existing releases' }
+          $existing = @($releases | Where-Object tagName -CEQ $env:RELEASE_TAG)
+          if ($existing.Count -and -not $existing[0].isDraft) { throw 'Published releases are immutable; create a new version' }
+          if (-not $existing.Count) {
+            $options = @('release','create',$env:RELEASE_TAG,'--verify-tag','--draft','--generate-notes')
+            if ($manifest.version.Contains('-')) { $options += '--prerelease' }
+            & gh @options
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot create draft release' }
+          }
+          $files = @(Get-ChildItem .uvyazka-build/first-install/* | ForEach-Object FullName)
+          $files += (Resolve-Path .uvyazka-build/desktop/uvyazka-source.zip).Path
+          $files += @(Get-ChildItem .uvyazka-build/desktop-sources/*.tar.gz | ForEach-Object FullName)
+          & gh release upload $env:RELEASE_TAG @files --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot upload draft release assets' }

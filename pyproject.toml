@@ -36,6 +36,8 @@ uvyazka = ["ui/*", "resources/*.json", "resources/*.js", "viewer/*", "viewer/ass
 "uvyazka._vendor.les_list" = ["LICENSE.txt", "provenance.json"]
 
 [tool.setuptools.data-files]
+"share/uvyazka/skills/aec-engineering-work" = ["skills/aec-engineering-work/SKILL.md"]
+"share/uvyazka/skills/aec-engineering-work/references" = ["skills/aec-engineering-work/references/ru-aec-methods.md"]
 "share/uvyazka/skills/aec-construction-schedule" = ["skills/aec-construction-schedule/SKILL.md"]
 "share/uvyazka/skills/aec-develop-pos" = ["skills/aec-develop-pos/SKILL.md"]
 "share/uvyazka/skills/aec-develop-ppr" = ["skills/aec-develop-ppr/SKILL.md"]

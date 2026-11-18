@@ -41,7 +41,7 @@ def validate():
         elif file.suffix == ".toml":
             tomllib.loads(file.read_text(encoding="utf-8"))
     skills = sorted(ROOT.joinpath("skills").glob("*/SKILL.md"))
-    assert len(skills) == 6
+    assert len(skills) == 7
     for skill in skills:
         text = skill.read_text(encoding="utf-8")
         assert text.startswith("---\n"), skill
@@ -77,7 +77,7 @@ def validate():
     assert provenance["license"] == "MIT"
     assert "Copyright (c) 2026 OVC" in (vendor / "LICENSE.txt").read_text(encoding="utf-8")
     assert {"LICENSE.txt", "provenance.json"} <= set(package["tool"]["setuptools"]["package-data"]["uvyazka._vendor.les_list"])
-    print("Package structure OK: 6 skills, 3 reference cards, stdio manifest, client templates, resource mapping")
+    print("Package structure OK: 7 skills, 3 reference cards, stdio manifest, client templates, resource mapping")
 
 
 if __name__ == "__main__":

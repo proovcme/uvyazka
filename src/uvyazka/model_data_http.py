@@ -10,6 +10,10 @@ def serve_get(handler, workspace, token, path, q):
     if path == '/api/models/status':
         handler.send({**reader_status(workspace), 'write_token': token})
         return True
+    if path == '/api/models/original':
+        from .model_source_http import serve_original
+        serve_original(handler, workspace, q)
+        return True
     service = ModelData(workspace)
     project = q.get('project_id', '')
     if path == '/api/models/datasets':

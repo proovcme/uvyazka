@@ -204,6 +204,8 @@ def build_server(workspace: Workspace | None = None):
     register_model_data(mcp,memory)
     from .cad_conversion_tools import register_tools as register_cad_conversion
     register_cad_conversion(mcp,memory)
+    from .engineering_tools import register_tools as register_engineering
+    register_engineering(mcp,memory)
     return mcp
 
 

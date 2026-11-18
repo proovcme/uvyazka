@@ -1,4 +1,8 @@
 import {sameReadSource,rvtMode} from './browser-rvt-direct';
+import {lesTarget,showLesSource} from './les-source';
+import {cadEntityTarget,cadOriginal,sceneForSource} from './les-geometry';
+let lesSourceTarget:ReturnType<typeof lesTarget>=null,lesSourceError='';
+try{lesSourceTarget=lesTarget(new URL(location.href));}catch(e){lesSourceError=String(e);}
 import {geometryQuality} from './geometry-quality';
 import {sourceFormatLabel,addDiagnostics,userMessage,displayClass,displayElementName} from './ui-language.ts';
 import {propertySections} from './property-sections.ts';
@@ -185,12 +189,12 @@ async function restoreWorkspace(scene:SavedScene){
 }
 
 el('canvas').addEventListener('viewer-error', ((e: CustomEvent<string>) => error(e.detail)) as EventListener);
-async function loadModel(id: string) {
+async function loadModel(id: string,accept?:()=>boolean) {
   if(catalogueProject!==project){catalogues.clear();documentPanel.set(null);catalogueProject=project;}
   const token = ++modelGeneration; hiddenOnly=false;spatial.reset();selection.clear();networkHighlights.clear();visibilityHistory.length=0;el<HTMLButtonElement>('undo-visibility').disabled=true;selectedId=null;el('selected-visibility-actions').hidden=true;viewer?.select(null); viewer?.setSite(null);clipped=false;el('cut-controls').hidden=true;el('cut').setAttribute('aria-pressed','false');el('xray').setAttribute('aria-pressed','false');
   if (!id) { model = null;engineering.reset();updateSelection();loadedBinary=null;visibility.reset();visibilityModelId='';el('file-title').textContent='Модель не выбрана'; el('no-model').hidden = false; el('geometry-kind').textContent = 'Без геометрии'; viewer?.show(new Set<string>());renderModelTree();renderState();if(!DEMO){const target=project;void projectCatalogs(target).then(async page=>{const row=page.items.find(r=>['all','views','schedules','catalog'].includes(r.profile));if(!row)return;const data=await loadCatalogSnapshot(target,row.extraction_id);if(target===project&&token===modelGeneration&&!model)acceptDocument(data);}).catch(e=>error('Каталог базы недоступен: '+String(e)));}return; }
   const [pkg, binary] = browserModel?.model_id===id&&browserBinary ? [browserModel,browserBinary] : await Promise.all([api<ModelPackage>('model?model_id=' + encodeURIComponent(id)), fetch(path('geometry.bin?model_id=' + encodeURIComponent(id))).then(async r => {if(!r.ok) throw Error('Не удалось загрузить геометрию');return r.arrayBuffer();})]);
-  if (token !== modelGeneration) return;
+  if (token !== modelGeneration||accept&&!accept()) return;
   model = pkg;engineering.reset();updateSelection();loadedBinary=binary;if(visibilityModelId!==pkg.model_id){visibility.reset();visibilityModelId=pkg.model_id;visibility.set(pkg.elements.filter(e=>!sceneVisible(e.source_instance_id)).map(e=>e.id),false);} el("workspace-status").textContent=`Объектов с геометрией: ${pkg.elements.filter(e=>e.role==='element'&&e.mesh).length} · ${pkg.storeys.length?pkg.storeys.length+' уровней':'Уровни не прочитаны'}`; el("file-title").textContent=pkg.source.filename; renderModelTree(); viewer?.load(pkg,binary); viewer?.setSourceColors(pkg.source.schema!=='SyntheticDemo'); document.dispatchEvent(new Event('model-data-changed')); applySceneVisibility(); el('no-model').hidden = true;void restoreCatalogues(pkg,token);
   el('geometry-kind').textContent = pkg.source.schema === 'SyntheticDemo' ? 'Синтетическая сводная модель · АР + ОВ' : pkg.source.schema === 'DocumentSpatialModel' ? 'Условная геометрия по документам' : pkg.federation ? 'Сводная геометрия · совмещение требует проверки' : pkg.source.rvt_read_mode==='direct' ? 'RVT напрямую · экспериментальная сохранённая графика' : pkg.source.format==='rvt' ? 'RVT → IFC · экспериментальная геометрия' : isNavisFormat(pkg.source.format)?pkg.source.format!.toUpperCase()+' · дерево, свойства и геометрия · '+(pkg.source.calibrations?.every(c=>c.source_units_decoded)?'единицы из файла':'единицы с допущениями'):'Геометрия IFC'; renderState();
 }
@@ -456,7 +460,7 @@ el('reset-visibility').onclick=()=>{rememberVisibility();hiddenOnly=false;visibi
 let cadPending:((reason?:string)=>void)|null=null;
 let cadCleanup:(()=>void)|null=null;
 function closeCad(){cadPending?.('Загрузка отменена');cadPending=null;cadCleanup?.();cadCleanup=null;cadFrame?.remove();cadFrame=null;el('cad-host').hidden=true;el('canvas').hidden=false;document.body.classList.remove('cad-open');el<HTMLButtonElement>('mode-simulate').disabled=false;el<HTMLButtonElement>('open-model-data').disabled=false;}
-async function openCad(file:File) {
+async function openCad(file:File,sourceRecord?:Record<string,unknown>) {
   closeCad();selectElement(null);setMode('view');el('canvas').hidden=true;el('cad-host').hidden=false;el('no-model').hidden=true;document.body.classList.add('cad-open');
   el<HTMLButtonElement>('mode-simulate').disabled=true;el('file-title').textContent=file.name;el('geometry-kind').textContent='DWG / DXF · чертёж';
   el<HTMLButtonElement>('open-model-data').disabled=true;
@@ -471,10 +475,11 @@ async function openCad(file:File) {
       if(event.data.kind==='error'){if(opened)error(event.data.message);else finish(event.data.message);}
       if(event.data.kind==='opened'){
         el('inspector').innerHTML=`<dl><dt>Файл</dt><dd>${copyValue(event.data.filename)}</dd><dt>Объектов в модели</dt><dd>${copyValue(event.data.entityCount)}</dd><dt>Слоёв</dt><dd>${copyValue(event.data.layers.length)}</dd></dl>`;el('workspace-status').textContent=`${event.data.entityCount} объектов · ${event.data.layers.length} слоёв · DWG / DXF`;
-        el<HTMLDialogElement>('file-dialog').close();panel=cadTreePanel(el('element-tree'),command=>iframe.contentWindow?.postMessage({channel:'uvyazka-cad',job,...command},location.origin));panel.update(event.data.tree as CadTreeState);finish();
+        el<HTMLDialogElement>('file-dialog').close();panel=cadTreePanel(el('element-tree'),command=>iframe.contentWindow?.postMessage({channel:'uvyazka-cad',job,...command},location.origin));panel.update(event.data.tree as CadTreeState);
+        if(sourceRecord){try{const id=cadEntityTarget((event.data.tree as CadTreeState).entities,sourceRecord);iframe.contentWindow?.postMessage({channel:'uvyazka-cad',job,kind:'select-source-entity',id},location.origin);}catch(e){finish(String(e));}}else finish();
       }
       if(event.data.kind==='tree-state')panel?.update(event.data as CadTreeState);
-      if(event.data.kind==='entity-selected'){const e=event.data.entity;el('inspector-title').textContent='Объект DWG / DXF';el('inspector').innerHTML=`<button data-copy="${esc(JSON.stringify(e,null,2))}">Копировать свойства</button><dl><dt>Handle / ID</dt><dd>${copyValue(e.id)}</dd><dt>Тип</dt><dd>${copyValue(e.type)}</dd><dt>Слой</dt><dd>${copyValue(e.layer)}</dd></dl>`;setPanel('inspector',true);}
+      if(event.data.kind==='entity-selected'){const e=event.data.entity;el('inspector-title').textContent='Объект DWG / DXF';el('inspector').innerHTML=`<button data-copy="${esc(JSON.stringify(e,null,2))}">Копировать свойства</button><dl><dt>Handle / ID</dt><dd>${copyValue(e.id)}</dd><dt>Тип</dt><dd>${copyValue(e.type)}</dd><dt>Слой</dt><dd>${copyValue(e.layer)}</dd></dl>`;setPanel('inspector',true);if(sourceRecord&&!opened){try{cadEntityTarget([{id:e.id}],sourceRecord);finish();}catch(e){finish(String(e));}}}
     };
     const timer=setTimeout(()=>finish('Движок DWG не ответил за 120 секунд. Попробуйте меньший файл.'),120000);cadPending=finish;cadCleanup=()=>removeEventListener('message',receive);addEventListener('message',receive);
   });
@@ -563,6 +568,12 @@ async function demoExamples(){
   else {if(!model&&examples[0]?.kind==='model')await loadModel(examples[0].id);picker.value=model?.model_id||examples[0]?.id||'';document.dispatchEvent(new CustomEvent('scene-model-changed',{detail:model}));}
 }
 initialLoad=(async()=>{try{const r=await fetch(DEMO?'./demo/projects.json':'/api/projects');const d=await r.json();if(project==='browser-local')return;el<HTMLSelectElement>('projects').innerHTML=d.projects.map((p:{id:string;name:string})=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');project=project||d.default_project;if(project){el<HTMLSelectElement>('projects').value=project;await loadProject(project,DEMO&&!!initialExample);await demoExamples();}else error('Сначала зарегистрируйте проект или запустите uvyazka demo.');}catch(e){error(e);}})();
+
+if(lesSourceTarget&&!DEMO)void initialLoad.then(()=>showLesSource(lesSourceTarget,()=>model,id=>{setMode('view');setElementVisibility([id],true);selectElement(id);viewer?.focusTargets([id]);},{
+  prepareModel:async(target,signal)=>{if(project!==target.project)throw Error('Проект изменился.');const id=await sceneForSource(target,signal);if(!id)throw Error('Однозначная сохранённая сцена этой редакции не найдена.');if(signal.aborted||project!==target.project)throw Error('Открытие отменено.');await loadModel(id,()=>!signal.aborted&&project===target.project);if(signal.aborted||project!==target.project)throw Error('Открытие отменено.');el<HTMLSelectElement>('models').value=id;},
+  openDrawing:async(target,source,record,signal)=>{if(project!==target.project)throw Error('Проект изменился.');const file=await cadOriginal(target,source,signal);if(signal.aborted||project!==target.project)throw Error('Открытие отменено.');const cancel=()=>closeCad();signal.addEventListener('abort',cancel,{once:true});try{await openCad(file,record);}finally{signal.removeEventListener('abort',cancel);}}
+})).catch(error);
+if(lesSourceError)void initialLoad.then(()=>error(lesSourceError));
 
 function setPanel(panel:'tree'|'inspector',open:boolean) {
   if(open&&matchMedia('(max-width: 650px)').matches){

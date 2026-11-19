@@ -12,7 +12,15 @@ def serve_route(handler, workspace, path, query):
     if path.startswith("/simulation/"):
         root = (Path(__file__).resolve().parents[1] / "viewer").resolve()
         relative = path[len("/simulation/"):] or "index.html"
+        if relative == 'cad/':
+            relative = 'cad/index.html'
         target = (root / relative).resolve()
+        if relative.startswith('cad/') and not target.is_file():
+            # An unpackaged checkout can use the same prebuilt CAD assets as the installer.
+            cad = (Path(__file__).resolve().parents[3] / 'integrations/cad-viewer/dist').resolve()
+            candidate = (cad / relative[len('cad/'):]).resolve()
+            if candidate.is_relative_to(cad) and candidate.is_file():
+                root, target = cad, candidate
         if relative.startswith('runtime/') and not target.is_file():
             runtime=Path(os.environ.get('UVYAZKA_BROWSER_RUNTIME') or Path(__file__).resolve().parents[3]/'.uvyazka-build/browser-runtime').resolve()
             candidate=(runtime/relative[len('runtime/'):]).resolve()

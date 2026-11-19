@@ -3,7 +3,7 @@ import type {ModelPackage} from './model';
 export interface LesTarget {project:string;dataset:string;object:string;sha256:string}
 export interface LesPresentation {
   prepareModel?:(target:LesTarget,signal:AbortSignal)=>Promise<void>;
-  openDrawing?:(target:LesTarget,source:Record<string,unknown>,record:Record<string,unknown>,signal:AbortSignal)=>Promise<void>;
+  openDrawing?:(target:LesTarget,source:Record<string,unknown>,record:Record<string,unknown>|undefined,signal:AbortSignal)=>Promise<void>;
 }
 /** Keep integer property values which JavaScript cannot represent exactly as source text. */
 export function exactObjectJson(text:string):Record<string,unknown>{
@@ -68,6 +68,37 @@ export async function showLesSource(target:LesTarget,getModel:()=>ModelPackage|n
       if(part.next_offset!==next||next<=offset||pages===31)throw Error('Не удалось продолжить чтение объекта.');offset=next;
     }
     const object=exactObjectJson(text);
+    if(target.object==='@dataset'){
+      if(object.dataset_id!==target.dataset)throw Error('Идентификатор снимка не совпадает.');
+      title.textContent=String(source.relative_path??'Файл из LES');
+      status.textContent='Редакция подтверждена. Свойства прочитаны из этой версии файла.';
+      const format=String(source.format);
+      let open: (()=>Promise<void>)|undefined;
+      if(presentation.openDrawing&&['dwg','dxf'].includes(format)){
+        const draw=presentation.openDrawing;
+        open=()=>draw(target,source,undefined,controller.signal);
+      }else if(presentation.prepareModel&&['rvt','ifc'].includes(format)){
+        const model=presentation.prepareModel;
+        open=()=>model(target,controller.signal);
+      }
+      if(!open){
+        status.textContent='Редакция подтверждена. Для этого формата доступен просмотр сохранённых данных.';
+        const report=document.createElement('pre');report.textContent=JSON.stringify({
+          object_count:object.object_count,reader:object.reader,coverage:object.coverage
+        },null,2);detail.append(report);
+        return;
+      }
+      const openFile=open;
+      const button=document.createElement('button');button.textContent='Открыть файл';
+      const load=async()=>{
+        button.disabled=true;status.setAttribute('role','status');status.textContent='Открываю файл этой редакции…';
+        try{await openFile();if(!controller.signal.aborted)dialog.close();}
+        catch(e){if(!controller.signal.aborted){status.setAttribute('role','alert');status.textContent=e instanceof Error?e.message:'Файл не открыт.';}}
+        finally{button.disabled=false;}
+      };
+      button.onclick=()=>void load();detail.append(button);await load();
+      return;
+    }
     if(object.object_id!==target.object)throw Error('Идентификатор объекта не совпадает.');
     title.textContent=typeof object.name==='string'&&object.name?object.name:'Объект из LES';
     const label=document.createElement('p');label.textContent=`ID: ${object.native_id??'не указан'} · ${object.category??'категория не указана'}`;detail.append(label);

@@ -30,3 +30,32 @@ test('source dialog reads every Unicode portion and never turns changed-source e
     assert.equal(window.document.querySelector('dl'),null);assert.equal(focused,false);assert.deepEqual(offsets,[0]);
   }finally{Object.assign(globalThis,previous);await window.happyDOM.close();}
 });
+
+test('file link opens the checked drawing without choosing an element',async()=>{
+  const window=new Window({url:'http://127.0.0.1:8765/simulation/'});
+  const previous={document:globalThis.document,location:globalThis.location,fetch:globalThis.fetch};
+  Object.assign(globalThis,{document:window.document,location:window.location});
+  window.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
+  window.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new window.Event('close'));};
+  const target={project:'example',dataset:'snapshot',object:'@dataset',sha256:'a'.repeat(64)};
+  const text=JSON.stringify({dataset_id:target.dataset,object_count:2});
+  let calls=0, stale=false;
+  globalThis.fetch=async raw=>{
+    assert.equal(new URL(String(raw)).searchParams.get('verify_source'),'1');
+    return new Response(JSON.stringify({project_id:target.project,dataset_id:target.dataset,object_id:target.object,
+      source:{sha256:target.sha256,format:'dxf',relative_path:'Drawing.dxf'},
+      freshness:{status:stale?'needs_refresh':'content_hash_matches'},text,total_chars:text.length,next_offset:null}));
+  };
+  const presentation={openDrawing:async(link:typeof target,source:Record<string,unknown>,record:unknown)=>{
+    assert.deepEqual(link,target);assert.equal(source.relative_path,'Drawing.dxf');assert.equal(record,undefined);calls++;
+  }};
+  try{
+    await showLesSource(target,()=>null,()=>assert.fail('unrequested focus'),presentation);
+    assert.equal(calls,1);
+    assert.equal(window.document.querySelector('dialog'),null);
+    stale=true;
+    await showLesSource(target,()=>null,()=>assert.fail('unrequested focus'),presentation);
+    assert.equal(calls,1);
+    assert.match(window.document.querySelector('[role="alert"]')!.textContent!,/Оригинал изменился/);
+  }finally{Object.assign(globalThis,previous);await window.happyDOM.close();}
+});

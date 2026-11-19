@@ -21,7 +21,7 @@ def validate():
     alpha = re.fullmatch(r"(\d+\.\d+\.\d+)a(\d+)", version)
     expected_plugin_version = f"{alpha[1]}-alpha.{alpha[2]}" if alpha else version
     assert plugin["version"] == expected_plugin_version, "Plugin and Python versions must match"
-    assert '"' + package["project"]["version"] + '"' in (ROOT / "src/uvyazka/__init__.py").read_text(encoding="utf-8")
+    assert '"' + version + '"' in (ROOT / "src/uvyazka/__init__.py").read_text(encoding="utf-8"), "Runtime and Python package versions must match"
     assert plugin["extensions"]["com.openai"]["requires_local_executor"] is True
     assert len(plugin["extensions"]["com.openai"]["interface"]["shortDescription"]) <= 30
     assert not {"skills", "mcpServers", "apps"}.intersection(plugin)

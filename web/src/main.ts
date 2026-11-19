@@ -460,12 +460,16 @@ el('reset-visibility').onclick=()=>{rememberVisibility();hiddenOnly=false;visibi
 let cadPending:((reason?:string)=>void)|null=null;
 let cadCleanup:(()=>void)|null=null;
 function closeCad(){cadPending?.('Загрузка отменена');cadPending=null;cadCleanup?.();cadCleanup=null;cadFrame?.remove();cadFrame=null;el('cad-host').hidden=true;el('canvas').hidden=false;document.body.classList.remove('cad-open');el<HTMLButtonElement>('mode-simulate').disabled=false;el<HTMLButtonElement>('open-model-data').disabled=false;}
-async function openCad(file:File,sourceRecord?:Record<string,unknown>) {
+async function openCad(file:File,sourceRecord?:Record<string,unknown>,signal?:AbortSignal) {
+  const reader='./cad/index.html', timeout=AbortSignal.timeout(8000);
+  if(!(await fetch(reader,{method:'HEAD',signal:signal?AbortSignal.any([signal,timeout]):timeout})).ok)
+    throw Error('В этой сборке Увязки отсутствует вьювер DWG/DXF.');
+  signal?.throwIfAborted();
   closeCad();selectElement(null);setMode('view');el('canvas').hidden=true;el('cad-host').hidden=false;el('no-model').hidden=true;document.body.classList.add('cad-open');
   el<HTMLButtonElement>('mode-simulate').disabled=true;el('file-title').textContent=file.name;el('geometry-kind').textContent='DWG / DXF · чертёж';
   el<HTMLButtonElement>('open-model-data').disabled=true;
   el('inspector-title').textContent='Чертёж DWG / DXF';el('inspector').textContent='Чтение '+file.name;
-  const iframe=document.createElement('iframe');iframe.title='Просмотр DWG / DXF';iframe.src='./cad/';cadFrame=iframe;el('cad-host').append(iframe);renderState();
+  const iframe=document.createElement('iframe');iframe.title='Просмотр DWG / DXF';iframe.src=reader;cadFrame=iframe;el('cad-host').append(iframe);renderState();
   await new Promise<void>((resolve,reject)=>{
     const job=crypto.randomUUID();let opened=false,panel:ReturnType<typeof cadTreePanel>|null=null;
     const finish=(reason?:string)=>{clearTimeout(timer);cadPending=null;if(reason){removeEventListener('message',receive);reject(Error(reason));}else{opened=true;resolve();}};
@@ -571,7 +575,7 @@ initialLoad=(async()=>{try{const r=await fetch(DEMO?'./demo/projects.json':'/api
 
 if(lesSourceTarget&&!DEMO)void initialLoad.then(()=>showLesSource(lesSourceTarget,()=>model,id=>{setMode('view');setElementVisibility([id],true);selectElement(id);viewer?.focusTargets([id]);},{
   prepareModel:async(target,signal)=>{if(project!==target.project)throw Error('Проект изменился.');const id=await sceneForSource(target,signal);if(!id)throw Error('Однозначная сохранённая сцена этой редакции не найдена.');if(signal.aborted||project!==target.project)throw Error('Открытие отменено.');await loadModel(id,()=>!signal.aborted&&project===target.project);if(signal.aborted||project!==target.project)throw Error('Открытие отменено.');el<HTMLSelectElement>('models').value=id;},
-  openDrawing:async(target,source,record,signal)=>{if(project!==target.project)throw Error('Проект изменился.');const file=await cadOriginal(target,source,signal);if(signal.aborted||project!==target.project)throw Error('Открытие отменено.');const cancel=()=>closeCad();signal.addEventListener('abort',cancel,{once:true});try{await openCad(file,record);}finally{signal.removeEventListener('abort',cancel);}}
+  openDrawing:async(target,source,record,signal)=>{if(project!==target.project)throw Error('Проект изменился.');const file=await cadOriginal(target,source,signal);if(signal.aborted||project!==target.project)throw Error('Открытие отменено.');const cancel=()=>closeCad();signal.addEventListener('abort',cancel,{once:true});try{await openCad(file,record,signal);}finally{signal.removeEventListener('abort',cancel);}}
 })).catch(error);
 if(lesSourceError)void initialLoad.then(()=>error(lesSourceError));
 

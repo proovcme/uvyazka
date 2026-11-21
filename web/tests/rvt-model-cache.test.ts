@@ -18,6 +18,10 @@ test('RVT cache separates readers and rejects wrong provenance or truncated payl
  assert.notEqual(rvtCacheKey(hash,'ifc'),rvtCacheKey(hash,'direct'));
  assert.notEqual(rvtCacheKey(hash,'ifc'),rvtCacheKey('c'.repeat(64),'ifc'));
  validateCachedRvt(value,hash,'ifc');
+ const preview=sample('ifc_preview');
+ assert.notEqual(rvtCacheKey(hash,'ifc_preview'),rvtCacheKey(hash,'ifc'));
+ validateCachedRvt(preview,hash,'ifc_preview');
+ assert.throws(()=>validateCachedRvt(preview,hash,'ifc'));
  assert.throws(()=>validateCachedRvt(value,hash,'direct'));
  assert.throws(()=>validateCachedRvt(value,'c'.repeat(64),'ifc'));
  assert.throws(()=>validateCachedRvt({...value,binary:new ArrayBuffer(0)},hash,'ifc'));

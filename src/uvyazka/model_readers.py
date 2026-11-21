@@ -182,23 +182,39 @@ def nwd_data(workspace, source, folder):
     proc = subprocess.run([str(nwd_path(workspace)), str(source), str(output), '--metadata-only'], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=180)
     if proc.returncode or not (output/'logical-models.json').is_file():
         raise ValueError('NWD/NWC reader failed: '+(proc.stderr or proc.stdout)[-1800:])
-    if (output/'logical-models.json').stat().st_size > 128*1024**2:
+    if (output/'logical-models.json').stat().st_size > 256*1024**2:
         raise ValueError('Navis metadata exceeds output budget')
     from .model_navis import project_navis
-    return project_navis(json.loads((output/'logical-models.json').read_text(encoding='utf-8')))
+    return project_navis(json.loads((output/'logical-models.json').read_bytes()))
 
 
 def rvt_data(workspace, project, doc_id, request_id):
-    from .construction.rvt_data import RvtData, selected_classes
-    from .core import connection
+    from .construction.rvt_data import RvtData
     native = RvtData(workspace)
-    rows, reports = [], []
+    results, reports, failures = [], [], []
     for profile in ('objects', 'views'):
-        result = native.extract(project, doc_id, request_id+':'+profile, profile)
+        try:
+            result = native.extract(project, doc_id, request_id+':'+profile, profile)
+        except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+            if profile == 'objects' or not results[0]['record_count']:
+                raise
+            failures.append({'profile': profile, 'error': str(error)[-2400:]})
+            continue
+        results.append(result)
+        reports.append({k: v for k, v in result.items() if k not in {'classes_file', 'summary_file'}})
+    return rvt_rows(workspace, project, results), {
+        'status': 'partial', 'native_extractions': reports, 'profile_failures': failures,
+        'limitations': ['Selected current records only; extraction budgets and native coverage apply.', 'Saved views are settings, schedules are definitions/cells, not application-evaluated drawings or body totals.']}
+
+
+def rvt_rows(workspace, project, results):
+    from .construction.rvt_data import selected_classes
+    from .core import connection
+    for result in results:
+        profile = result['profile']
         eid = result['extraction_id']
         inventory = json.loads(Path(result['classes_file']).read_text(encoding='utf-8'))
         type_classes = set(selected_classes('types', {c['name']: c for c in inventory['classes']}))
-        reports.append({k: v for k, v in result.items() if k not in {'classes_file', 'summary_file'}})
         with connection(workspace.db_path(project), readonly=True) as db:
             for entry in db.execute('select record_id,element_id,kind,class_name,name,status,payload from rvt_native_records where extraction_id=? order by record_id', (eid,)):
                 record = json.loads(entry['payload'])
@@ -212,9 +228,8 @@ def rvt_data(workspace, project, doc_id, request_id):
                     section = 'types'
                 metadata = record.get('saved_metadata') or {}
                 properties = {'saved_metadata': metadata, 'mep_system': record.get('mep_system'), 'root_fields': record.get('root_fields') or ((record.get('graph') or {}).get('objects') or [{}])[0].get('fields', {})}
-                rows.append(obj(section, entry['element_id']+':'+profile, entry['name'], cls, properties,
+                yield obj(section, entry['element_id']+':'+profile, entry['name'], cls, properties,
                                 identifiers={'element_id': entry['element_id'], 'unique_id': record.get('identity', {}).get('unique_id'), 'native_record_id': entry['record_id']},
                                 evidence={'extraction_id': eid, 'record_id': entry['record_id'], 'source': record.get('source'), 'detail_tool': 'get_rvt_record'},
                                 native_status=entry['status'], value_semantics='serialized_not_evaluated; use native record for schedule/view graph',
-                                diagnostics=[s for s in [record.get('diagnostic'), record.get('metadata_diagnostic')] if s]))
-    return rows, {'status': 'partial', 'native_extractions': reports, 'limitations': ['No Revit/IFC required. Selected current records only; extraction budgets and native coverage apply.', 'Saved views are settings, schedules are definitions/cells, not application-evaluated drawings or body totals.']}
+                                diagnostics=[s for s in [record.get('diagnostic'), record.get('metadata_diagnostic')] if s])

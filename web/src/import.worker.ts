@@ -8,6 +8,7 @@ import {documentCache} from './rvt-document-cache';
 import {rvtImportFailure,validateRvtContainer} from './rvt-import-result';
 import {rvtModelCache} from './rvt-model-cache';
 import {attachNativeIdentities} from './rvt-native-identity';
+import {readLocalRvtScene} from './rvt-local-scene';
 import type {RvtDocument} from './rvt-document';
 
 const worker=self as unknown as {onmessage:((event:MessageEvent)=>void)|null;postMessage:(value:unknown,transfer?:Transferable[])=>void};
@@ -17,7 +18,7 @@ let unitReply:{job:unknown;resolve:(unit:any)=>void}|null=null;
 worker.onmessage=async({data})=>{
   if(data.kind==='ping'){worker.postMessage({job:data.job,kind:'pong'});return;}
   if(data.kind==='nwd-unit-choice'){if(unitReply&&unitReply.job===data.job){unitReply.resolve(data.unit);unitReply=null;}return;}
-  const {job,buffer,filename,base,memoryMiB=1024,rvtMode='ifc'}=data;
+  const {job,buffer,filename,base,memoryMiB=1024,rvtMode='ifc',localReader=false}=data;
   let stage='Проверка файла',conversion:any=null,rvtDocument:RvtDocument|null=null;
   const progress=(text:string,nextStage=stage,details?:unknown)=>{stage=nextStage;worker.postMessage({job,kind:'progress',stage,text,details});};
   try {
@@ -65,9 +66,22 @@ worker.onmessage=async({data})=>{
           worker.postMessage({job,kind:'imported',model,binary,conversion,convertedIfc,cached:true},[binary,...(convertedIfc?[convertedIfc]:[])]);return;
         }
       }catch(error){progress('Кеш RVT недоступен; читаем исходный файл','Кеш RVT',{warning:String(error)});}finally{cache?.close();}
+      if(rvtMode==='direct'&&localReader){
+        const scene=await readLocalRvtScene(base,bytes,sourceHash,()=>progress('Локальный читатель обрабатывает сохранённую графику','RVT напрямую'));
+        if(scene){
+          bytes=new Uint8Array();
+          progress('Подготовка геометрии и исходных ID','Сцена RVT');
+          const {model,binary}=await importRvtDirect(scene,{filename,sha256:sourceHash,size_bytes:sourceSize,reader_sha256:scene.reader});
+          await cacheRvt(model,binary);
+          worker.postMessage({job,kind:'imported',model,binary},[binary]);return;
+        }
+      }
       progress('Загрузка RVT-декодера · файл остаётся в браузере','RVT-движок');
       const module=await import(/* @vite-ignore */base+'runtime/rvt/uvyazka_rvt_browser.js?reader='+RVT_READER_REVISION);
       await module.default({module_or_path:base+'runtime/rvt/uvyazka_rvt_browser_bg.wasm?reader='+RVT_READER_REVISION});
+      const quickPreview=rvtMode==='ifc_preview';
+      let engineering;
+      if(!quickPreview){
       progress('Чтение видов, листов и спецификаций RVT','Документ RVT');
       try {
         let cache:Awaited<ReturnType<typeof documentCache>>|undefined;
@@ -92,8 +106,8 @@ worker.onmessage=async({data})=>{
       } catch(error) {
         worker.postMessage({job,kind:'document-error',message:String(error)});
       }
-      let engineering;
       if(module.extractRvtEngineering){progress('Чтение систем и базового оборудования цепей','Связи RVT');try{engineering=module.extractRvtEngineering(bytes);}catch(error){engineering={status:'partial',systems:[],diagnostics:[String(error)]};}}
+      }
       if(rvtMode==='direct'){
         progress('Экспериментальное чтение сохранённой графики RVT без IFC','RVT напрямую');
         if(typeof module.extractRvtDirectScene!=='function')throw Error('Прямой RVT-читатель отсутствует в этой версии runtime. Обновите сборку. IFC автоматически не используется.');
@@ -104,9 +118,10 @@ worker.onmessage=async({data})=>{
         await cacheRvt(model,binary);
         worker.postMessage({job,kind:'imported',model,binary},[binary]);return;
       }
-      if(rvtMode!=='ifc')throw Error('Неизвестный режим RVT');
-      progress('Конверсия RVT и чтение сохранённых сеток','RVT → IFC');
-      conversion=module.convertRvtBytes(bytes);conversion.engineering=engineering;
+      if(rvtMode!=='ifc'&&!quickPreview)throw Error('Неизвестный режим RVT');
+      progress(quickPreview?'Подготовка геометрии для быстрого просмотра':'Конверсия RVT и чтение сохранённых сеток','RVT → IFC');
+      conversion=module.convertRvtBytes(bytes,quickPreview);conversion.engineering=engineering;
+      if(quickPreview&&!conversion.quick_preview)throw Error('Быстрый просмотр требует обновлённого читателя RVT.');
       if(!conversion.ifc_step)throw Error(conversion.quality_error||'RVT: пригодная геометрия не получена');
       progress('Подготовка промежуточного IFC','IFC-буфер');
       bytes=new TextEncoder().encode(conversion.ifc_step);convertedIfc=bytes.buffer as ArrayBuffer;delete conversion.ifc_step;
@@ -118,7 +133,11 @@ worker.onmessage=async({data})=>{
     progress('Чтение структуры IFC','Структура IFC');
     const {model,binary}=await importIfc(api,bytes,filename,await digest(bytes),await response.json(),
       text=>progress(text,text.startsWith('Геометрия:')?'Геометрия':'Свойства IFC'),!!conversion,memoryMiB);
-    if(conversion){model.model_id=sourceHash;model.source={...model.source,format:'rvt',sha256:sourceHash,size_bytes:sourceSize,conversion:{engine:'rvt-rs',local_patches:RVT_LOCAL_PATCHES,warnings:conversion.diagnostics.warnings,unsupported_features:conversion.diagnostics.unsupported_features,ifc_sha256:model.source.sha256,confidence:conversion.diagnostics.confidence,source_revision:RVT_UPSTREAM_REVISION}};}
+    if(conversion){
+      model.model_id=conversion.quick_preview?await digest(new TextEncoder().encode(sourceHash+':ifc-preview:'+RVT_READER_REVISION)):sourceHash;
+      model.source={...model.source,format:'rvt',sha256:sourceHash,size_bytes:sourceSize,rvt_read_mode:conversion.quick_preview?'ifc_preview':'ifc',conversion:{engine:'rvt-rs',local_patches:RVT_LOCAL_PATCHES,warnings:conversion.diagnostics.warnings,unsupported_features:conversion.diagnostics.unsupported_features,ifc_sha256:model.source.sha256,confidence:conversion.diagnostics.confidence,source_revision:RVT_UPSTREAM_REVISION}};
+      if(conversion.quick_preview)model.diagnostics.push({element_id:'',kind:'rvt_ifc_preview',message:'Часть объектов показана габаритами. Виды, спецификации и сохранённые параметры RVT отдельно не извлекались.'});
+    }
     if(conversion?.engineering)attachNativeEngineering(model,conversion.engineering,sourceHash);
     if(conversion)attachNativeIdentities(model,rvtDocument,sourceHash);
     if(conversion)await cacheRvt(model,binary,convertedIfc);

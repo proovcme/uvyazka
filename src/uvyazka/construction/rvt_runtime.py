@@ -9,9 +9,13 @@ import re
 
 
 UPSTREAM_REVISION = "94b89edff3c31c5b348eed232d329138652ffb3c"
+OLE_SIGNATURE = bytes.fromhex("D0CF11E0A1B11AE1")
+RVT_MAX_BYTES = 512 * 1024 * 1024
 NAMES = ("rvt-ifc", "rvt-info", "rvt-capabilities", "ifccs-rvt-metadata")
+SCENE_NAME = "uvyazka-rvt-scene"
 ENV = {"rvt-ifc": "UVYAZKA_RVT_IFC", "rvt-info": "UVYAZKA_RVT_INFO",
-       "rvt-capabilities": "UVYAZKA_RVT_CAPABILITIES", "ifccs-rvt-metadata": "UVYAZKA_RVT_METADATA"}
+       "rvt-capabilities": "UVYAZKA_RVT_CAPABILITIES", "ifccs-rvt-metadata": "UVYAZKA_RVT_METADATA",
+       SCENE_NAME: "UVYAZKA_RVT_SCENE"}
 
 
 def binary_name(name):
@@ -50,7 +54,7 @@ def _locate(name, home=None):
             raise ValueError("RVT runtime is outdated for this Uvyazka version; rerun tools/setup_rvt.py")
         return folder/binary_name(name), "managed", manifest
     root = Path(__file__).resolve().parents[3]/"integrations"
-    crate = 'rvt-metadata-reader' if name == 'ifccs-rvt-metadata' else 'rvt-rs'
+    crate = {'ifccs-rvt-metadata': 'rvt-metadata-reader', SCENE_NAME: 'rvt-browser-bridge'}.get(name, 'rvt-rs')
     return root/crate/'target/release'/binary_name(name), "checkout", None
 
 
@@ -76,6 +80,6 @@ def converter_status(home=None):
             rows[name] = {"available": False, "error": str(error)}
     return {"engine": "rvt-rs", "available": all(rows[k]['available'] for k in ('rvt-ifc','rvt-info')),
         "phase_reader_available": rows['ifccs-rvt-metadata']['available'], "binaries": rows,
-        "local_only": True, "max_bytes": 512*1024*1024,
+        "local_only": True, "max_bytes": RVT_MAX_BYTES,
         "setup": "uv run python tools/setup_rvt.py (source checkout, Rust and native build tools required)",
         "limitations": "Partial RVT/version/category support. Geometry and quantities require review; bounding boxes cannot supply work volumes."}

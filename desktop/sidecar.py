@@ -19,6 +19,8 @@ def main():
     root=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))
     native=root/'uvyazka-runtime/rvt'
     if native.is_dir():os.environ['UVYAZKA_RVT_BIN_DIR']=str(native)
+    navis=root/'uvyazka-runtime/navis/uvyazka-nwd-experiment.exe'
+    if navis.is_file():os.environ['UVYAZKA_NWD_READER']=str(navis)
     if '--mcp' in sys.argv:
         folder=default_home()/'desktop-sessions';folder.mkdir(parents=True,exist_ok=True)
         lease=folder/('mcp-'+str(os.getpid())+'-'+uuid4().hex+'.json')

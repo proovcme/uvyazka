@@ -1,4 +1,5 @@
 """Small shared model-data interface; optional engines load only on explicit reads."""
+import asyncio
 from .model_data import ModelData
 from .model_readers import reader_status
 
@@ -13,9 +14,9 @@ def register_tools(mcp, workspace):
         return reader_status(workspace)
 
     @mcp.tool(annotations={'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True})
-    def read_model_data(project_id: str, request_id: str, doc_id: str | None = None, scene_id: str | None = None) -> dict:
+    async def read_model_data(project_id: str, request_id: str, doc_id: str | None = None, scene_id: str | None = None) -> dict:
         """Persist an immutable metadata snapshot in the shared project DB. Exactly one registered doc_id OR saved viewer scene_id. Direct RVT/IFC/DWG/DXF/NWD/NWC reads need the respective local reader. No original edits or LLM API. Repeated source/reader versions reuse cache; changed files require scan and a new request_id. scene_id uses an unreviewed derived viewer package, not a reread of the original. Inspect coverage/limitations: saved views are not rendered drawings, schedule definitions are not evaluated totals, Navis logical nodes are not physical quantities. Returns dataset_id for query_model_data/get_model_object."""
-        return service.read(project_id, request_id, doc_id, scene_id)
+        return await asyncio.to_thread(service.read, project_id, request_id, doc_id, scene_id)
 
     @mcp.tool(annotations=read)
     def list_model_data(project_id: str, offset: int = 0, limit: int = 20) -> dict:
@@ -24,9 +25,10 @@ def register_tools(mcp, workspace):
 
     @mcp.tool(annotations=read)
     def query_model_data(project_id: str, dataset_id: str, section: str = 'elements', query: str = '', native_id: str | None = None,
-                         filters: list[dict] | None = None, cursor: str | None = None, limit: int = 40) -> dict:
-        """Search cached elements/types/systems/levels/layers/blocks/layouts/views/schedules/relationships. query is name/class/native ID substring; native_id exact ID or explicit identifier alias, never guessed name matching. filters (max8): {path:["properties",...],op:"eq|contains|exists|gt|lt",value:...}. eq is type-exact, exists distinguishes absent from null/zero; numeric comparisons do not convert units. Follow next_cursor even for an empty page. Native IDs can be ambiguous; use returned object_id for detail. Empty results prove nothing about unsupported source data. No model/file edits."""
-        return service.query(project_id, dataset_id, section, query, native_id, filters, cursor, limit)
+                         filters: list[dict] | None = None, cursor: str | None = None, limit: int = 40,
+                         search_properties: bool = False, columns: list[dict] | None = None) -> dict:
+        """Search cached model sections. query matches name/class/native ID, plus saved property keys/values and identifier aliases when search_properties=true. native_id is exact. filters (max8): {path:["properties",...],op:"eq|contains|exists|gt|lt",value:...}; no unit conversion. Optional columns [{title,path}] return a bounded table preview; use build_model_table(kind=snapshot) for an exact saved table. Follow next_cursor even for an empty page. Use object_id for detail; empty results cover only decoded data."""
+        return service.query(project_id, dataset_id, section, query, native_id, filters, cursor, limit, search_properties, columns)
 
     @mcp.tool(annotations=read)
     def get_model_object(project_id: str, dataset_id: str, object_id: str, json_path: list | None = None,

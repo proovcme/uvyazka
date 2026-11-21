@@ -31,6 +31,7 @@ struct Graph<'a> {
     order: Vec<u32>,
     active: BTreeSet<u32>,
     depth: usize,
+    legacy: bool,
 }
 impl<'a> Graph<'a> {
     fn new(b: &'a [u8]) -> Self {
@@ -40,6 +41,7 @@ impl<'a> Graph<'a> {
             order: Vec::new(),
             active: BTreeSet::new(),
             depth: 0,
+            legacy: false,
         }
     }
     fn count(&mut self) -> Result<usize> {
@@ -209,7 +211,9 @@ impl<'a> Graph<'a> {
                 o.flags = self.c.u32()?;
                 match class {
                     22 | 53 => {
-                        o.guid_index = Some(self.c.u32()?);
+                        if !self.legacy {
+                            o.guid_index = Some(self.c.u32()?);
+                        }
                         o.attributes = self.pointers()?;
                         if class == 53 {
                             o.children = self
@@ -363,7 +367,7 @@ pub fn read_logical_models_with_progress(
         .blocks
         .iter()
         .filter_map(|block| {
-            let namespace = block.entry.name.strip_suffix("\\LcOpNwdLogicalHierarchy")?;
+            let namespace = crate::stream_namespace(&block.entry.name, "LcOpNwdLogicalHierarchy")?;
             phase("Чтение исходного дерева NWD");
             let mut result = LogicalModel {
                 namespace: namespace.into(),
@@ -384,6 +388,7 @@ pub fn read_logical_models_with_progress(
                     return Err(e.clone());
                 }
                 let mut graph = Graph::new(&block.body);
+                graph.legacy = container.serialization_version == 90;
                 let pages = graph.count()?;
                 if pages > 100_000 {
                     return Err("Property-page budget exceeded".into());
@@ -447,7 +452,7 @@ pub fn read_logical_models_with_progress(
                 if graph.c.pos != block.body.len() {
                     return Err("Unparsed logical suffix".into());
                 }
-                let prop_stream = format!("{namespace}\\LcOaPartitionProps");
+                let prop_stream = if namespace.is_empty() { "LcOaPartitionProps".to_owned() } else { format!("{namespace}\\LcOaPartitionProps") };
                 let mut prop_ids = vec![None; result.declared_property_slots];
                 if let Some(b) = container
                     .blocks
@@ -472,6 +477,7 @@ pub fn read_logical_models_with_progress(
                                 segment.expanded_bytes,
                             )?;
                             let mut g = Graph::new(bytes);
+                            g.legacy = graph.legacy;
                             let read: Result<()> = (|| {
                                 for i in 0..count {
                                     if result.decoded_property_slots%4096==0 {phase(&format!("Свойства NWD: прочитано {} из {} записей",result.decoded_property_slots,result.declared_property_slots));}
@@ -595,7 +601,7 @@ pub fn read_logical_models_with_progress(
                     &mut BTreeSet::new(),
                 )?;
                 let store = container.blocks.iter().find(|b| {
-                    b.entry.name == format!("{namespace}\\LcOpGuidStore") && b.diagnostic.is_none()
+                    crate::stream_namespace(&b.entry.name, "LcOpGuidStore") == Some(namespace) && b.diagnostic.is_none()
                 });
                 for node in &mut result.nodes {
                     let Some(index) = node.guid_index else {
@@ -684,7 +690,7 @@ fn partition_prefix(container: &Container, namespace: &str) -> Value {
     let Some(block) = container
         .blocks
         .iter()
-        .find(|b| b.entry.name == format!("{namespace}\\LcOpNwdPartition"))
+        .find(|b| crate::stream_namespace(&b.entry.name, "LcOpNwdPartition") == Some(namespace))
     else {
         return json!({"status":"missing"});
     };
@@ -726,7 +732,7 @@ fn partition_prefix(container: &Container, namespace: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures::{align, envelope, u32v, zip};
+    use crate::fixtures::{align, envelope, legacy_envelope, u32v, zip};
     fn words(b: &mut Vec<u8>, v: &[u32]) {
         for x in v {
             u32v(b, *x);
@@ -776,6 +782,23 @@ mod tests {
         text(&mut b, Some(v));
         words(&mut b, &[0, 0]);
         b
+    }
+    #[test]
+    fn legacy_directory_and_nodes_without_guid_keep_raw_stream_names() {
+        let mut body = vec![];
+        words(&mut body, &[0, 100, 1, 101, 22]);
+        text(&mut body, Some("Legacy child"));
+        words(&mut body, &[0, 0, 0]);
+        finish(&mut body);
+        let file = legacy_envelope("LcOpNwdLogicalHierarchy", &body);
+        let container = crate::read_container(&file).unwrap();
+        assert_eq!(container.serialization_version, 90);
+        let result = read_logical_models(&container).remove(0);
+        assert_eq!(result.stream, "LcOpNwdLogicalHierarchy");
+        assert_eq!(result.status, "decoded_logical_subset");
+        assert_eq!(result.nodes[1].name.as_deref(), Some("Legacy child"));
+        assert!(result.nodes[1].guid_index.is_none());
+        assert!(crate::read_container(&file[..file.len() - 1]).is_err());
     }
     #[test]
     fn root_child_count_is_not_a_serialized_class_and_pages_keep_separate_id_spaces() {

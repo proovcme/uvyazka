@@ -1,6 +1,6 @@
 import type {ModelPackage,BimElement,Vec3} from './model';
 import {nativeNwdData} from './nwd-metadata.ts';
-export const NWD_READER_REVISION='index-runs-v4-20261029';
+export const NWD_READER_REVISION='lichunk-directory-v5';
 export const nwdUnits={m:1,mm:.001,cm:.01,ft:.3048,in:.0254,yd:.9144,km:1000,mi:1609.344,um:.000001,mil:.0000254,uin:.0000000254} as const;
 export type NwdUnit=keyof typeof nwdUnits;
 const sourceModels=(result:any):any[]=>result.models??[{namespace:'',geometry:result.geometry,fragments:result.fragments,logical_model:result.logical_models?.[0],geometry_complete:!result.fragments?.diagnostic,diagnostics:[]}];

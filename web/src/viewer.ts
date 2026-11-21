@@ -203,7 +203,13 @@ export class Viewer {
       this.root.add(mesh);
       this.meshes.set(element.id, mesh);
     }
-    if(batchLarge)this.batches=new ModelBatches(this.root,this.meshes);
+    if(batchLarge){
+      try{this.batches=new ModelBatches(this.root,this.meshes);}
+      catch(error){
+        if(!(error instanceof RangeError))throw error;
+        performanceSample('viewer-batch-allocation',loadStart,{fallback:'individual',meshes:this.meshes.size});
+      }
+    }
     this.root.updateMatrixWorld(true);
     this.picking.build([...this.meshes.values(),...[...this.edges.values()].filter(edge=>edge.userData.sourceLines)]);
     const origin = pkg.coordinate_system.render_origin_m;

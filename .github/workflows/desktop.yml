@@ -38,6 +38,7 @@ jobs:
       - run: npm --prefix integrations/cad-viewer ci
       - run: npm --prefix desktop ci
       - run: uv run python tools/setup_rvt.py
+      - run: uv run python tools/setup_model_readers.py --nwd
       - run: uv run python tools/build_browser_runtime.py
       - run: uv run python tools/build_cad_viewer.py
       - run: npm --prefix web run build

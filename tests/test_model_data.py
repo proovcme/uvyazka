@@ -1,5 +1,7 @@
 """Synthetic snapshots: shared persistence, typed filters and safe local API."""
 import copy
+import csv
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -10,7 +12,8 @@ from http.server import ThreadingHTTPServer
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError
 
-from uvyazka.core import Workspace
+from uvyazka.core import Workspace, connection
+from uvyazka.construction.model_tables import ModelTables
 from uvyazka.ingest import scan
 from uvyazka.model_data import ModelData
 from uvyazka.model_readers import obj, json_value
@@ -138,6 +141,24 @@ class ModelTests(unittest.TestCase):
             with urlopen(base+'/api/models/query?project_id=one&dataset_id='+key+'&native_id=42') as response:
                 result = json.load(response)
             self.assertEqual(result, self.service.query('one', key, native_id='42'))
+            with urlopen(base+'/api/models/documents?project_id=one&q=SYNTHETIC') as response:
+                self.assertEqual(json.load(response)['items'][0]['doc_id'], self.doc)
+            definition = {'section': 'elements', 'columns': [{'title': 'Мощность', 'path': ['properties', 'power']}]}
+            request = {'request_id': 'http-table', 'dataset_id': key, 'definition': definition}
+            body = json.dumps(request).encode()
+            route = base+'/api/models/table?project_id=one'
+            with self.assertRaises(HTTPError) as error:
+                urlopen(Request(route, body, headers={'Content-Type': 'application/json'}))
+            self.assertEqual(error.exception.code, 403)
+            with urlopen(Request(route, body, headers={'Content-Type': 'application/json', 'X-Uvyazka-Token': token})) as response:
+                table_id = json.load(response)['table_id']
+            tables = ModelTables(self.ws)
+            self.assertEqual(tables.build('one', kind='snapshot', **request)['table_id'], table_id)
+            with urlopen(base+'/api/models/table/export?project_id=one&format=json&table_id='+table_id) as response:
+                table = json.load(response)
+            self.assertEqual(table['source']['doc_id'], self.doc)
+            self.assertEqual([row['cells'][0]['value'] for row in table['rows']], [0,10])
+            route = base+'/api/models/read?project_id=one'
             with self.assertRaises(HTTPError):
                 urlopen(Request(route, b'{"request_id":"bad","path":"outside.ifc"}', headers={'Content-Type':'application/json', 'X-Uvyazka-Token':token}))
         finally:
@@ -149,11 +170,60 @@ class ModelTests(unittest.TestCase):
             {'serialized_id':2,'type_reference':1,'serialized_class':66,'values':{'uint64_decimal':'9007199254740993'}}],
             'nodes':[{'index':0,'serialized_id':100,'attributes':[{'serialized_id':2},{'serialized_id':404}]}]}
         rows, report = project_navis([model])
-        self.assertEqual(rows[0]['identifiers']['element_id'], '9007199254740993')
-        self.assertFalse(rows[0]['quantity_eligible'])
-        self.assertEqual(len(rows[0]['diagnostics']['unresolved_references']), 1)
+        row = next(rows)
+        self.assertEqual(row['identifiers']['element_id'], '9007199254740993')
+        self.assertFalse(row['quantity_eligible'])
+        self.assertEqual(len(row['diagnostics']['unresolved_references']), 1)
         self.assertEqual(report['status'], 'partial')
         self.assertEqual(json_value(float('nan'))['state'], 'nonfinite')
+
+    def test_navis_snapshot_search_projection_and_export_keep_exact_values(self):
+        source = self.source/'synthetic.nwc'
+        source.write_bytes(b'synthetic native reader fixture')
+        scan(self.ws, 'one')
+        doc = self.service.documents('one', 'NWC')['items'][0]['doc_id']
+        rows = [obj('elements', '42', 'Valve', '', {'Группа': {'Нагрузка': 0, 'null': None, 'empty': '', 'label': '=2+2', 'large': 9007199254740993}}),
+                obj('elements', '43', 'Pump', '', {'label': 'LOAD'})]
+        with patch('uvyazka.model_readers.reader_status', return_value={'readers': {'nwc': {'available': True,'engine': 'fixture','revision':'v1'}}}), \
+             patch('uvyazka.model_readers.nwd_data', return_value=(iter(rows), {'status': 'partial'})):
+            dataset = self.service.read('one', 'nwc-read', doc)
+        key = dataset['dataset_id']
+        with connection(self.ws.db_path('one'), readonly=True) as db:
+            self.assertEqual(db.execute('select typeof(payload) from model_objects where dataset_id=?', (key,)).fetchone()[0], 'blob')
+        columns = [{'title': field, 'path': ['properties', 'Группа', field]} for field in ('Нагрузка','null','absent','empty','label','large')]
+        query = {'query':'НАГРУЗКА', 'search_properties':True, 'columns':columns}
+        self.assertFalse(self.service.query('one', key, query='НАГРУЗКА')['items'])
+        item, = self.service.query('one', key, **query)['items']
+        self.assertEqual(item['cells'][-1]['json_text'], '9007199254740993')
+        self.assertEqual(json.loads(self.service.object('one', key, item['object_id'], columns[-1]['path'])['text']), 9007199254740993)
+        tables = ModelTables(self.ws)
+        table = tables.build('one', 'build-nwc', kind='snapshot', dataset_id=key, definition=query)
+        result = tables.read('one', table['table_id'])['items'][0]
+        self.assertEqual(result['object_id'], item['object_id'])
+        self.assertEqual(result['cells'][:4], [{'status':'read','value':0}, {'status':'read','value':None}, {'status':'absent'}, {'status':'read','value':''}])
+        stored = tables.stored('one', table['table_id'])
+        text = tables.render(stored, 'csv').lstrip('\ufeff')
+        exported = list(csv.reader(io.StringIO(text), delimiter=';'))[1]
+        self.assertEqual(exported[2:], ['0','null','','""',"'=2+2",'9007199254740993'])
+
+    def test_rvt_partial_attempt_keeps_objects_and_a_new_request_can_complete(self):
+        source = self.source/'synthetic.rvt'
+        source.write_bytes(b'synthetic native reader fixture')
+        scan(self.ws, 'one')
+        doc = self.service.documents('one', 'RVT')['items'][0]['doc_id']
+        view = obj('views', '3', 'Sheet', 'ViewSheet')
+        failures = {'status': 'partial', 'profile_failures': [{'profile': 'views', 'error': 'synthetic allocation failure'}]}
+        complete = {'status': 'partial', 'profile_failures': []}
+        engine = {'available': True, 'engine': 'fixture', 'revision': 'v1'}
+        with patch('uvyazka.model_readers.reader_status', return_value={'readers': {'rvt': engine}}), \
+             patch('uvyazka.model_readers.rvt_data', side_effect=[(iter(self.rows), failures), (iter([*self.rows, view]), complete)]):
+            first = self.service.read('one', 'partial', doc)
+            second = self.service.read('one', 'retry', doc)
+            self.assertEqual(self.service.read('one', 'partial', doc)['dataset_id'], first['dataset_id'])
+            self.assertEqual(self.service.read('one', 'reuse', doc)['dataset_id'], second['dataset_id'])
+        self.assertNotEqual(first['dataset_id'], second['dataset_id'])
+        self.assertEqual(first['counts']['elements'], 2)
+        self.assertEqual(second['counts']['views'], 1)
 
     def test_saved_viewer_scene_is_shared_but_never_claims_original_reread(self):
         import hashlib

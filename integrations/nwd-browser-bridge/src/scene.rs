@@ -110,7 +110,7 @@ pub fn read_scene_with_progress(c: &Container, phase: &mut dyn FnMut(&str)) -> S
         .collect();
     let mut namespaces: BTreeSet<String> = metadata.keys().cloned().collect();
     for block in &c.blocks {
-        if let Some(namespace) = block.entry.name.strip_suffix("\\LcOpNwdGeometry") {
+        if let Some(namespace) = crate::stream_namespace(&block.entry.name, "LcOpNwdGeometry") {
             namespaces.insert(namespace.to_owned());
         }
     }
@@ -128,7 +128,7 @@ pub fn read_scene_with_progress(c: &Container, phase: &mut dyn FnMut(&str)) -> S
         match c
             .blocks
             .iter()
-            .find(|b| b.entry.name == format!("{namespace}\\LcOpNwdGeometry"))
+            .find(|b| crate::stream_namespace(&b.entry.name, "LcOpNwdGeometry") == Some(&namespace))
         {
             Some(block) => {
                 match read_geometry_in(block) {
@@ -156,7 +156,7 @@ pub fn read_scene_with_progress(c: &Container, phase: &mut dyn FnMut(&str)) -> S
         match c
             .blocks
             .iter()
-            .find(|b| b.entry.name == format!("{namespace}\\LcOpNwdFragments"))
+            .find(|b| crate::stream_namespace(&b.entry.name, "LcOpNwdFragments") == Some(&namespace))
         {
             Some(block) => match read_fragments_in(block, &model.geometry) {
                 Ok(f) => {

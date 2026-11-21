@@ -7,6 +7,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 from ..core import connection, digest, encode, now
@@ -239,49 +240,53 @@ class RvtData:
                 db.execute('insert or ignore into rvt_data_requests values (?,?,?)',(request_id,fingerprint,encode(result)))
             return result
         folder=path.parent/'rvt-data'/uuid4().hex;folder.mkdir(parents=True)
-        copied=folder/'source.rvt';shutil.copyfile(source,copied)
-        if digest(copied)!=pointer['sha256']:raise ValueError('RVT changed while making the working copy')
-        request=folder/'request.json';inventory_path=folder/'inventory.json'
-        request.write_text(encode({'mode':'inventory'}),encoding='utf-8')
-        self.invoke(binary,copied,request,inventory_path)
-        inventory=json.loads(inventory_path.read_text(encoding='utf-8'))
-        classes={c['name']:c for c in inventory['classes']}
-        selected=selected_classes(profile,classes)
-        counts={};records=[];page_reports=[];cursor=0
-        while True:
-            output=folder/('records.ndjson' if cursor==0 else f'records-{cursor}.ndjson')
-            summary_path=output.with_suffix('.summary.json')
-            if profile!='all' and not selected:
-                output.write_text('',encoding='utf-8');summary_path.write_text(encode({'status':'unsupported_profile','record_count':0,'schema_sha256':inventory.get('schema_sha256'),'error':'Requested class roots not found; absence of records is not established'}),encoding='utf-8')
-            else:
-                projection='compact' if profile in {'engineering','types','parameters','objects'} else 'graphs' if profile in {'views','schedules'} else 'full'
-                request.write_text(encode({'mode':'records','classes':selected,'max_records':20000,'offset':cursor,'projection':projection}),encoding='utf-8')
-                self.invoke(binary,copied,request,output)
-            page=json.loads(summary_path.read_text(encoding='utf-8'))
-            if inventory.get('schema_sha256') and page.get('schema_sha256')!=inventory['schema_sha256']:
-                raise ValueError('Native page schema changed during extraction')
-            returned=0
-            with output.open(encoding='utf-8') as stream:
-                for line in stream:
-                    if len(line)>33*1024*1024:raise ValueError('Native record exceeds the explicit record budget')
-                    row=json.loads(line);kind=kind_for(row.get('class_name'),classes);counts[kind]=counts.get(kind,0)+1
-                    graph=objects(row);fields=graph[0]['fields'] if graph else row.get('root_fields',{})
-                    name=(row.get('mep_system') or {}).get('name') or fields.get('m_viewName') or fields.get('m_name') or ''
-                    if not isinstance(name,str):name=''
-                    status=row.get('projection_status') or ('partial_mep' if row.get('mep_system_diagnostic') else 'partial_metadata' if row.get('metadata_diagnostic') else row['status'])
-                    records.append((fingerprint,len(records),str(row['identity']['element_id']),row.get('class_name'),kind,name,status,encode(row)));returned+=1
-            page_reports.append(page)
-            pagination=page.get('pagination')
-            if pagination is not None:
-                if pagination.get('offset')!=cursor or pagination.get('returned')!=returned:
-                    raise ValueError('Native page counters do not match its records')
-                if pagination.get('next_offset') is None and not page.get('error') and pagination.get('selected_record_count')!=cursor+returned:
-                    raise ValueError('Native final page does not cover the selected inventory')
-            following=(pagination or {}).get('next_offset')
-            if following is None:break
-            if type(following) is not int or following!=cursor+returned or not returned:
-                raise ValueError('Native page continuation did not advance exactly')
-            cursor=following
+        with TemporaryDirectory(prefix='.read-', dir=folder) as directory:
+            working=Path(directory)
+            copied=working/'source.rvt';shutil.copyfile(source,copied)
+            if digest(copied)!=pointer['sha256']:raise ValueError('RVT changed while making the working copy')
+            request=working/'request.json';inventory_path=folder/'inventory.json'
+            request.write_text(encode({'mode':'inventory'}),encoding='utf-8')
+            self.invoke(binary,copied,request,inventory_path)
+            inventory=json.loads(inventory_path.read_text(encoding='utf-8'))
+            classes={c['name']:c for c in inventory['classes']}
+            selected=selected_classes(profile,classes)
+            counts={};records=[];page_reports=[];cursor=0
+            while True:
+                output=working/('records.ndjson' if cursor==0 else f'records-{cursor}.ndjson')
+                summary_path=output.with_suffix('.summary.json')
+                if profile!='all' and not selected:
+                    output.write_text('',encoding='utf-8');summary_path.write_text(encode({'status':'unsupported_profile','record_count':0,'schema_sha256':inventory.get('schema_sha256'),'error':'Requested class roots not found; absence of records is not established'}),encoding='utf-8')
+                else:
+                    projection='compact' if profile in {'engineering','types','parameters','objects'} else 'graphs' if profile in {'views','schedules'} else 'full'
+                    request.write_text(encode({'mode':'records','classes':selected,'max_records':20000,'offset':cursor,'projection':projection}),encoding='utf-8')
+                    self.invoke(binary,copied,request,output)
+                page=json.loads(summary_path.read_text(encoding='utf-8'))
+                if inventory.get('schema_sha256') and page.get('schema_sha256')!=inventory['schema_sha256']:
+                    raise ValueError('Native page schema changed during extraction')
+                returned=0
+                with output.open(encoding='utf-8') as stream:
+                    for line in stream:
+                        if len(line)>33*1024*1024:raise ValueError('Native record exceeds the explicit record budget')
+                        row=json.loads(line);kind=kind_for(row.get('class_name'),classes);counts[kind]=counts.get(kind,0)+1
+                        graph=objects(row);fields=graph[0]['fields'] if graph else row.get('root_fields',{})
+                        name=(row.get('mep_system') or {}).get('name') or fields.get('m_viewName') or fields.get('m_name') or ''
+                        if not isinstance(name,str):name=''
+                        status=row.get('projection_status') or ('partial_mep' if row.get('mep_system_diagnostic') else 'partial_metadata' if row.get('metadata_diagnostic') else row['status'])
+                        records.append((fingerprint,len(records),str(row['identity']['element_id']),row.get('class_name'),kind,name,status,encode(row)));returned+=1
+                output.unlink()
+                summary_path.unlink()
+                page_reports.append(page)
+                pagination=page.get('pagination')
+                if pagination is not None:
+                    if pagination.get('offset')!=cursor or pagination.get('returned')!=returned:
+                        raise ValueError('Native page counters do not match its records')
+                    if pagination.get('next_offset') is None and not page.get('error') and pagination.get('selected_record_count')!=cursor+returned:
+                        raise ValueError('Native final page does not cover the selected inventory')
+                following=(pagination or {}).get('next_offset')
+                if following is None:break
+                if type(following) is not int or following!=cursor+returned or not returned:
+                    raise ValueError('Native page continuation did not advance exactly')
+                cursor=following
         p.validate_sources(project_id,[pointer])
         if sha256(binary)!=reader_hash:raise ValueError('Native reader changed during extraction')
         report={**page_reports[-1],'record_count':len(records),'page_count':len(page_reports),

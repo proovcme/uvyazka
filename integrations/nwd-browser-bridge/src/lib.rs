@@ -13,8 +13,9 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 pub const OUTER: &[u8] = b"#LcUStream-V1.1 binary double release C lichunk-008\n";
+const LEGACY_OUTER: &[u8] = b"#LcUStream-V1.1 binary double release C lichunk-007\n";
 pub const MAX_INPUT: usize = 512 * 1024 * 1024;
-pub const READER_REVISION: &str = "index-runs-v4-20261029";
+pub const READER_REVISION: &str = "lichunk-directory-v5";
 pub const MAX_EXPANDED: usize = 256 * 1024 * 1024;
 const MAX_ENTRIES: usize = 100_000;
 type Result<T> = std::result::Result<T, String>;
@@ -238,6 +239,9 @@ pub fn read_container(data: &[u8]) -> Result<Container> {
     if data.len() > MAX_INPUT {
         return Err("NWD input exceeds experimental 512 MiB budget".into());
     }
+    if data.starts_with(LEGACY_OUTER) {
+        return read_legacy_container(data);
+    }
     if !data.starts_with(OUTER) || !data.ends_with(OUTER) {
         return Err(
             "Unsupported NWD container (expected complete lichunk-008 header/footer)".into(),
@@ -263,7 +267,7 @@ pub fn read_container(data: &[u8]) -> Result<Container> {
         .strip_prefix("#LcUStream-V1.1 binary double release utf8 navisworks:")
         .and_then(|s| s.strip_suffix(" lizlib\n"))
         .and_then(|s| s.parse::<u32>().ok());
-    if !matches!(serialization_version, Some(431 | 441 | 448)) {
+    if !matches!(serialization_version, Some(405 | 431 | 441 | 448)) {
         return Err(format!(
             "Unsupported inner serialization: {}",
             header.trim()
@@ -346,7 +350,79 @@ pub fn read_container(data: &[u8]) -> Result<Container> {
     if previous < pointer {
         gaps.push([previous, pointer]);
     }
-    let mut expanded = directory.len();
+    finish_container(data, serialization_version.unwrap(), pointer, header, trailer, entries, gaps, directory.len())
+}
+
+// lichunk-007 uses a compressed directory at the front, followed by a
+// separate table of start offsets and prefix/appendix sizes. The final
+// offset must equal the actual EOF. Chunk names remain as saved.
+fn read_legacy_container(data: &[u8]) -> Result<Container> {
+    let mut outer = Cursor::new(data);
+    outer.take(LEGACY_OUTER.len())?;
+    let directory_end = usize::try_from(outer.u64()?).map_err(|_| "Legacy directory offset overflow")?;
+    let pointer = outer.pos;
+    let stored = checked_slice(data, pointer, directory_end.checked_sub(pointer).ok_or("Legacy directory offset underflow")?)?;
+    let header_size = stored.iter().take(160).position(|b| *b == b'\n').ok_or("Legacy directory header missing")? + 1;
+    let header = std::str::from_utf8(&stored[..header_size]).map_err(|_| "Invalid legacy directory header")?;
+    if header != "#LcUStream-V1.1 binary double release utf8 navisworks:90 lizlib\n" {
+        return Err(format!("Unsupported legacy inner serialization: {}", header.trim()));
+    }
+    let encoded = &stored[header_size..];
+    let (directory, consumed) = inflate_one(encoded, MAX_EXPANDED)?;
+    if consumed != encoded.len() {
+        return Err("Legacy directory does not end at its declared offset".into());
+    }
+    outer.pos = directory_end;
+    let trailer = outer.take(8)?;
+    let mut cursor = Cursor::new(&directory);
+    if cursor.u32()? != u32::MAX {
+        return Err("Unsupported legacy directory version marker".into());
+    }
+    let count = cursor.u32()? as usize;
+    if count == 0 || count > MAX_ENTRIES {
+        return Err("Legacy directory entry count outside budget".into());
+    }
+    let mut entries = Vec::with_capacity(count);
+    let mut names = std::collections::BTreeSet::new();
+    for _ in 0..count {
+        let name = cursor.string()?;
+        if name.is_empty() || !names.insert(name.clone()) {
+            return Err("Empty or duplicate legacy chunk name".into());
+        }
+        entries.push(Entry {
+            name,
+            encoding: cursor.u32()?,
+            file_offset: usize::try_from(outer.u64()?).map_err(|_| "Legacy chunk offset overflow")?,
+            compressed_bytes: 0,
+            raw_prefix_bytes: outer.u32()? as usize,
+            trailing_compressed_bytes: outer.u32()? as usize,
+        });
+    }
+    if cursor.u32()? != 0 || cursor.pos != directory.len() {
+        return Err("Unexpected legacy directory terminator".into());
+    }
+    let terminal = usize::try_from(outer.u64()?).map_err(|_| "Legacy end offset overflow")?;
+    if terminal != data.len() || entries[0].file_offset != outer.pos {
+        return Err("Legacy chunk table does not cover the envelope".into());
+    }
+    for i in 0..entries.len() {
+        let end = entries.get(i+1).map_or(terminal, |next| next.file_offset);
+        let entry = &mut entries[i];
+        entry.compressed_bytes = end.checked_sub(entry.file_offset).ok_or("Unordered legacy chunks")?;
+        if end > terminal || entry.raw_prefix_bytes.checked_add(entry.trailing_compressed_bytes).is_none_or(|n| n > entry.compressed_bytes) {
+            return Err("Legacy chunk exceeds its declared envelope".into());
+        }
+    }
+    finish_container(data, 90, pointer, header.to_owned(), trailer, entries, vec![], directory.len())
+}
+
+pub(crate) fn stream_namespace<'a>(name: &'a str, stream: &str) -> Option<&'a str> {
+    let (namespace, suffix) = name.rsplit_once('\\').unwrap_or(("", name));
+    (suffix == stream).then_some(namespace)
+}
+
+fn finish_container(data: &[u8], serialization_version: u32, pointer: usize, header: String,
+                    trailer: &[u8], entries: Vec<Entry>, gaps: Vec<[usize; 2]>, mut expanded: usize) -> Result<Container> {
     let mut blocks = Vec::new();
     for entry in entries {
         let raw = checked_slice(data, entry.file_offset, entry.compressed_bytes)?;
@@ -407,7 +483,7 @@ pub fn read_container(data: &[u8]) -> Result<Container> {
     }
     Ok(Container {
         reader: "uvyazka-independent-nwd-0.1",
-        serialization_version: serialization_version.unwrap(),
+        serialization_version,
         source_sha256: hash(data),
         source_bytes: data.len(),
         directory_file_offset: pointer,

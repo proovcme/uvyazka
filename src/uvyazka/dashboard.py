@@ -13,28 +13,38 @@ STATIC = Path(__file__).resolve().parent / "ui"
 
 def make_handler(workspace: Workspace):
     from .construction.rvt_upload import RvtUploads,serve_get
+    from .construction.rvt_scene_http import RvtSceneUploads, PATH as RVT_SCENE_PATH
     uploads=RvtUploads(workspace)
+    rvt_scenes=RvtSceneUploads(workspace)
     from .intake import ProjectIntake
     intake = ProjectIntake(workspace)
     update_lock = threading.RLock()
     active_writes = 0
     maintenance = False
     class Handler(BaseHTTPRequestHandler):
-        def send(self, data, content_type="application/json; charset=utf-8", status=200):
+        def send(self, data, content_type="application/json; charset=utf-8", status=200, *, content_length=None, extra_headers=None):
             if isinstance(data, (dict, list)):
                 data = json.dumps(data, ensure_ascii=False).encode("utf-8")
             elif isinstance(data, str):
                 data = data.encode("utf-8")
             self.send_response(status)
             frame="'self' http://tauri.localhost https://tauri.localhost tauri://localhost" if getattr(self.server,'desktop_embed',False) else "'self'" if self.path.startswith(('/simulation/cad/','/norms/')) else "'none'"
-            for key, value in {"Content-Type": content_type, "Content-Length": str(len(data)), "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'self'; frame-ancestors "+frame}.items():
+            for key, value in {"Content-Type": content_type, "Content-Length": str(len(data) if content_length is None else content_length), "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'self'; frame-ancestors "+frame, **(extra_headers or {})}.items():
                 self.send_header(key, value)
             from .desktop_http import ORIGINS
             origin=self.headers.get('Origin')
             if getattr(self.server,'desktop_embed',False) and self.path.startswith('/api/desktop/') and origin in ORIGINS:
                 self.send_header('Access-Control-Allow-Origin',origin);self.send_header('Vary','Origin')
             self.end_headers()
-            if self.command != 'HEAD': self.wfile.write(data)
+            if self.command != 'HEAD':
+                if content_length is None:
+                    self.wfile.write(data)
+                else:
+                    try:
+                        for part in data:
+                            self.wfile.write(part)
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
 
         def do_HEAD(self):
             # The CAD SDK probes local workers with HEAD before opening a file.
@@ -53,6 +63,8 @@ def make_handler(workspace: Workspace):
                 return self.send({"error": "Loopback host required"}, status=403)
             request = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(request.query).items()}
             try:
+                if request.path == RVT_SCENE_PATH:
+                    return self.send(rvt_scenes.config(uploads.token))
                 from .desktop_http import serve_get as desktop_get
                 if desktop_get(self,workspace,uploads.token,request.path):return
                 from .norms_http import serve_get as norms_get
@@ -86,6 +98,7 @@ def make_handler(workspace: Workspace):
                 static.update({"/structure.js": ("structure.js", "text/javascript"), "/structure.css": ("structure.css", "text/css")})
                 static.update({"/search.js": ("search.js", "text/javascript"), "/search.css": ("search.css", "text/css")})
                 static['/norms.js'] = ('norms.js', 'text/javascript')
+                static.update({'/model-data.js': ('model-data.js', 'text/javascript'), '/model-data.css': ('model-data.css', 'text/css')})
                 if request.path in static:
                     name, mime = static[request.path]
                     return self.send((STATIC / name).read_bytes(), mime + "; charset=utf-8")
@@ -160,24 +173,27 @@ def make_handler(workspace: Workspace):
             catalogue = request.path == '/api/rvt/catalog'
             structure = request.path.startswith('/api/structure/')
             semantic = request.path=='/api/semantic/build'
-            model_data = request.path=='/api/models/read'
+            model_data = request.path in {'/api/models/read','/api/models/table'}
+            rvt_scene = request.path == RVT_SCENE_PATH
             norms = request.path.startswith('/norms/api/')
             review3d = request.path.startswith('/api/review3d/')
             desktop = request.path=='/api/desktop/backup' and getattr(self.server,'desktop_embed',False)
-            if request.path!='/api/rvt/upload' and not measurement and not intake_request and not catalogue and not structure and not semantic and not viewer_workspace and not review3d and not desktop and not model_data and not norms:
+            if request.path!='/api/rvt/upload' and not measurement and not intake_request and not catalogue and not structure and not semantic and not viewer_workspace and not review3d and not desktop and not model_data and not rvt_scene and not norms:
                 return self.send({"error": "Use explicit MCP tools for observations"}, status=405)
             origin=self.headers.get('Origin')
             from .desktop_http import ORIGINS
             if (origin and origin!='http://'+self.headers['Host'] and not (desktop and origin in ORIGINS)) or not hmac.compare_digest(self.headers.get('X-Uvyazka-Token',''),uploads.token):
                 return self.send({'error':'Open the local dashboard before writing'},status=403)
             try:
+                if rvt_scene:
+                    return rvt_scenes.serve(self)
                 if norms:
                     from .norms_http import serve_post as norms_post
                     return norms_post(self,workspace,request.path)
                 if model_data:
                     from .model_data_http import serve_post as model_data_post
                     query={k:v[0] for k,v in parse_qs(request.query).items()}
-                    return model_data_post(self,workspace,query)
+                    return model_data_post(self,workspace,query,request.path)
                 if desktop:
                     from .desktop_http import backup
                     with update_lock:

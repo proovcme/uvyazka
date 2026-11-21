@@ -52,9 +52,21 @@ fn graphics_resource(name: &str, parents: &BTreeMap<String, String>) -> bool {
 pub fn extract(bytes: Vec<u8>) -> Result<DirectScene, String> {
     super::validate_input_size(bytes.len())?;
     let mut file = RevitFile::open_bytes(bytes).map_err(|e| e.to_string())?;
+    extract_file(&mut file, true)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn extract_path(path: &std::path::Path) -> Result<DirectScene, String> {
+    let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+    super::validate_input_size(usize::try_from(size).map_err(|e| e.to_string())?)?;
+    let mut file = RevitFile::open(path).map_err(|e| e.to_string())?;
+    extract_file(&mut file, false)
+}
+
+fn extract_file(file: &mut RevitFile, inline_properties: bool) -> Result<DirectScene, String> {
     let options = native_document::Options::default();
     let mut scene =
-        rvt::research::native_saved_scene::extract(&mut file, &options).map_err(|e| e.to_string())?;
+        rvt::research::native_saved_scene::extract(file, &options).map_err(|e| e.to_string())?;
     let ids = scene
         .elements
         .iter()
@@ -71,7 +83,7 @@ pub fn extract(bytes: Vec<u8>) -> Result<DirectScene, String> {
     let mut metadata = BTreeMap::new();
     let mut definitions = BTreeMap::new();
     let mut metadata_bytes = 0usize;
-    let result = native_document::extract(&mut file, &metadata_options, |record| {
+    let visit = |record: native_document::Record| {
         let fields = record
             .graph
             .as_ref()
@@ -98,7 +110,7 @@ pub fn extract(bytes: Vec<u8>) -> Result<DirectScene, String> {
             })
             .unwrap_or_default();
         let mut row = json!({"class_name":record.class_name,"source":record.source,
-            "root_fields":root_fields,"status":record.status,"saved_metadata":record.saved_metadata,
+            "root_fields":root_fields,"status":record.status,"saved_metadata":if inline_properties { record.saved_metadata } else { None },
             "diagnostic":record.diagnostic,"metadata_diagnostic":record.metadata_diagnostic});
         if let Some(m) = row["saved_metadata"].as_object_mut() {
             for key in ["parameter_definitions", "builtin_parameter_definitions"] {
@@ -120,10 +132,15 @@ pub fn extract(bytes: Vec<u8>) -> Result<DirectScene, String> {
         }
         metadata.insert(record.identity.element_id.to_string(), row);
         Ok(())
-    });
+    };
+    let result = if inline_properties {
+        native_document::extract(file, &metadata_options, visit)
+    } else {
+        native_document::extract_graphs(file, &metadata_options, visit)
+    };
     let metadata_error = result.err().map(|e| e.to_string());
     let schema =
-        native_document::read_single(&mut file, "Formats/Latest").map_err(|e| e.to_string())?;
+        native_document::read_single(file, "Formats/Latest").map_err(|e| e.to_string())?;
     let registry = rvt::research::schema_registry::parse(&schema).map_err(|e| e.to_string())?;
     let parents = registry
         .classes
@@ -146,7 +163,8 @@ pub fn extract(bytes: Vec<u8>) -> Result<DirectScene, String> {
         }
         !is_resource
     });
-    let mut result = pack(scene, metadata, definitions, metadata_error, MAX_BINARY)?;
+    let mut result = pack(scene, metadata, definitions, metadata_error, MAX_BINARY, inline_properties)?;
+    result.manifest["inline_properties"] = json!(inline_properties);
     result.manifest["observed_records"] = json!(observed);
     result.manifest["unrendered_records"] =
         json!(observed - result.manifest["elements"].as_array().unwrap().len());
@@ -160,6 +178,7 @@ fn pack(
     definitions: BTreeMap<String, Value>,
     metadata_error: Option<String>,
     budget: usize,
+    inline_properties: bool,
 ) -> Result<DirectScene, String> {
     let observed_records = scene.elements.len();
     let mut minimum = [f64::INFINITY; 3];
@@ -285,7 +304,7 @@ fn pack(
                 "source":{"kind":"derived","method":"rvt_native_saved_graphics","version":"1","representation_id":0}})
         };
         elements.push(json!({"element_id":id,"unique_id":element.identity.unique_id,"source":element.source,
-            "material_evidence":element.render_materials,"referenced_graph_sources":element.referenced_graph_sources,
+            "material_evidence":inline_properties.then_some(element.render_materials),"referenced_graph_sources":inline_properties.then_some(element.referenced_graph_sources),
             "status":element.status,"metadata":metadata.get(&id),"mesh":mesh,
             "unresolved_material_primitives":element.unresolved_material_primitives,
             "diagnostics":element.meshes.diagnostics,"unbounded_faces":element.meshes.unbounded_faces,
@@ -298,7 +317,7 @@ fn pack(
         "revit_version":scene.summaries.first().map(|s| s.revit_version),"units":"metres","original_units":"feet",
         "complete_document_geometry":false,"graphics_profile":scene.graphics_profile,
         "bounds_min_m":minimum,"bounds_max_m":maximum,"render_origin_m":origin,
-        "elements":elements,"metadata_error":metadata_error,"parameter_definitions":definitions,"summaries":scene.summaries});
+        "elements":elements,"metadata_error":metadata_error,"parameter_definitions":definitions,"summaries":inline_properties.then_some(scene.summaries)});
     exact_numbers(&mut manifest);
     Ok(DirectScene {
         manifest,
@@ -358,7 +377,7 @@ mod tests {
     }
     #[test]
     fn packs_exact_id_metres_and_binary_ranges() {
-        let result = pack(scene(), BTreeMap::new(), BTreeMap::new(), None, 1024).unwrap();
+        let result = pack(scene(), BTreeMap::new(), BTreeMap::new(), None, 1024, true).unwrap();
         assert_eq!(
             result.manifest["elements"][0]["element_id"],
             "9007199254740993"
@@ -380,24 +399,24 @@ mod tests {
             diagnostics:vec![],provenance:vec![json!({"kind":"synthetic"})],
         });
         input.elements[0].unresolved_material_primitives.clear();
-        let result=pack(input,BTreeMap::new(),BTreeMap::new(),None,4096).unwrap();
+        let result=pack(input,BTreeMap::new(),BTreeMap::new(),None,4096,true).unwrap();
         let row=&result.manifest["elements"][0];
         assert_eq!(row["mesh"]["styles"][0]["color"],json!([0.8,0.3,0.1]));
         assert_eq!(row["mesh"]["styles"][0]["opacity"],json!(0.4));
         assert_eq!(row["material_evidence"]["0"]["material_id"],json!(71));
         assert_eq!(row["unresolved_material_primitives"],json!([]));
-        let unknown=pack(scene(),BTreeMap::new(),BTreeMap::new(),None,4096).unwrap();
+        let unknown=pack(scene(),BTreeMap::new(),BTreeMap::new(),None,4096,true).unwrap();
         assert_eq!(unknown.manifest["elements"][0]["unresolved_material_primitives"],json!([0]));
     }
     #[test]
     fn rejects_corruption_empty_and_budget_without_ifc_fallback() {
         let mut bad = scene();
         bad.elements[0].meshes.primitives[0].triangles[0][2] = 99;
-        assert!(pack(bad, BTreeMap::new(), BTreeMap::new(), None, 1024).is_err());
-        assert!(pack(scene(), BTreeMap::new(), BTreeMap::new(), None, 1).is_err());
+        assert!(pack(bad, BTreeMap::new(), BTreeMap::new(), None, 1024, true).is_err());
+        assert!(pack(scene(), BTreeMap::new(), BTreeMap::new(), None, 1, true).is_err());
         let mut empty = scene();
         empty.elements.clear();
-        assert!(pack(empty, BTreeMap::new(), BTreeMap::new(), None, 1024).is_err());
+        assert!(pack(empty, BTreeMap::new(), BTreeMap::new(), None, 1024, true).is_err());
         assert!(extract(b"not RVT".to_vec()).is_err());
     }
     #[test]
@@ -407,7 +426,7 @@ mod tests {
         extra.identity.element_id = 42;
         extra.meshes.primitives.clear();
         s.elements.push(extra);
-        let result = pack(s, BTreeMap::new(), BTreeMap::new(), None, 1024).unwrap();
+        let result = pack(s, BTreeMap::new(), BTreeMap::new(), None, 1024, true).unwrap();
         assert_eq!(result.manifest["observed_records"], 2);
         assert_eq!(result.manifest["unrendered_records"], 1);
         assert_eq!(result.manifest["elements"].as_array().unwrap().len(), 1);

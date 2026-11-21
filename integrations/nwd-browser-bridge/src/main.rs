@@ -36,6 +36,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("Scene report saved; inspect per-model coverage and diagnostics.");
         return Ok(());
     }
+    let logical_models = uvyazka_nwd_experiment::metadata::read_logical_models(&result);
+    serde_json::to_writer(
+        std::io::BufWriter::new(fs::File::create(output.join("logical-models.json"))?),
+        &logical_models,
+    )?;
+    if args.get(3).is_some_and(|mode| mode == "--metadata-only") {
+        return Ok(());
+    }
     fs::write(
         output.join("container.json"),
         serde_json::to_vec_pretty(&result)?,
@@ -50,14 +58,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 &block.appendix,
             )?;
         }
-    }
-    let logical_models = uvyazka_nwd_experiment::metadata::read_logical_models(&result);
-    fs::write(
-        output.join("logical-models.json"),
-        serde_json::to_vec(&logical_models)?,
-    )?;
-    if args.len() == 4 {
-        return Ok(());
     }
     let geometry = read_geometry(&result)?;
     let fragments = read_fragments(&result, &geometry)?;

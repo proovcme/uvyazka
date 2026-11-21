@@ -6,7 +6,8 @@ export function stagesFor(filename:string,simulation=false,rvtMode:RvtMode='ifc'
   const steps=['Чтение файла','Хеширование'];
   if(/\.(nwd|nwc)$/i.test(filename))return [...steps,'NWD-движок','Данные NWD','Геометрия','Отображение'];
   if(/\.rvt$/i.test(filename)){
-    steps.push('Проверка формата','RVT-движок','Документ RVT','Параметры RVT','Связи RVT');
+    steps.push('Проверка формата','RVT-движок');
+    if(rvtMode!=='ifc_preview')steps.push('Документ RVT','Параметры RVT','Связи RVT');
     if(rvtMode==='direct')return [...steps,'RVT напрямую','Сцена RVT','Отображение'];
     steps.push('RVT → IFC','IFC-буфер');
   }

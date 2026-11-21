@@ -9,12 +9,10 @@ import subprocess
 import uuid
 
 from .importer import IMPORTER_VERSION, import_model, write_json
-from .rvt_runtime import UPSTREAM_REVISION, binary_path, converter_status as runtime_status
+from .rvt_runtime import OLE_SIGNATURE, RVT_MAX_BYTES, UPSTREAM_REVISION, binary_path, converter_status as runtime_status
 
 ADAPTER_VERSION = "0.3.0"
-RVT_MAX_BYTES = 512 * 1024 * 1024
 IFC_MAX_BYTES = 100 * 1024 * 1024
-OLE_SIGNATURE = bytes.fromhex("D0CF11E0A1B11AE1")
 
 
 def file_hash(path):

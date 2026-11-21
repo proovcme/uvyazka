@@ -12,8 +12,7 @@ import tempfile
 import threading
 import time
 
-from .rvt_runtime import SCENE_NAME, binary_name, binary_path, sha256
-from .rvt import OLE_SIGNATURE, RVT_MAX_BYTES
+from .rvt_runtime import OLE_SIGNATURE, RVT_MAX_BYTES, SCENE_NAME, binary_name, binary_path, sha256
 
 
 PATH = '/api/models/rvt-scene'

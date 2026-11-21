@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 import pytest
 
 from uvyazka.construction import rvt_scene_http
-from uvyazka.construction.rvt import OLE_SIGNATURE
+from uvyazka.construction.rvt_runtime import OLE_SIGNATURE
 from uvyazka.core import Workspace
 from uvyazka.dashboard import make_handler
 

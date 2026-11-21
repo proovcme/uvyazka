@@ -4,17 +4,18 @@ import {validatePackage} from './model.ts';
 import {identifier} from './rvt-document.ts';
 import {parameter,parameterDefinitions} from './rvt-schedule.ts';
 import type {ParameterRecord} from './rvt-schedule.ts';
-export type RvtMode='ifc'|'direct';
-export const rvtMode=(model:ModelPackage):RvtMode=>model.source.rvt_read_mode==='direct'?'direct':'ifc';
+export type RvtMode=NonNullable<ModelPackage['source']['rvt_read_mode']>;
+export const rvtMode=(model:ModelPackage):RvtMode=>model.source.rvt_read_mode??'ifc';
 /** A source can be compared in both readers; those are not duplicate packages. */
 export function sameReadSource(model:ModelPackage,sha:string,mode?:RvtMode){return model.source.sha256===sha&&(!mode||rvtMode(model)===mode);}
 const hash=async(text:string)=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text)))].map(n=>n.toString(16).padStart(2,'0')).join('');
 const vector=(v:unknown):v is Vec3=>Array.isArray(v)&&v.length===3&&v.every(x=>typeof x==='number'&&Number.isFinite(x));
-export async function importRvtDirect(result:any,source:{filename:string;sha256:string;size_bytes:number}):Promise<{model:ModelPackage;binary:ArrayBuffer}>{
+export async function importRvtDirect(result:any,source:{filename:string;sha256:string;size_bytes:number;reader_sha256?:string}):Promise<{model:ModelPackage;binary:ArrayBuffer}>{
  const data=result?.manifest,raw=result?.geometry_binary;
  if(data?.contract!=='RvtDirectScene'||data.version!==1||data.units!=='metres'||data.complete_document_geometry!==false||!Array.isArray(data.elements)||data.elements.length>2_000_000||!(raw instanceof Uint8Array)||!raw.byteLength||raw.byteLength>512*1024**2)throw Error('RVT напрямую: неподдерживаемый или повреждённый результат читателя.');
  for(const v of [data.render_origin_m,data.bounds_min_m,data.bounds_max_m])if(!vector(v))throw Error('RVT напрямую: координаты не прочитаны.');
  if(!/^[a-f0-9]{64}$/.test(source.sha256))throw Error('RVT напрямую: отсутствует SHA-256 источника.');
+ if(source.reader_sha256&&!/^[a-f0-9]{64}$/.test(source.reader_sha256))throw Error('RVT напрямую: неверная версия локального читателя.');
  const binary=raw.byteOffset===0&&raw.byteLength===raw.buffer.byteLength?raw.buffer as ArrayBuffer:raw.slice().buffer as ArrayBuffer;
  const diagnostics:ModelPackage['diagnostics']=[{element_id:'',kind:'rvt_direct_experimental',message:'Экспериментальное прямое чтение сохранённой графики RVT. Полнота модели, физические количества, стадии и видимость Revit не подтверждены. IFC не создавался.'}];
  if(data.unrendered_records)diagnostics.push({element_id:'',kind:'rvt_direct_coverage',message:String(data.unrendered_records)+' записей не имеют пригодной сохранённой поверхности в этом наборе. Среди них есть служебные записи и типы; это не число пропущенных физических элементов.'});
@@ -45,7 +46,7 @@ export async function importRvtDirect(result:any,source:{filename:string;sha256:
  });
  if(!meshes)throw Error('RVT напрямую: пригодная геометрия не получена. IFC автоматически не использовался.');
  const model:ModelPackage={contract:'ModelPackage',contract_version:'0.1.0',importer_version:RVT_DIRECT_IMPORTER,
-  model_id:await hash(source.sha256+':rvt-direct:'+RVT_READER_REVISION),source:{...source,format:'rvt',schema:'Revit '+(data.revit_version??'версия не прочитана'),exporter:RVT_READER_REVISION+' native saved graphics',exported_at:'',rvt_read_mode:'direct'},
+  model_id:await hash(source.sha256+':rvt-direct:'+RVT_READER_REVISION+(source.reader_sha256?':'+source.reader_sha256:'')),source:{...source,format:'rvt',schema:'Revit '+(data.revit_version??'версия не прочитана'),exporter:RVT_READER_REVISION+' native saved graphics',exported_at:'',rvt_read_mode:'direct'},
   coordinate_system:{length_to_m:0.3048,up_axis:'Z',render_origin_m:data.render_origin_m,bounds_min_m:data.bounds_min_m,bounds_max_m:data.bounds_max_m},storeys:[],elements,relationships:[],diagnostics,
   statistics:{products:elements.length,physical_elements:0,meshes,triangles,geometry_errors:elements.length-meshes,binary_bytes:binary.byteLength},
   capabilities:{read:true,geometry_ready:true,technology_resolved:false,schedule_ready:false},

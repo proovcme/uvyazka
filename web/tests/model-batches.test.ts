@@ -39,3 +39,19 @@ test('chunk limits keep every instance rather than truncating the large model',(
  const root=new THREE.Group(),sources=new Map<string,SourceMesh>();for(let i=0;i<2050;i++){const mesh=source('synthetic:'+i);root.add(mesh);sources.set(mesh.userData.elementId,mesh);}
  const batches=new ModelBatches(root,sources),parts=root.children.filter((o):o is THREE.BatchedMesh=>o instanceof THREE.BatchedMesh);assert.equal(parts.length,2);assert.equal(parts.reduce((n,p)=>n+p.instanceCount,0),2050);assert.equal(sources.size,2050);batches.dispose();
 });
+test('each material uses only its vertex range and the source keeps its full index',()=>{
+ const root=new THREE.Group(),mesh=source('native:materials');root.add(mesh);
+ const positions=new Float32Array(30);
+ positions.set([0,0,0,1,0,0,0,1,0]);positions.set([3,0,0,4,0,0,3,1,0],21);
+ const index=new Uint32Array([0,1,2,7,8,9]);
+ mesh.geometry.setAttribute('position',new THREE.BufferAttribute(positions,3));
+ mesh.geometry.setIndex(new THREE.BufferAttribute(index,1));
+ mesh.geometry.addGroup(3,3,1);mesh.material.push(mesh.material[0].clone());
+ const batches=new ModelBatches(root,new Map([['native:materials',mesh]]));
+ const batch=root.children.find((object):object is THREE.BatchedMesh=>object instanceof THREE.BatchedMesh)!;
+ assert.equal(batch.getGeometryRangeAt(0).vertexCount,3);
+ assert.equal(batch.getGeometryRangeAt(1).vertexCount,3);
+ assert.deepEqual(Array.from(batch.geometry.index!.array),[0,1,2,3,4,5]);
+ assert.deepEqual(Array.from(mesh.geometry.index!.array),[0,1,2,7,8,9]);
+ batches.dispose();
+});

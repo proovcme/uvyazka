@@ -26,7 +26,7 @@ function locatorName(l) {
   return 'Строка: ' + (l.line || l.row || '—');
 }
 let current = '', projects = [], facts = [], checks = [], status = {}, summary = {}, view = 'overview', offset = 0, timer, generation = 0, resultGeneration = 0;
-const routes = {overview:'Обзор проекта',facts:'Записанные показатели',summary:'Найденные данные',rooms:'Помещения',capacity:'ТУ и мощности',quantities:'Объёмы и материалы',finance:'Финансы',checks:'Сопоставления',coordination:'Увязка разделов',rvt:'Загрузить RVT',simulation:'График и модель',measurements:'Лист и измерения',structure:'Листы и таблицы',documents:'Документы',search:'Поиск в проекте',norms:'Поиск норм',intake:'Приём проектов',portfolio:'Все проекты'};
+const routes = {overview:'Обзор проекта',facts:'Записанные показатели',summary:'Найденные данные',rooms:'Помещения',capacity:'ТУ и мощности',quantities:'Объёмы и материалы',finance:'Финансы',checks:'Сопоставления',coordination:'Увязка разделов',rvt:'Загрузить RVT',simulation:'График и модель',models:'Данные моделей',measurements:'Лист и измерения',structure:'Листы и таблицы',documents:'Документы',search:'Поиск в проекте',norms:'Поиск норм',intake:'Приём проектов',portfolio:'Все проекты'};
 function url(path) { const u = new URL(path, location.origin); u.searchParams.set('project_id', current); return u.pathname + u.search; }
 async function api(path) { const r = await fetch(path === '/api/projects' ? path : url(path)); const d = await r.json(); if (!r.ok) throw Error(d.error); return d; }
 function badge(s) { return `<span class="badge ${esc(s)}">${esc(statusNames[s] || s)}</span>`; }
@@ -62,7 +62,8 @@ async function route() {
   $('#navigation').innerHTML = Object.entries(routes).map(([key,title]) => `<a href="#${key}" class="nav-item ${key === view ? 'active' : ''}">${esc(title)}</a>`).join('');
   $('#section-select').innerHTML = Object.entries(routes).map(([key,title]) => `<option value="${key}" ${key === view ? 'selected' : ''}>${esc(title)}</option>`).join('');
   if(view==='intake'){await window.UvyazkaIntake.mount($('#view'),{projectsChanged:refreshProjects,openProject:async id=>{await refreshProjects();history.replaceState(null,'','#overview');await loadProject(id);}});return;}
-  $('.coverage-note').style.display=view==='norms'?'none':'';
+  $('.coverage-note').style.display=['norms','models'].includes(view)?'none':'';
+  if(view==='models'){$('.heading p').textContent='Поиск по свойствам и таблицы из исходных файлов без открытия 3D.';window.UvyazkaModelData.mount($('#view'),current);return;}
   if(view==='norms'){$('.heading p').textContent='Нормативные документы, редакции и актуальность. Поиск без ИИ.';await window.UvyazkaNorms.mount($('#view'),current);return;}
   if(view==='search'){await window.UvyazkaSearch.mount($('#view'),current);return;}
   if(view==='structure'){await window.UvyazkaStructure.mount($('#view'),current);return;}

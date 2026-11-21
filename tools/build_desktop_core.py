@@ -29,9 +29,11 @@ def build():
     subprocess.run(['git','checkout-index','--all','--prefix='+source.as_posix()+'/'],cwd=ROOT,check=True)
     subprocess.run([sys.executable,str(ROOT/'tools/check_public_content.py')],cwd=ROOT,check=True)
     native=ROOT/'.uvyazka-build/rvt-target/release'
+    navis=ROOT/'.uvyazka-build/nwd-recovery-target/release/uvyazka-nwd-experiment.exe'
+    rvt_binaries=('rvt-ifc.exe','rvt-info.exe','rvt-capabilities.exe','ifccs-rvt-metadata.exe','uvyazka-rvt-scene.exe')
     runtime=ROOT/'.uvyazka-build/browser-runtime'
     cad=ROOT/'integrations/cad-viewer/dist'
-    for path in (native/'rvt-ifc.exe',native/'rvt-info.exe',native/'rvt-capabilities.exe',native/'ifccs-rvt-metadata.exe',runtime/'planner.zip',cad/'index.html'):
+    for path in (*(native/name for name in rvt_binaries),navis,runtime/'planner.zip',cad/'index.html'):
         if not path.is_file():raise ValueError('Build the required runtime first: '+str(path))
     # PyInstaller follows explicit snapshot paths, including hidden core modules.
     hidden=['uvyazka.'+p.relative_to(source/'src/uvyazka').with_suffix('').as_posix().replace('/','.') for p in (source/'src/uvyazka').rglob('*.py') if p.name!='__init__.py']
@@ -69,7 +71,8 @@ def build():
         for path in source.rglob('*'):
             if path.is_file():archive.write(path,path.relative_to(source).as_posix())
     datas += [(str(licenses),'uvyazka-runtime/licenses'),(str(own_source),'uvyazka-runtime/sources')]
-    binaries=[(str(native/name),'uvyazka-runtime/rvt') for name in ('rvt-ifc.exe','rvt-info.exe','rvt-capabilities.exe','ifccs-rvt-metadata.exe')]
+    binaries=[(str(native/name),'uvyazka-runtime/rvt') for name in rvt_binaries]
+    binaries.append((str(navis),'uvyazka-runtime/navis'))
     spec=output/'uvyazka-core.spec'
     spec.write_text('''from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, copy_metadata

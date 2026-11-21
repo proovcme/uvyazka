@@ -13,7 +13,7 @@ test('NWC retains its source format while using Navis geometry, tree and provena
 test('Navis package identity advances with the reader, keeping older derived snapshots separate',async()=>{
  const {model}=await importNwd(result(),'synthetic.nwc');
  const old=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(['nwd-v2',hash,model.source.calibrations]))))].map(n=>n.toString(16).padStart(2,'0')).join('');
- assert.notEqual(model.model_id,old);assert.equal(model.importer_version,'uvyazka-nwd-v4');assert.equal(NWD_READER_REVISION,'index-runs-v4-20261029');
+ assert.notEqual(model.model_id,old);assert.equal(model.importer_version,'uvyazka-nwd-v4');assert.equal(NWD_READER_REVISION,'lichunk-directory-v5');
  assert.equal((await importNwd(result(),'synthetic.nwc')).model.model_id,model.model_id);
 });
 function fixture(namespace='synthetic'){

@@ -10,8 +10,10 @@ import re
 
 UPSTREAM_REVISION = "94b89edff3c31c5b348eed232d329138652ffb3c"
 NAMES = ("rvt-ifc", "rvt-info", "rvt-capabilities", "ifccs-rvt-metadata")
+SCENE_NAME = "uvyazka-rvt-scene"
 ENV = {"rvt-ifc": "UVYAZKA_RVT_IFC", "rvt-info": "UVYAZKA_RVT_INFO",
-       "rvt-capabilities": "UVYAZKA_RVT_CAPABILITIES", "ifccs-rvt-metadata": "UVYAZKA_RVT_METADATA"}
+       "rvt-capabilities": "UVYAZKA_RVT_CAPABILITIES", "ifccs-rvt-metadata": "UVYAZKA_RVT_METADATA",
+       SCENE_NAME: "UVYAZKA_RVT_SCENE"}
 
 
 def binary_name(name):
@@ -50,7 +52,7 @@ def _locate(name, home=None):
             raise ValueError("RVT runtime is outdated for this Uvyazka version; rerun tools/setup_rvt.py")
         return folder/binary_name(name), "managed", manifest
     root = Path(__file__).resolve().parents[3]/"integrations"
-    crate = 'rvt-metadata-reader' if name == 'ifccs-rvt-metadata' else 'rvt-rs'
+    crate = {'ifccs-rvt-metadata': 'rvt-metadata-reader', SCENE_NAME: 'rvt-browser-bridge'}.get(name, 'rvt-rs')
     return root/crate/'target/release'/binary_name(name), "checkout", None
 
 

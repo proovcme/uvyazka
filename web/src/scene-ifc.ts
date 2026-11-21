@@ -27,7 +27,10 @@ export async function exportSceneIfc(model:ModelPackage,binary:ArrayBuffer,web:a
  const S=web.IFC4,L=(v:string|null)=>v===null?null:new S.IfcLabel(v),N=(v:number)=>new S.IfcLengthMeasure(v),R=(v:number)=>new S.IfcReal(v);
  const notify=(s:string)=>{try{options.progress?.(s);}catch{}};
  const report:SceneIfcReport={scope:selected?'subset':'all',records:elements.length,products:0,groups:0,storeys:model.storeys.length,triangles:0,lineSegments:0,properties:options.properties!==false,detailedSources:options.detailedSources===true,sourceCompletenessVerified:false,sourceModelId:model.model_id,bytes:0};
- let estimated=0;const reserve=(n:number)=>{estimated+=n;if(estimated>limit)throw Error('IFC превышает бюджет обработки. Выберите часть сцены или отключите подробные свойства.');};
+ // Tape entries and the final STEP stream have different sizes. Keep a
+ // separate construction estimate and enforce the exact file limit below.
+ const buildLimit=limit+Math.min(Math.floor(limit/2),256*1024**2);
+ let estimated=0;const reserve=(n:number)=>{estimated+=n;if(estimated>buildLimit)throw Error('IFC превышает бюджет обработки. Выберите часть сцены или отключите подробные свойства.');};
  const counts=new Map<string,number>();for(const e of elements)if(guidPattern.test(e.global_id))counts.set(e.global_id,(counts.get(e.global_id)??0)+1);
  const used=new Set<string>();
  async function guid(kind:string,key:string,original?:string){

@@ -1,11 +1,13 @@
 """Immutable, source-addressed model metadata shared by MCP and the local panel."""
 from __future__ import annotations
 from collections import Counter
+from itertools import islice
 import hashlib
 import json
 from pathlib import Path
 import shutil
 import tempfile
+import zlib
 
 from .core import connection, digest, encode, now
 from . import model_readers as readers
@@ -16,6 +18,18 @@ SQL = [
     'create table if not exists model_read_requests(request_id text primary key,fingerprint text,result text)',
     'create index if not exists model_object_section on model_objects(dataset_id,section,ordinal)',
 ]
+MAX_OBJECT_BYTES = 4*1024**2
+
+
+def decode_object(payload):
+    # Old snapshots store JSON text. Navisworks snapshots may store compressed
+    # JSON to retain repeated property evidence without expanding the project DB.
+    if isinstance(payload, bytes):
+        decoder = zlib.decompressobj()
+        payload = decoder.decompress(payload, MAX_OBJECT_BYTES + 1)
+        if not decoder.eof or decoder.unused_data or len(payload) > MAX_OBJECT_BYTES:
+            raise ValueError('Invalid compressed model record')
+    return json.loads(payload)
 
 
 def fingerprint(value):
@@ -76,6 +90,62 @@ def matches(row, filters):
     return True
 
 
+def validate_path(path):
+    if (not isinstance(path, list) or not 1 <= len(path) <= 32 or
+            any(type(key) not in (str, int) for key in path) or len(encode(path)) > 1000):
+        raise ValueError('Field path needs 1..32 keys or indices')
+
+
+def table_columns(columns):
+    if not isinstance(columns, list) or not 1 <= len(columns) <= 32:
+        raise ValueError('Select 1..32 table columns')
+    for column in columns:
+        if not isinstance(column, dict) or set(column) != {'path', 'title'} or not isinstance(column['title'], str) or not column['title'].strip() or len(column['title']) > 200:
+            raise ValueError('Each column needs a field path and a title up to 200 characters')
+        validate_path(column['path'])
+    return columns
+
+
+def table_cells(row, columns, preview_chars=None):
+    cells = []
+    for column in columns:
+        try:
+            value = at(row, column['path'])
+        except KeyError:
+            cells.append({'status': 'absent'})
+            continue
+        if preview_chars is not None:
+            encoded = encode(value)
+            if len(encoded) > preview_chars:
+                cells.append({'status': 'preview', 'text': encoded[:preview_chars]})
+                continue
+            # Browser JSON numbers can lose integers above 2**53, including
+            # when they are nested in a structured property. Keep exact text.
+            cells.append({'status': 'read', 'json_text': encoded})
+            continue
+        cells.append({'status': 'read', 'value': value})
+    return cells
+
+
+def contains_field(value, term):
+    pending = [iter((value,))]
+    while pending:
+        for item in pending[-1]:
+            if isinstance(item, dict):
+                if any(term in key.casefold() for key in item):
+                    return True
+                pending.append(iter(item.values()))
+                break
+            if isinstance(item, list):
+                pending.append(iter(item))
+                break
+            if term in str(item).casefold():
+                return True
+        else:
+            pending.pop()
+    return False
+
+
 class ModelData:
     def __init__(self, workspace):
         self.workspace = workspace
@@ -130,6 +200,16 @@ class ModelData:
         return {'project_id': project, 'items': [self._summary(project, json.loads(r['payload'])) for r in rows], 'total': total,
                 'next_offset': offset + len(rows) if offset + len(rows) < total else None}
 
+    def documents(self, project, query='', offset=0):
+        if len(query) > 256 or offset < 0:
+            raise ValueError('File search requires query <=256 and offset >=0')
+        args = ('.rvt', '.nwd', '.nwc', '.ifc', '.dwg', '.dxf', query.casefold())
+        with connection(self._db(project), readonly=True) as db:
+            rows = [dict(row) for row in db.execute('''select doc_id, relative_path, extension from documents
+                where extension in (?,?,?,?,?,?) and instr(casefold(relative_path),?) > 0
+                order by relative_path, doc_id limit 41 offset ?''', (*args, offset))]
+        return {'items': rows[:40], 'next_offset': offset+40 if len(rows) > 40 else None}
+
     def read(self, project, request_id, doc_id=None, scene_id=None):
         if not isinstance(request_id, str) or not 1 <= len(request_id) <= 128 or bool(doc_id) == bool(scene_id):
             raise ValueError('request_id 1..128 and exactly one of doc_id or scene_id required')
@@ -172,6 +252,10 @@ class ModelData:
                 rows, report = self._scene(model)
             elif fmt == 'rvt':
                 rows, report = readers.rvt_data(self.workspace, project, doc_id, 'model:' + dataset_id[:48])
+                if report.get('profile_failures'):
+                    # An incomplete attempt remains addressable. A new request
+                    # can still retry the failed profile for this source revision.
+                    dataset_id = fingerprint([dataset_id, 'profile_failures', report['profile_failures']])
             else:
                 # Decode a pinned private working copy, never the live original.
                 with tempfile.TemporaryDirectory(prefix='model-', dir=db_path.parent) as directory:
@@ -184,14 +268,12 @@ class ModelData:
                     elif fmt == 'dxf': rows, report = readers.dxf_data(copied)
                     elif fmt == 'dwg': rows, report = readers.dwg_data(copied, folder)
                     else: rows, report = readers.nwd_data(self.workspace, copied, folder)
-            if doc_id and digest(source) != sha:
-                raise ValueError('Source changed during reading; snapshot was not published')
-            if doc_id and readers.reader_status(self.workspace)['readers'][fmt]['revision'] != engine['revision']:
-                raise ValueError('Reader changed during reading; retry with the current reader')
-            if len(rows) > 500_000:
-                raise ValueError('Metadata exceeds 500000-object budget')
-            records, seen, counts, size = [], set(), Counter(), 0
+            compress = doc_id and fmt in ('nwd', 'nwc', 'rvt')
+            records, seen, counts = [], set(), Counter()
+            size = stored_size = 0
             for index, row in enumerate(rows):
+                if index >= 500_000:
+                    raise ValueError('Metadata exceeds 500000-object budget')
                 if row['section'] not in readers.SECTIONS:
                     raise ValueError('Unknown adapter section')
                 key = (row['section'], row['native_id'])
@@ -199,15 +281,24 @@ class ModelData:
                     raise ValueError('Ambiguous duplicate native object; no objects were overwritten')
                 seen.add(key)
                 oid = fingerprint([dataset_id, *key])
-                json.dumps(row, allow_nan=False)
                 payload = encode({**row, 'object_id': oid})
-                size += len(payload.encode())
-                if len(payload.encode()) > 4*1024**2 or size > 128*1024**2:
+                raw = payload.encode('utf-8')
+                size += len(raw)
+                if len(raw) > MAX_OBJECT_BYTES or size > (2048 if compress else 128)*1024**2:
                     raise ValueError('Metadata exceeds per-object/total output budget')
+                if compress:
+                    payload = zlib.compress(raw, level=3)
+                    stored_size += len(payload)
+                    if stored_size > 256*1024**2:
+                        raise ValueError('Native model data exceeds 256 MiB compressed storage budget')
                 counts[row['section']] += 1
                 records.append((dataset_id, oid, index, row['section'], payload))
+            if doc_id and digest(source) != sha:
+                raise ValueError('Source changed during reading; snapshot was not published')
+            if doc_id and readers.reader_status(self.workspace)['readers'][fmt]['revision'] != engine['revision']:
+                raise ValueError('Reader changed during reading; retry with the current reader')
             data = {'dataset_id': dataset_id, 'contract': 'UvyazkaModelData', 'version': 1, 'source': origin, 'reader': engine,
-                    'created_at': now(), 'counts': dict(counts), 'object_count': len(rows), 'coverage': report,
+                    'created_at': now(), 'counts': dict(counts), 'object_count': len(records), 'coverage': report,
                     'original_files_modified': False, 'mesh_buffers_returned': False}
             with connection(db_path) as db:
                 db.execute('begin immediate')
@@ -254,10 +345,12 @@ class ModelData:
                     evidence={'model_id': model['model_id'], 'json_path': [source_key, index]}, value_semantics='viewer_derived'))
         return rows, {'status': 'partial', 'limitations': ['Derived viewer package only; original file not reopened.', 'Logical nodes/fragments are not automatically physical element counts.']}
 
-    def query(self, project, dataset_id, section='elements', query='', native_id=None, filters=None, cursor=None, limit=40):
-        summary = self.dataset(project, dataset_id)
-        if section not in readers.SECTIONS or not isinstance(query, str) or len(query) > 256 or type(limit) is not int or not 1 <= limit <= 100:
-            raise ValueError('Supported section, query <=256 and limit 1..100 required')
+    @staticmethod
+    def selection(section, query, native_id, filters, search_properties):
+        if section not in readers.SECTIONS or not isinstance(query, str) or len(query) > 256 or type(search_properties) is not bool:
+            raise ValueError('Supported section, query <=256 and boolean search_properties required')
+        if native_id is not None and not isinstance(native_id, str):
+            raise ValueError('native_id must be a string')
         filters = [] if filters is None else filters
         if not isinstance(filters, list) or len(filters) > 8:
             raise ValueError('At most 8 filters')
@@ -268,7 +361,29 @@ class ModelData:
                 raise ValueError('Invalid JSON path')
             if test['op'] == 'exists' and type(test.get('value')) is not bool:
                 raise ValueError('exists value must be boolean')
-        token = fingerprint([dataset_id, section, query, native_id, filters])
+        return filters
+
+    @staticmethod
+    def selected(row, term, native_id, filters, search_properties):
+        ids = row.get('identifiers', {})
+        if native_id is not None and native_id not in [row['native_id'], *[str(v) for v in ids.values() if isinstance(v, (str, int))]]:
+            return False
+        if term and term not in ' '.join((row['name'], row['category'], row['native_id'])).casefold():
+            if not search_properties or not (contains_field(ids, term) or contains_field(row['properties'], term)):
+                return False
+        return matches(row, filters)
+
+    def query(self, project, dataset_id, section='elements', query='', native_id=None, filters=None, cursor=None, limit=40, search_properties=False, columns=None):
+        summary = self.dataset(project, dataset_id)
+        filters = self.selection(section, query, native_id, filters, search_properties)
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError('limit 1..100 required')
+        if columns is not None:
+            table_columns(columns)
+        identity = [dataset_id, section, query, native_id, filters]
+        if search_properties:
+            identity.append(search_properties)
+        token = fingerprint(identity)
         offset = 0
         if cursor:
             try:
@@ -278,24 +393,22 @@ class ModelData:
                 raise ValueError('Invalid cursor') from None
             if prefix != token or offset < 0:
                 raise ValueError('Cursor belongs to a different query')
-        items, scanned, last = [], 0, offset
+        items, scanned, last, more = [], 0, offset, False
+        term = query.casefold()
         with connection(self._db(project), readonly=True) as db:
-            candidates = db.execute('select ordinal,payload from model_objects where dataset_id=? and section=? and ordinal>=? order by ordinal limit 2001', (dataset_id, section, offset)).fetchall()
-        for record in candidates[:2000]:
-            row = json.loads(record['payload']); scanned += 1; last = record['ordinal'] + 1
-            ids = row.get('identifiers', {})
-            if native_id is not None and native_id not in [row['native_id'], *[str(v) for v in ids.values() if isinstance(v, (str, int))]]:
-                continue
-            if query and query.casefold() not in ' '.join([row['name'], row['category'], row['native_id']]).casefold():
-                continue
-            if not matches(row, filters):
-                continue
-            item = {k: row[k] for k in ('object_id', 'native_id', 'section', 'name', 'category', 'identifiers', 'semantic_kind', 'quantity_eligible') if k in row}
-            item['name'] = item['name'][:240]; item['category'] = item['category'][:160]
-            items.append(item)
-            if len(items) == limit:
-                break
-        more = bool(candidates) and (scanned < len(candidates))
+            candidates = db.execute('select ordinal,payload from model_objects where dataset_id=? and section=? and ordinal>=? order by ordinal', (dataset_id, section, offset))
+            for record in islice(candidates, 2000):
+                row = decode_object(record['payload']); scanned += 1; last = record['ordinal'] + 1
+                if not self.selected(row, term, native_id, filters, search_properties):
+                    continue
+                item = {k: row[k] for k in ('object_id', 'native_id', 'section', 'name', 'category', 'identifiers', 'semantic_kind', 'quantity_eligible') if k in row}
+                item['name'] = item['name'][:240]; item['category'] = item['category'][:160]
+                if columns is not None:
+                    item['cells'] = table_cells(row, columns, preview_chars=240)
+                items.append(item)
+                if len(items) == limit:
+                    break
+            more = next(candidates, None) is not None
         return {'project_id': project, 'dataset_id': dataset_id, 'source': summary['source'],
                 'freshness': summary['freshness'], 'current_registered_version': summary.get('current_registered_version'),
                 'items': items, 'scanned': scanned, 'next_cursor': token+':'+str(last) if more else None,
@@ -310,7 +423,7 @@ class ModelData:
         if not record:
             raise ValueError('Unknown object in selected dataset')
         path = json_path or []
-        value = at(json.loads(record['payload']), path)
+        value = at(decode_object(record['payload']), path)
         text = encode(value)
         return {'project_id': project, 'dataset_id': dataset_id, 'object_id': object_id, 'source': summary['source'],
                 'freshness': summary['freshness'], 'current_registered_version': summary.get('current_registered_version'),

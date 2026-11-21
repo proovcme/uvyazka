@@ -7,6 +7,8 @@ mod document;
 mod schedule_data;
 mod engineering;
 mod direct;
+#[cfg(not(target_arch = "wasm32"))]
+pub use direct::extract_path as extract_direct_path;
 #[cfg(test)]
 mod metadata_regressions;
 pub use document::extract_document;
@@ -33,6 +35,10 @@ pub struct BrowserConversion {
 }
 
 pub fn convert_bytes(bytes: Vec<u8>) -> Result<BrowserConversion, String> {
+    convert(bytes, true)
+}
+
+fn convert(bytes: Vec<u8>, enrich_saved_meshes: bool) -> Result<BrowserConversion, String> {
     validate_input_size(bytes.len())?;
     let mut file = RevitFile::open_bytes(bytes).map_err(|e| e.to_string())?;
     let mode = ExportQualityMode::Geometry;
@@ -41,12 +47,16 @@ pub fn convert_bytes(bytes: Vec<u8>) -> Result<BrowserConversion, String> {
         .map_err(|e| e.to_string())?;
     // Match rvt-ifc --mode geometry --saved-meshes: enrich before the quality
     // gate; keep the original body and an explicit error when no mesh is read.
-    let (saved_meshes, saved_mesh_error) = match saved_meshes::attach(&mut file, &mut export.model) {
-        Ok(report) => {
-            recount_exported(&mut export.diagnostics, &export.model);
-            (Some(report), None)
+    let (saved_meshes, saved_mesh_error) = if enrich_saved_meshes {
+        match saved_meshes::attach(&mut file, &mut export.model) {
+            Ok(report) => {
+                recount_exported(&mut export.diagnostics, &export.model);
+                (Some(report), None)
+            }
+            Err(error) => (None, Some(error.to_string())),
         }
-        Err(error) => (None, Some(error.to_string())),
+    } else {
+        (None, None)
     };
     let quality_error = mode.validate(&export.diagnostics).err().map(|e| e.to_string());
     let ifc_step = if quality_error.is_none() { Some(write_step(&export.model)) } else { None };
@@ -68,41 +78,40 @@ mod web {
     }
 
     #[wasm_bindgen(js_name = extractRvtEngineering)]
-    pub fn extract_rvt_engineering(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    pub fn extract_rvt_engineering(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
         super::validate_input_size(bytes.len()).map_err(|e|JsValue::from_str(&e))?;
-        let result=super::engineering::extract(bytes.to_vec()).map_err(|e|JsValue::from_str(&e))?;
+        let result=super::engineering::extract(bytes).map_err(|e|JsValue::from_str(&e))?;
         result.serialize(&serde_wasm_bindgen::Serializer::json_compatible()).map_err(|e|JsValue::from_str(&e.to_string()))
     }
 
     #[wasm_bindgen(js_name = extractRvtDirectScene)]
-    pub fn extract_rvt_direct_scene(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    pub fn extract_rvt_direct_scene(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
         super::validate_input_size(bytes.len()).map_err(|e| JsValue::from_str(&e))?;
-        let result = super::direct::extract(bytes.to_vec()).map_err(|e| JsValue::from_str(&e))?;
+        let result = super::direct::extract(bytes).map_err(|e| JsValue::from_str(&e))?;
         result.serialize(&serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true))
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     #[wasm_bindgen(js_name = extractRvtScheduleData)]
-    pub fn extract_rvt_schedule_data(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    pub fn extract_rvt_schedule_data(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
         super::validate_input_size(bytes.len()).map_err(|e|JsValue::from_str(&e))?;
-        let result=super::schedule_data::extract(bytes.to_vec()).map_err(|e|JsValue::from_str(&e))?;
+        let result=super::schedule_data::extract(bytes).map_err(|e|JsValue::from_str(&e))?;
         // A single transfer avoids per-property WASM calls for large parameter catalogues.
         parse_json(&serde_json::to_string(&result).map_err(|e|JsValue::from_str(&e.to_string()))?)
     }
 
     #[wasm_bindgen(js_name = extractRvtDocument)]
-    pub fn extract_rvt_document(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    pub fn extract_rvt_document(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
         super::validate_input_size(bytes.len()).map_err(|e| JsValue::from_str(&e))?;
-        let result = super::extract_document(bytes.to_vec()).map_err(|e| JsValue::from_str(&e))?;
+        let result = super::extract_document(bytes).map_err(|e| JsValue::from_str(&e))?;
         result.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     #[wasm_bindgen(js_name = convertRvtBytes)]
-    pub fn convert_rvt_bytes(bytes: &[u8]) -> Result<JsValue, JsValue> {
-        // Guard before copying data across the JS/WASM boundary a second time.
-        super::validate_input_size(bytes.len()).map_err(|e| JsValue::from_str(&e))?;
-        let result = super::convert_bytes(bytes.to_vec()).map_err(|e| JsValue::from_str(&e))?;
+    pub fn convert_rvt_bytes(bytes: Vec<u8>, quick_preview: Option<bool>) -> Result<JsValue, JsValue> {
+        let quick_preview = quick_preview.unwrap_or(false);
+        let result = super::convert(bytes, !quick_preview).map_err(|e| JsValue::from_str(&e))?;
         // Keep the large intermediate IFC entity graph inside WASM. Only the
         // STEP file and diagnostics cross the worker boundary. JSON-compatible
         // maps are ordinary JS objects, including provenance dictionaries.
@@ -110,7 +119,7 @@ mod web {
             "schema_version": result.schema_version, "status": result.status,
             "diagnostics": result.export.diagnostics, "saved_meshes": result.saved_meshes,
             "saved_mesh_error": result.saved_mesh_error, "quality_error": result.quality_error,
-            "ifc_step": result.ifc_step
+            "ifc_step": result.ifc_step, "quick_preview": quick_preview
         });
         use serde::Serialize;
         payload.serialize(&serde_wasm_bindgen::Serializer::json_compatible())

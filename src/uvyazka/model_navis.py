@@ -2,8 +2,7 @@
 from .model_readers import obj
 
 
-def project_navis(models):
-    rows, reports = [], []
+def navis_rows(models):
     for mi, model in enumerate(models):
         namespace = model.get('namespace', '')
         tables = {}
@@ -58,11 +57,14 @@ def project_navis(models):
                     else:
                         target[name] = value
                     evidence.append({**source, 'field': name, 'parameter_internal': internal, 'value_tag': tag})
-            rows.append(obj('elements', f'{mi}:{node["index"]}', node.get('name') or node.get('class_display'), node.get('class_name'), props,
+            yield obj('elements', f'{mi}:{node["index"]}', node.get('name') or node.get('class_display'), node.get('class_name'), props,
                             identifiers=ids, parent=f'{mi}:{node["parent_index"]}' if node.get('parent_index') is not None else '',
                             semantic_kind='logical_node', quantity_eligible=False,
                             evidence={'stream': model.get('stream'), 'record_offset': node.get('record_offset'), 'record_bytes': node.get('record_bytes'), 'properties': evidence},
                             diagnostics={'unresolved_references': unresolved, 'unresolved_attribute_slots': node.get('unresolved_attribute_slots')},
-                            value_semantics='own_saved_properties; inheritance not flattened; node is not a physical equipment count'))
-        reports.append({k: model.get(k) for k in ('namespace', 'stream', 'status', 'diagnostic', 'declared_property_slots', 'decoded_property_slots', 'property_diagnostics', 'partition')})
-    return rows, {'status': 'partial', 'models': reports, 'limitations': ['Logical hierarchy and own decoded properties only. Follow parent links explicitly for inheritance; no duplicated physical counts.', 'Geometry, TimeLiner, saved viewpoints, clash results and selection sets are not extracted by this metadata profile.']}
+                            value_semantics='own_saved_properties; inheritance not flattened; node is not a physical equipment count')
+
+
+def project_navis(models):
+    reports = [{k: model.get(k) for k in ('namespace', 'stream', 'status', 'diagnostic', 'declared_property_slots', 'decoded_property_slots', 'property_diagnostics', 'partition')} for model in models]
+    return navis_rows(models), {'status': 'partial', 'models': reports, 'limitations': ['Logical hierarchy and own decoded properties only. Follow parent links explicitly for inheritance; no duplicated physical counts.', 'Geometry, TimeLiner, saved viewpoints, clash results and selection sets are not extracted by this metadata profile.']}

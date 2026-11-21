@@ -39,6 +39,32 @@ pub fn envelope(entries: Vec<(String, u32, Vec<u8>, u32, u32)>) -> Vec<u8> {
     file.extend(OUTER);
     file
 }
+
+pub fn legacy_envelope(name: &str, bytes: &[u8]) -> Vec<u8> {
+    let mut directory = Vec::new();
+    for v in [u32::MAX, 1, name.len() as u32] {
+        u32v(&mut directory, v);
+    }
+    directory.extend(name.bytes());
+    align(&mut directory, 4);
+    u32v(&mut directory, 1);
+    u32v(&mut directory, 0);
+    let body = zip(bytes);
+    let mut file = LEGACY_OUTER.to_vec();
+    let pointer_at = file.len();
+    file.extend([0; 8]);
+    file.extend(b"#LcUStream-V1.1 binary double release utf8 navisworks:90 lizlib\n");
+    file.extend(zip(&directory));
+    let directory_end = file.len();
+    file[pointer_at..pointer_at + 8].copy_from_slice(&(directory_end as u64).to_le_bytes());
+    let start = directory_end + 8 + 16 + 8;
+    file.extend([0; 8]);
+    file.extend((start as u64).to_le_bytes());
+    file.extend([0; 8]);
+    file.extend(((start + body.len()) as u64).to_le_bytes());
+    file.extend(body);
+    file
+}
 pub fn geometry_record() -> Vec<u8> {
     let mut b = Vec::new();
     for v in [100, 94, 101, 60, 3, 9] {

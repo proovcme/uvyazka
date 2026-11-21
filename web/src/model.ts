@@ -58,7 +58,8 @@ export interface ModelPackage {
   importer_version: string;
   model_id: string;
   source: { filename: string; sha256: string; size_bytes: number; schema: string; exported_at: string; exporter: string; format?: string;
-    rvt_read_mode?:'ifc'|'direct';
+    rvt_read_mode?:'ifc'|'ifc_preview'|'direct';
+    reader_sha256?:string;
     calibration?: {unit:string;length_to_m:number;basis:'user_assumption'|'source';source_units_decoded:boolean};
     calibrations?:{namespace:string;unit:string;length_to_m:number;basis:'user_assumption'|'source';source_units_decoded:boolean}[];
     conversion?: { engine: string; local_patches?: string[]; warnings: string[]; unsupported_features: string[]; ifc_sha256: string; confidence: { level?: string }; source_revision: string } };

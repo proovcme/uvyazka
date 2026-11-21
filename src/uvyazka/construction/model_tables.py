@@ -16,6 +16,7 @@ from ..core import connection,encode,now,digest
 from .simulation import canonical_hash
 from .rvt_catalog import RvtCatalog
 from .planning import bounded,Planning
+from . import snapshot_tables
 
 SQL=[
  'create table if not exists model_tables(table_id text primary key,payload text not null)',
@@ -74,10 +75,18 @@ class ModelTables:
         selected=[c for c in columns if not query or query.casefold() in encode(c).casefold()]
         return {'project_id':project_id,'engine_sha256':engine_sha(),**data,**bounded(selected,offset,limit)}
 
-    def build(self,project_id,request_id,extraction_id='',model_id='',kind='parameters',definition=None,element_id='',options=None):
+    def build(self,project_id,request_id,extraction_id='',model_id='',kind='parameters',definition=None,element_id='',options=None,dataset_id=''):
         if not isinstance(request_id,str) or not 1<=len(request_id)<=128:raise ValueError('request_id: 1–128 characters')
-        if kind not in {'parameters','native_schedule','gost'}:raise ValueError('kind: parameters, native_schedule or gost')
-        identity={'engine_sha256':engine_sha(),'extraction_id':extraction_id,'model_id':model_id,'kind':kind,'definition':definition,'element_id':element_id,'options':options}
+        if kind not in {'parameters','native_schedule','gost','snapshot'}:raise ValueError('kind: parameters, native_schedule, gost or snapshot')
+        if kind == 'snapshot' and (not dataset_id or extraction_id or model_id or element_id or options is not None):
+            raise ValueError('Snapshot table needs only dataset_id and definition')
+        if dataset_id and kind != 'snapshot':
+            raise ValueError('dataset_id is used with kind=snapshot')
+        identity={'extraction_id':extraction_id,'model_id':model_id,'kind':kind,'definition':definition,'element_id':element_id,'options':options}
+        if kind == 'snapshot':
+            identity.update(dataset_id=dataset_id, engine_revision=snapshot_tables.REVISION)
+        else:
+            identity['engine_sha256']=engine_sha()
         table_id=canonical_hash(identity)
         path=self.db(project_id)
         def retry(db):
@@ -87,7 +96,10 @@ class ModelTables:
             return json.loads(saved[0]) if saved else None
         with connection(path,readonly=True) as db:stored=retry(db)
         if stored is None:
-            result=compute('build',{**self.inputs(project_id,extraction_id,model_id),'kind':kind,'definition':definition,'element_id':element_id,'options':options})
+            if kind == 'snapshot':
+                result={'contract':snapshot_tables.REVISION,'report':snapshot_tables.build(self.workspace,project_id,dataset_id,definition)}
+            else:
+                result=compute('build',{**self.inputs(project_id,extraction_id,model_id),'kind':kind,'definition':definition,'element_id':element_id,'options':options})
             stored={'project_id':project_id,'table_id':table_id,'created_at':now(),**identity,**result}
         with connection(path) as db:
             db.execute('begin immediate')
@@ -102,7 +114,7 @@ class ModelTables:
     @staticmethod
     def summary(stored):
         report=stored['report']
-        return {k:v for k,v in stored.items() if k not in {'report','definition','options'}}|{'coverage':report.get('coverage'),'row_count':len(report.get('rows',[])),'issue_count':len(report.get('issues',[])),'release_ready':report.get('release_ready',False),'value_semantics':'saved_values_not_revit_evaluation'}
+        return {k:v for k,v in stored.items() if k not in {'report','definition','options'}}|{'coverage':report.get('coverage'),'row_count':len(report.get('rows',[])),'issue_count':len(report.get('issues',[])),'release_ready':report.get('release_ready',False),'value_semantics':report.get('value_semantics','saved_values_not_revit_evaluation')}
 
     def stored(self,project_id,table_id):
         if not re.fullmatch('[0-9a-f]{64}',table_id):raise ValueError('Invalid table_id')
@@ -140,12 +152,18 @@ class ModelTables:
         page['items']=rendered;page['next_offset']=offset+len(rendered) if offset+len(rendered)<len(rows) else None
         return {'table_id':table_id,'section':section,**page}
 
-    def export(self,project_id,table_id,format='json'):
-        stored=self.stored(project_id,table_id)
+    @staticmethod
+    def render(stored,format):
+        if stored['kind']=='snapshot':
+            return snapshot_tables.render(stored['report'],format)
         if format not in {'json','csv','xlsx'}:raise ValueError('format: json, csv or xlsx')
         # Export with the exact engine revision that produced the immutable table.
         if stored['engine_sha256']!=engine_sha():raise ValueError('Table engine changed; rebuild with a new request_id before formatted export')
-        value=compute('render',{'kind':stored['kind'],'report':stored['report'],'format':format})
+        return compute('render',{'kind':stored['kind'],'report':stored['report'],'format':format})
+
+    def export(self,project_id,table_id,format='json'):
+        stored=self.stored(project_id,table_id)
+        value=self.render(stored,format)
         folder=self.workspace.db_path(project_id).parent/'model-table-exports'/table_id;folder.mkdir(parents=True,exist_ok=True)
         target=folder/(uuid4().hex+'.'+format)
         if isinstance(value,list):target.write_bytes(bytes(value))
@@ -169,9 +187,9 @@ def register_tools(mcp,workspace):
         return await asyncio.to_thread(tables.schema,project_id,extraction_id,model_id,query,offset,limit)
 
     @mcp.tool(annotations=write)
-    async def build_model_table(project_id:str,request_id:str,extraction_id:str='',model_id:str='',kind:str='parameters',definition:dict|None=None,element_id:str='',options:dict|None=None)->dict:
-        """Build and save an immutable table with the same filters/grouping/totals as GUI. kind=parameters (definition from schema); native_schedule (exact Revit element_id, saved filters); gost (explicit confirmed bindings in definition.gost, XLSX available). No guessed formulas/phases/linked model evaluation. Unknown selection stays separate. Scene scopes require a registered model; no mesh-free geometry inference. Returns table_id; read/export with next tools."""
-        return await asyncio.to_thread(tables.build,project_id,request_id,extraction_id,model_id,kind,definition,element_id,options)
+    async def build_model_table(project_id:str,request_id:str,extraction_id:str='',model_id:str='',kind:str='parameters',definition:dict|None=None,element_id:str='',options:dict|None=None,dataset_id:str='')->dict:
+        """Build and save an immutable table. kind=snapshot uses dataset_id from read_model_data and definition {columns:[{title,path}],section?,query?,native_id?,filters?,search_properties?}; same selection as query_model_data, for any supported source without 3D. kind=parameters (definition from schema), native_schedule (exact Revit element_id), gost (explicit bindings) use the scene/RVT catalogue engine. Returns table_id for read/export. Values and units are retained as read."""
+        return await asyncio.to_thread(tables.build,project_id,request_id,extraction_id,model_id,kind,definition,element_id,options,dataset_id)
 
     @mcp.tool(annotations=read)
     def read_model_table(project_id:str,table_id:str,section:str='rows',offset:int=0,limit:int=40,json_path:list[str|int]|None=None,max_chars:int=6000)->dict:

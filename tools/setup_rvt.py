@@ -13,7 +13,7 @@ from uuid import uuid4
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'src'))
 from uvyazka.core import default_home
-from uvyazka.construction.rvt_runtime import NAMES, binary_name, sha256
+from uvyazka.construction.rvt_runtime import NAMES, SCENE_NAME, binary_name, sha256
 
 
 def canonical_sha(path):
@@ -42,14 +42,19 @@ def build(home, profile='release', with_fixture_generator=False):
     bins = [argument for name in names for argument in ['--bin', name]]
     subprocess.run([cargo, 'build', '--locked', '--manifest-path', str(ROOT/'integrations/rvt-rs/Cargo.toml'), *profile_args, *bins],env=environment,check=True)
     subprocess.run([cargo, 'build', '--locked', '--manifest-path', str(ROOT/'integrations/rvt-metadata-reader/Cargo.toml'), *profile_args],env=environment,check=True)
+    bridge = ROOT/'integrations/rvt-browser-bridge'
+    subprocess.run([cargo, 'build', '--locked', '--manifest-path', str(bridge/'Cargo.toml'), '--bin', SCENE_NAME, *profile_args],env=environment,check=True)
     built = target/('release' if profile == 'release' else 'debug')
-    hashes = {name: sha256(built/binary_name(name)) for name in NAMES}
+    runtime_names = (*NAMES, SCENE_NAME)
+    hashes = {name: sha256(built/binary_name(name)) for name in runtime_names}
     compiler = subprocess.check_output(['rustc','--version'],text=True).strip()
     own = ROOT/'integrations/rvt-metadata-reader'
     metadata_files = [own/'Cargo.toml',own/'Cargo.lock',*sorted((own/'src').rglob('*.rs'))]
     metadata_source = {p.relative_to(own).as_posix():canonical_sha(p) for p in metadata_files}
     metadata_source.update({p.relative_to(ROOT/'integrations').as_posix():canonical_sha(p) for p in sorted((ROOT/'integrations/rvt-shared').glob('*.rs'))})
+    scene_source = {p.relative_to(bridge).as_posix():canonical_sha(p) for p in [bridge/'Cargo.toml',bridge/'Cargo.lock',*sorted((bridge/'src').rglob('*.rs'))]}
     identity = {'upstream_revision': source['revision'], 'local_patches':source.get('local_patches',[]), 'upstream_manifest_sha256': canonical_sha(ROOT/'integrations/rvt-rs/UVYAZKA-SOURCE.json'),
+        'scene_source':scene_source,
         'metadata_source':metadata_source,'compiler':compiler,'profile':profile,'platform':sys.platform,'binaries':hashes}
     release = hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()
     runtime = Path(home).resolve()/'tools/rvt'
@@ -58,11 +63,11 @@ def build(home, profile='release', with_fixture_generator=False):
     if not folder.exists():
         staging = runtime/'releases'/('staging-'+uuid4().hex)
         staging.mkdir(parents=True)
-        for name in NAMES: shutil.copy2(built/binary_name(name), staging/binary_name(name))
+        for name in runtime_names: shutil.copy2(built/binary_name(name), staging/binary_name(name))
         for name in ['LICENSE','NOTICE']: shutil.copyfile(ROOT/'integrations/rvt-rs'/name, staging/name)
         (staging/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
         staging.rename(folder)
-    for name in NAMES:
+    for name in runtime_names:
         if sha256(folder/binary_name(name)) != hashes[name]:
             raise ValueError('Existing runtime release has changed; activation stopped')
     temporary = runtime/('active-'+uuid4().hex+'.json')

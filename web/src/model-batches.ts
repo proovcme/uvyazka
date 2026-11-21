@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 export type SourceMesh=THREE.Mesh<THREE.BufferGeometry,THREE.MeshStandardMaterial[]>;
-interface Part {id:string;mesh:SourceMesh;style:number;start:number;count:number;vertices:number}
+interface Part {id:string;mesh:SourceMesh;style:number;start:number;count:number;firstVertex:number;vertices:number}
 interface Slot {batch:THREE.BatchedMesh;instance:number;style:number;visible:boolean}
 interface Bucket {mesh:THREE.BatchedMesh;transparent:boolean}
 interface LineBucket {mesh:THREE.LineSegments;transparent:boolean}
@@ -22,18 +22,29 @@ export class ModelBatches {
  constructor(root:THREE.Group,sources:Map<string,SourceMesh>){
   this.root=root;this.sources=sources;
   this.proxyRoot.rotation.copy(root.rotation);this.proxyRoot.position.copy(root.position);this.proxyRoot.scale.copy(root.scale);
-  const chunks:Part[][]=[];let chunk:Part[]=[],vertices=0,indices=0;
+  const chunks:Part[][]=[];let chunk:Part[]=[],vertices=0,indices=0,batchBytes=0;
   const flush=()=>{if(chunk.length)chunks.push(chunk);chunk=[];vertices=0;indices=0;};
-  // Bound each allocation, without dropping a large individual geometry.
+  // Saved geometry may have hundreds of materials. A group only needs its
+  // referenced vertex range, not a separate copy of its owner's entire mesh.
   for(const [id,mesh]of sources){
    if(mesh.userData.sourcePrimitive==='lines'||mesh.userData.role!=='element')continue;
    const geometry=mesh.geometry,index=geometry.index;if(!index?.count)continue;
    const groups=geometry.groups.length?geometry.groups:[{start:0,count:index.count,materialIndex:0}];
+   const parts:Part[]=[];
    for(const group of groups){if(!group.count)continue;
     if(!mesh.material[group.materialIndex??0])throw Error('Missing batch material');
-    const n=geometry.getAttribute('position').count;
-    if(chunk.length&&(chunk.length>=2048||vertices+n>500_000||indices+group.count>1_500_000))flush();
-    chunk.push({id,mesh,style:group.materialIndex??0,start:group.start,count:group.count,vertices:n});vertices+=n;indices+=group.count;
+    let first=Infinity,last=-1;
+    for(let i=group.start;i<group.start+group.count;i++){const vertex=index.getX(i);first=Math.min(first,vertex);last=Math.max(last,vertex);}
+    parts.push({id,mesh,style:group.materialIndex??0,start:group.start,count:group.count,firstVertex:first,vertices:last-first+1});
+   }
+   const size=parts.reduce((n,part)=>n+part.vertices*12+part.count*4,0);
+   // Keep oversized elements on the original rendering path. An element's
+   // groups must all be batched or all drawn by its source mesh.
+   if(batchBytes+size>128*1024**2||parts.some(part=>part.vertices>500_000||part.count>1_500_000))continue;
+   batchBytes+=size;
+   for(const part of parts){
+    if(chunk.length&&(chunk.length>=2048||vertices+part.vertices>500_000||indices+part.count>1_500_000))flush();
+    chunk.push(part);vertices+=part.vertices;indices+=part.count;
    }
   }flush();
   try{
@@ -46,8 +57,11 @@ export class ModelBatches {
      batch.sortObjects=transparent;batch.perObjectFrustumCulled=true;batch.frustumCulled=false;batch.receiveShadow=true;
      this.buckets.push({mesh:batch,transparent});
      for(const part of rows){
-      const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',part.mesh.geometry.getAttribute('position'));
-      geometry.setIndex(new THREE.BufferAttribute((part.mesh.geometry.index!.array as Uint32Array).subarray(part.start,part.start+part.count),1));
+      const geometry=new THREE.BufferGeometry();
+      const positions=part.mesh.geometry.getAttribute('position').array as Float32Array;
+      geometry.setAttribute('position',new THREE.BufferAttribute(positions.subarray(part.firstVertex*3,(part.firstVertex+part.vertices)*3),3));
+      const sourceIndices=(part.mesh.geometry.index!.array as Uint32Array).subarray(part.start,part.start+part.count);
+      geometry.setIndex(new THREE.BufferAttribute(part.firstVertex?sourceIndices.map(i=>i-part.firstVertex):sourceIndices,1));
       const instance=batch.addInstance(batch.addGeometry(geometry)),slots=this.slots.get(part.id)??[];
       slots.push({batch,instance,style:part.style,visible:true});this.slots.set(part.id,slots);
       const material=part.mesh.material[part.style];this.color.set(material.color.r,material.color.g,material.color.b,material.opacity);batch.setColorAt(instance,this.color);

@@ -8,6 +8,7 @@ export function sourceFormatLabel(source:{schema?:string;format?:string;rvt_read
  if(source.schema==='SyntheticDemo')return 'Синтетическая учебная модель';
  if(source.format==='federation')return 'Сводная модель';
  if(source.rvt_read_mode==='direct')return 'RVT · экспериментальное чтение';
+ if(source.rvt_read_mode==='ifc_preview')return 'RVT · быстрый просмотр';
  if(['rvt','ifc','nwd','nwc','dwg','dxf'].includes(source.format??''))return source.format!.toUpperCase();
  if(/^IFC(?:2X3|4(?:X3(?:_ADD\d+)?)?)$/.test(source.schema??''))return source.schema!;
  return 'Модель из файла';

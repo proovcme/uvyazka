@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from uvyazka.core import Workspace,encode
+from uvyazka.core import Workspace,connection,encode
 from uvyazka.ingest import scan
 from uvyazka.construction.rvt_data import RvtData,project_record,kind_for,selected_classes
 
@@ -45,30 +45,39 @@ class DataTests(unittest.TestCase):
             self.assertIn('Requested class roots not found',result['error'])
 
     def test_native_page_continuations_keep_every_record_and_reject_incomplete_pages(self):
-        for mode in ['complete','stuck','incomplete']:
+        for mode in ['complete','stuck','incomplete','mutated']:
             with self.subTest(mode=mode),tempfile.TemporaryDirectory() as directory:
                 root=Path(directory);source=root/'sources';source.mkdir()
                 file=source/'synthetic.rvt';file.write_bytes(bytes.fromhex('D0CF11E0A1B11AE1')+b'synthetic')
                 ws=Workspace(root/'state');ws.create_project('one','One',source);scan(ws,'one')
                 doc=ws.find_documents('one','synthetic.rvt')['documents'][0]
                 binary=root/'reader';binary.write_bytes(b'fixture')
-                def invoke(_,copied,request,output):
+                def invoke(_,original,request,output):
+                    self.assertEqual(original,file.resolve())
                     args=json.loads(request.read_text(encoding='utf8'))
                     if args['mode']=='inventory':
                         output.write_text(encode({'classes':[{'name':'DBViewSchedule','parent':'TableView'},{'name':'TableView','parent':'DBView'},{'name':'DBView','parent':'Element'}]}),encoding='utf8');return
                     offset=args['offset'];row=fixture();row['identity']['element_id']+=offset
                     output.write_text(encode(row)+'\n',encoding='utf8')
+                    if mode=='mutated':
+                        original.write_bytes(original.read_bytes()+b'changed')
                     following=(1 if mode=='complete' else 0 if mode=='stuck' else None) if offset==0 else None
                     output.with_suffix('.summary.json').write_text(encode({'status':'extracted_requires_review','summary':{},'pagination':{'offset':offset,'returned':1,'next_offset':following,'selected_record_count':2}}),encoding='utf8')
                 with patch('uvyazka.construction.rvt_data.binary_path',return_value=binary),patch.object(RvtData,'invoke',side_effect=invoke):
                     data=RvtData(ws)
-                    if mode!='complete':
+                    if mode=='mutated':
+                        with self.assertRaisesRegex(ValueError,'RVT changed during extraction'):
+                            data.extract('one',doc['doc_id'],'pages','schedules')
+                    elif mode!='complete':
                         with self.assertRaises(ValueError):data.extract('one',doc['doc_id'],'pages','schedules')
                     else:
                         result=data.extract('one',doc['doc_id'],'pages','schedules')
                         self.assertEqual(result['record_count'],2);self.assertEqual(result['page_count'],2)
                         self.assertTrue(result['pagination_complete'])
                         self.assertEqual([r['element_id'] for r in data.read('one',result['extraction_id'],'schedules')['items']],['42','43'])
+                        with connection(ws.db_path('one'),readonly=True) as db:
+                            self.assertEqual(db.execute('select distinct typeof(payload) from rvt_native_records').fetchone()[0],'blob')
+                        self.assertEqual(data.record('one',result['extraction_id'],0,'value')['identity']['element_id'],42)
 
     def test_focused_profiles_use_schema_ancestry_and_exclude_types_and_named_decoys(self):
         classes={'FamilyInstance':{'parent':'Element'},'FamilySymbol':{'parent':'Symbol'},

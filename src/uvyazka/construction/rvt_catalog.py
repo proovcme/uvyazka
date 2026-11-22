@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 from ..core import connection, encode, now, digest
-from .rvt_data import RvtData, objects
+from .rvt_data import RvtData, check_native_storage, decode_native_record, encode_native_record, objects
 from .simulation import canonical_hash
 
 MAX_BYTES = 128 * 1024 * 1024
@@ -107,7 +107,7 @@ class RvtCatalog:
             counts[kind] = counts.get(kind, 0) + 1
             fields = objects(row)[0]['fields'] if objects(row) else row.get('root_fields', {})
             rows.append((fingerprint, len(rows), str(row['identity']['element_id']), row['class_name'], kind,
-                         str(fields.get('m_viewName') or fields.get('m_name') or ''), row['status'], encode(row)))
+                         str(fields.get('m_viewName') or fields.get('m_name') or ''), row['status'], encode_native_record(row)))
         metadata = {k: v for k, v in document.items() if k not in {'records', 'schedule_data', 'shared_store'}}
         if document.get('schedule_data') is not None:
             metadata['schedule_data'] = {k: v for k, v in document['schedule_data'].items() if k != 'records'}
@@ -130,6 +130,7 @@ class RvtCatalog:
             if existing:
                 result = json.loads(existing[0])
             else:
+                check_native_storage(db, sum(len(row[-1]) for row in rows))
                 db.execute('insert into rvt_extractions values (?,?)', (fingerprint, encode(result)))
                 db.executemany('insert into rvt_native_records values (?,?,?,?,?,?,?,?)', rows)
                 db.execute('insert into rvt_catalog_metadata values (?,?)', (fingerprint, encode(metadata)))
@@ -155,7 +156,7 @@ class RvtCatalog:
             raise ValueError('Native projections have different schemas')
         with connection(self.data.db(project_id),readonly=True) as db:
             def rows(snapshot):
-                return [json.loads(r[0]) for r in db.execute('select payload from rvt_native_records where extraction_id=? order by record_id',(snapshot['extraction_id'],))]
+                return [decode_native_record(r[0]) for r in db.execute('select payload from rvt_native_records where extraction_id=? order by record_id',(snapshot['extraction_id'],))]
             elements=rows(parameters);definitions=rows(schedules)
         document={'schema_version':1,'source':{'sha256':parameters['source']['sha256'],'filename':source.name,'size_bytes':registered['size_bytes']},
             'schema_sha256':s.get('schema_sha256',''),'status':'partial' if schedules['status']!='extracted_requires_review' else 'extracted_requires_review',
@@ -198,7 +199,7 @@ class RvtCatalog:
             meta = db.execute('select payload from rvt_catalog_metadata where extraction_id=?', (extraction_id,)).fetchone()
             rows=[];budget=0;clipped=0
             for stored in db.execute("select kind,payload from rvt_native_records where extraction_id=? and kind in ('view','schedule','placement','element') order by record_id", (extraction_id,)):
-                row=json.loads(stored['payload']);kind=stored['kind']
+                row=decode_native_record(stored['payload']);kind=stored['kind']
                 if not meta and kind=='element':
                     fields=objects(row)[0]['fields'] if objects(row) else row.get('root_fields',{})
                     row={**{k:row.get(k) for k in ['identity','class_name','status','diagnostic','source','saved_metadata','metadata_diagnostic','workset']},

@@ -5,11 +5,10 @@ from itertools import islice
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import tempfile
 import zlib
 
-from .core import connection, digest, encode, now
+from .core import connection, digest, encode, file_revision, now
 from . import model_readers as readers
 
 SQL = [
@@ -227,9 +226,11 @@ class ModelData:
             engine = readers.reader_status(self.workspace)['readers'].get(fmt)
             if not engine or not engine['available']:
                 raise ValueError('Reader unavailable: ' + (engine['setup'] if engine else 'unsupported model format'))
-            sha = digest(source)
             stat = source.stat()
-            if (record['sha256'] and sha != record['sha256']) or (not record['sha256'] and (stat.st_size, stat.st_mtime_ns) != (record['size_bytes'], record['mtime_ns'])):
+            revision = file_revision(stat)
+            sha = digest(source)
+            if (file_revision(source.stat()) != revision or (record['sha256'] and sha != record['sha256'])
+                    or (not record['sha256'] and (stat.st_size, stat.st_mtime_ns) != (record['size_bytes'], record['mtime_ns']))):
                 raise ValueError('Source changed; scan the project before reading')
             origin = {'doc_id': doc_id, 'sha256': sha, 'format': fmt, 'relative_path': record['relative_path'], 'original_file_reopened': True,
                       'size_bytes': stat.st_size, 'mtime_ns': stat.st_mtime_ns}
@@ -256,18 +257,16 @@ class ModelData:
                     # An incomplete attempt remains addressable. A new request
                     # can still retry the failed profile for this source revision.
                     dataset_id = fingerprint([dataset_id, 'profile_failures', report['profile_failures']])
+            elif fmt == 'ifc':
+                rows, report = readers.ifc_data(source)
+            elif fmt == 'dxf':
+                rows, report = readers.dxf_data(source)
             else:
-                # Decode a pinned private working copy, never the live original.
+                # Only decoder output needs temporary storage for these readers.
                 with tempfile.TemporaryDirectory(prefix='model-', dir=db_path.parent) as directory:
                     folder = Path(directory)
-                    copied = folder/('source.' + fmt)
-                    shutil.copyfile(source, copied)
-                    if digest(copied) != sha:
-                        raise ValueError('Source changed while copying')
-                    if fmt == 'ifc': rows, report = readers.ifc_data(copied)
-                    elif fmt == 'dxf': rows, report = readers.dxf_data(copied)
-                    elif fmt == 'dwg': rows, report = readers.dwg_data(copied, folder)
-                    else: rows, report = readers.nwd_data(self.workspace, copied, folder)
+                    if fmt == 'dwg': rows, report = readers.dwg_data(source, folder)
+                    else: rows, report = readers.nwd_data(self.workspace, source, folder)
             compress = doc_id and fmt in ('nwd', 'nwc', 'rvt')
             records, seen, counts = [], set(), Counter()
             size = stored_size = 0
@@ -293,7 +292,7 @@ class ModelData:
                         raise ValueError('Native model data exceeds 256 MiB compressed storage budget')
                 counts[row['section']] += 1
                 records.append((dataset_id, oid, index, row['section'], payload))
-            if doc_id and digest(source) != sha:
+            if doc_id and (digest(source) != sha or file_revision(source.stat()) != revision):
                 raise ValueError('Source changed during reading; snapshot was not published')
             if doc_id and readers.reader_status(self.workspace)['readers'][fmt]['revision'] != engine['revision']:
                 raise ValueError('Reader changed during reading; retry with the current reader')

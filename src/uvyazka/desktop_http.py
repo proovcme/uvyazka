@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import sqlite3
 import sys
 from contextlib import closing
 from datetime import datetime,timezone
+from tempfile import TemporaryDirectory
 from .core import connection
 
 ORIGINS={'http://tauri.localhost','https://tauri.localhost','tauri://localhost'}
@@ -59,14 +62,33 @@ def gate(workspace):
 def backup(workspace):
     ready=gate(workspace)
     if not ready['ready']:raise ValueError(ready['reason'])
-    root=workspace.home/'backups'/('desktop-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'));root.mkdir(parents=True,exist_ok=False)
     paths=[workspace.registry]+list((workspace.home/'projects').glob('*/project.sqlite3'))
-    for path in paths:
-        target=root/path.relative_to(workspace.home);target.parent.mkdir(parents=True,exist_ok=True)
-        with closing(sqlite3.connect(path)) as source,closing(sqlite3.connect(target)) as dest:
-            source.backup(dest)
-    metadata={'path':str(root),'databases':len(paths),'schema_change':'Additive tables only in this release; no destructive project migrations','created_at':datetime.now(timezone.utc).isoformat()}
-    (root/'backup.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2))
+    base=workspace.home/'backups';base.mkdir(exist_ok=True)
+    if base.resolve().parent!=workspace.home.resolve():raise ValueError('Backup directory is outside the workspace')
+    expected=sum(path.stat().st_size for path in paths)
+    if shutil.disk_usage(base).free < expected + 64*1024**2:
+        raise ValueError('Недостаточно свободного места для резервной копии Увязки.')
+    created=datetime.now(timezone.utc)
+    root=base/('desktop-'+created.strftime('%Y%m%dT%H%M%S%fZ'))
+    metadata={'path':str(root),'databases':len(paths),'created_at':created.isoformat(),
+              'retention':'latest_completed_desktop_update','schema_change':'No destructive project migrations'}
+    with TemporaryDirectory(prefix='.desktop-stage-',dir=base) as directory:
+        stage=Path(directory)/'backup';stage.mkdir()
+        for path in paths:
+            target=stage/path.relative_to(workspace.home);target.parent.mkdir(parents=True,exist_ok=True)
+            with connection(path,readonly=True) as source,closing(sqlite3.connect(target)) as dest:
+                source.backup(dest)
+        (stage/'backup.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2),encoding='utf-8')
+        stage.rename(root)
+    for old in base.iterdir():
+        if old==root or not re.fullmatch(r'desktop-\d{8}T\d{12}Z',old.name) or old.resolve().parent!=base.resolve():
+            continue
+        try:
+            previous=json.loads((old/'backup.json').read_text(encoding='utf-8'))
+            if isinstance(previous,dict) and previous.get('retention')==metadata['retention'] and previous.get('path')==str(old):
+                shutil.rmtree(old)
+        except (OSError,ValueError):
+            continue
     return metadata
 
 

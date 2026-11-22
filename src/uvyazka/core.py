@@ -35,6 +35,10 @@ def digest(path: Path) -> str:
     return h.hexdigest()
 
 
+def file_revision(stat: os.stat_result) -> tuple[int, ...]:
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
 def normalized(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value)).strip()
 

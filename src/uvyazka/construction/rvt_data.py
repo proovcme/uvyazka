@@ -2,29 +2,60 @@
 from __future__ import annotations
 import csv
 import json
+import os
 from pathlib import Path
 import re
-import shutil
 import sqlite3
 import subprocess
 from tempfile import TemporaryDirectory
 from uuid import uuid4
+import zlib
 
-from ..core import connection, digest, encode, now
+from ..core import connection, digest, encode, file_revision, now
 from .planning import Planning, bounded
-from .rvt_runtime import binary_path, sha256
+from .rvt_runtime import OLE_SIGNATURE, RVT_MAX_BYTES, binary_path, sha256
 from .simulation import canonical_hash
 
 VERSION = '0.4.0'
+MAX_NATIVE_RECORD_BYTES = 132 * 1024**2
+MAX_NATIVE_EXTRACTION_BYTES = 256 * 1024**2
 SYSTEM_CLASSES = {'RbsHvacSystem', 'RbsPipingSystem', 'RbsElectricalSystem'}
 ENGINEERING_ROOTS = {'FamilyInstance', 'RbsCurve', 'RbsSystem', 'Level', 'RoomElem', 'Room'}
 TYPE_ROOTS = {'FamilySymbol', 'RbsPipeType', 'RbsFlexPipeType', 'RbsPipeInsulationType', 'AbsDuctType', 'AbsFlexDuctType', 'RbsDuctInsulationType', 'RbsDuctLiningType'}
 OBJECT_ROOTS = ENGINEERING_ROOTS | TYPE_ROOTS | {'HostObj', 'Opening', 'Grid', 'DirectShape', 'ImportInstance', 'GenericForm'}
 SQL = [
     'create table if not exists rvt_extractions(extraction_id text primary key,payload text not null)',
-    'create table if not exists rvt_native_records(extraction_id text,record_id integer,element_id text,class_name text,kind text,name text,status text,payload text,primary key(extraction_id,record_id))',
+    'create table if not exists rvt_native_records(extraction_id text,record_id integer,element_id text,class_name text,kind text,name text,status text,payload blob,primary key(extraction_id,record_id))',
     'create table if not exists rvt_data_requests(request_id text primary key,fingerprint text,payload text)',
 ]
+
+
+def encode_native_record(record):
+    raw = encode(record).encode('utf-8')
+    if len(raw) > MAX_NATIVE_RECORD_BYTES:
+        raise ValueError('Native RVT record exceeds its storage limit')
+    return zlib.compress(raw, level=3)
+
+
+def decode_native_record(payload):
+    if isinstance(payload, bytes):
+        decoder = zlib.decompressobj()
+        payload = decoder.decompress(payload, MAX_NATIVE_RECORD_BYTES + 1)
+        if not decoder.eof or decoder.unused_data or len(payload) > MAX_NATIVE_RECORD_BYTES:
+            raise ValueError('Invalid compressed native RVT record')
+    return json.loads(payload)
+
+
+def check_native_storage(db, incoming):
+    if incoming > MAX_NATIVE_EXTRACTION_BYTES:
+        raise ValueError('Снимок данных RVT превышает лимит 256 МиБ. Выберите более узкий профиль чтения.')
+    try:
+        limit_mib = int(os.environ.get('UVYAZKA_RVT_STORAGE_MIB', '2048'))
+    except ValueError as error:
+        raise ValueError('UVYAZKA_RVT_STORAGE_MIB: ожидается целое число МиБ') from error
+    saved = db.execute('select coalesce(sum(length(cast(payload as blob))),0) from rvt_native_records').fetchone()[0]
+    if saved + incoming > limit_mib * 1024**2:
+        raise ValueError(f'Хранилище записей RVT достигло лимита проекта ({limit_mib} МиБ). Сохранённые снимки доступны. Сожмите устаревшее хранилище или измените UVYAZKA_RVT_STORAGE_MIB.')
 
 
 def ancestry(name, classes):
@@ -206,9 +237,10 @@ class RvtData:
         if profile not in {'all','views','schedules','engineering','systems','types','objects','parameters'}:raise ValueError('profile: all, views, schedules, engineering, types, objects, parameters or systems')
         if not request_id or len(request_id)>128:raise ValueError('request_id: 1–128 characters')
         document,source=self.workspace.source_record(project_id,doc_id)
-        if source.suffix.lower()!='.rvt' or not 0<source.stat().st_size<=512*1024*1024:raise ValueError('Choose a registered RVT <=512 MiB')
+        stat=source.stat();revision=file_revision(stat)
+        if source.suffix.lower()!='.rvt' or not 0<stat.st_size<=RVT_MAX_BYTES:raise ValueError('Choose a registered RVT <=512 MiB')
         with source.open('rb') as stream:
-            if stream.read(8)!=bytes.fromhex('D0CF11E0A1B11AE1'):raise ValueError('RVT OLE/CFB signature missing')
+            if stream.read(8)!=OLE_SIGNATURE:raise ValueError('RVT OLE/CFB signature missing')
         pointer={'doc_id':doc_id,'sha256':document['sha256'] or digest(source),'locator':'Saved native RVT data'}
         p=Planning(self.workspace);p.validate_sources(project_id,[pointer])
         binary=binary_path('ifccs-rvt-metadata')
@@ -220,7 +252,7 @@ class RvtData:
         # the common model catalogue, including when reusing a saved snapshot.
         # Verify registration metadata before filling a previously absent hash.
         from ..model_data import ModelData
-        stat=source.stat()
+        if file_revision(source.stat())!=revision:raise ValueError('RVT changed before extraction')
         with connection(path) as db:
             db.execute('begin immediate')
             ModelData._pin_source(db,{'doc_id':doc_id,'sha256':pointer['sha256'],
@@ -242,15 +274,13 @@ class RvtData:
         folder=path.parent/'rvt-data'/uuid4().hex;folder.mkdir(parents=True)
         with TemporaryDirectory(prefix='.read-', dir=folder) as directory:
             working=Path(directory)
-            copied=working/'source.rvt';shutil.copyfile(source,copied)
-            if digest(copied)!=pointer['sha256']:raise ValueError('RVT changed while making the working copy')
             request=working/'request.json';inventory_path=folder/'inventory.json'
             request.write_text(encode({'mode':'inventory'}),encoding='utf-8')
-            self.invoke(binary,copied,request,inventory_path)
+            self.invoke(binary,source,request,inventory_path)
             inventory=json.loads(inventory_path.read_text(encoding='utf-8'))
             classes={c['name']:c for c in inventory['classes']}
             selected=selected_classes(profile,classes)
-            counts={};records=[];page_reports=[];cursor=0
+            counts={};records=[];page_reports=[];cursor=0;stored_bytes=0
             while True:
                 output=working/('records.ndjson' if cursor==0 else f'records-{cursor}.ndjson')
                 summary_path=output.with_suffix('.summary.json')
@@ -259,7 +289,8 @@ class RvtData:
                 else:
                     projection='compact' if profile in {'engineering','types','parameters','objects'} else 'graphs' if profile in {'views','schedules'} else 'full'
                     request.write_text(encode({'mode':'records','classes':selected,'max_records':20000,'offset':cursor,'projection':projection}),encoding='utf-8')
-                    self.invoke(binary,copied,request,output)
+                    self.invoke(binary,source,request,output)
+                if file_revision(source.stat())!=revision:raise ValueError('RVT changed during extraction; snapshot was not published')
                 page=json.loads(summary_path.read_text(encoding='utf-8'))
                 if inventory.get('schema_sha256') and page.get('schema_sha256')!=inventory['schema_sha256']:
                     raise ValueError('Native page schema changed during extraction')
@@ -272,7 +303,11 @@ class RvtData:
                         name=(row.get('mep_system') or {}).get('name') or fields.get('m_viewName') or fields.get('m_name') or ''
                         if not isinstance(name,str):name=''
                         status=row.get('projection_status') or ('partial_mep' if row.get('mep_system_diagnostic') else 'partial_metadata' if row.get('metadata_diagnostic') else row['status'])
-                        records.append((fingerprint,len(records),str(row['identity']['element_id']),row.get('class_name'),kind,name,status,encode(row)));returned+=1
+                        payload=encode_native_record(row)
+                        stored_bytes+=len(payload)
+                        if stored_bytes>MAX_NATIVE_EXTRACTION_BYTES:
+                            raise ValueError('Снимок данных RVT превышает лимит 256 МиБ. Выберите более узкий профиль чтения.')
+                        records.append((fingerprint,len(records),str(row['identity']['element_id']),row.get('class_name'),kind,name,status,payload));returned+=1
                 output.unlink()
                 summary_path.unlink()
                 page_reports.append(page)
@@ -288,6 +323,7 @@ class RvtData:
                     raise ValueError('Native page continuation did not advance exactly')
                 cursor=following
         p.validate_sources(project_id,[pointer])
+        if file_revision(source.stat())!=revision:raise ValueError('RVT changed during extraction; snapshot was not published')
         if sha256(binary)!=reader_hash:raise ValueError('Native reader changed during extraction')
         report={**page_reports[-1],'record_count':len(records),'page_count':len(page_reports),
                 'clipped_records':sum(v.get('clipped_records',0) for v in page_reports),
@@ -314,6 +350,7 @@ class RvtData:
             if existing:
                 db.execute('insert into rvt_data_requests values (?,?,?)',(request_id,fingerprint,existing[0]))
                 return json.loads(existing[0])
+            check_native_storage(db,stored_bytes)
             db.execute('insert into rvt_extractions values (?,?)',(fingerprint,encode(result)))
             db.executemany('insert into rvt_native_records values (?,?,?,?,?,?,?,?)',records)
             db.execute('insert into rvt_data_requests values (?,?,?)',(request_id,fingerprint,encode(result)))
@@ -375,7 +412,7 @@ class RvtData:
         with connection(self.workspace.db_path(project_id),readonly=True) as db:
             row=db.execute('select payload from rvt_native_records where extraction_id=? and record_id=?',(extraction_id,record_id)).fetchone()
         if not row:raise ValueError('Record not found in this extraction')
-        record=json.loads(row[0]);scope={'project_id':project_id,'extraction_id':extraction_id,'record_id':record_id,
+        record=decode_native_record(row[0]);scope={'project_id':project_id,'extraction_id':extraction_id,'record_id':record_id,
             'source':snapshot['source'],'native_source':record['source'],'identity':record['identity'],
             'status':record.get('projection_status') or ('partial_mep' if record.get('mep_system_diagnostic') else 'partial_metadata' if record.get('metadata_diagnostic') else record['status']),
             'value_semantics':'serialized_not_evaluated','evaluated_schedule_body_available':False}
@@ -412,7 +449,7 @@ class RvtData:
                 rid=stored['record_id']
                 if scanned>=max_scan_records:
                     next_cursor=continuation(rid);break
-                record=json.loads(stored['payload']);scanned+=1
+                record=decode_native_record(stored['payload']);scanned+=1
                 if not record.get('saved_metadata'):without_metadata+=1
                 parameters=project_record(record,'parameters')
                 begin=start_parameter if rid==start_record else 0
@@ -450,7 +487,7 @@ class RvtData:
         with connection(self.workspace.db_path(project_id),readonly=True) as db:
             row=db.execute('select payload,kind from rvt_native_records where extraction_id=? and record_id=?',(extraction_id,record_id)).fetchone()
         if not row:raise ValueError('Record not found in this extraction')
-        record=json.loads(row['payload']);folder=self.workspace.db_path(project_id).parent/'rvt-exports'/extraction_id
+        record=decode_native_record(row['payload']);folder=self.workspace.db_path(project_id).parent/'rvt-exports'/extraction_id
         folder.mkdir(parents=True,exist_ok=True)
         # Each export is a new artifact. Concurrent calls cannot overwrite a prior file.
         target=folder/(str(int(record_id))+'-'+uuid4().hex+'.'+format)

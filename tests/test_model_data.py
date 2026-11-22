@@ -51,7 +51,7 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(before, self.ws.db_path('two').read_bytes())
         first = self.read()
         self.assertEqual(first['dataset_id'], ModelData(self.ws).read('one', 'again', self.doc)['dataset_id'])
-        self.assertEqual(self.native.call_count, 1)
+        self.native.assert_called_once_with(self.file.resolve())
         self.assertEqual(self.file.read_text(), 'synthetic metadata fixture')
         with self.assertRaises(ValueError): self.service.dataset('two', first['dataset_id'])
         with self.assertRaises(ValueError): self.service.read('one', 'first', scene_id='other')
@@ -65,6 +65,17 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(old['freshness']['status'], 'different_registered_version')
         self.assertTrue(changed['current_registered_version'])
         self.assertEqual(self.service.list('one')['total'], 2)
+
+    def test_changed_source_is_not_published(self):
+        def read_then_change(source):
+            self.assertEqual(source, self.file.resolve())
+            source.write_text('modified during read', encoding='utf-8')
+            return self.rows, {'status': 'partial'}
+
+        self.native.side_effect = read_then_change
+        with self.assertRaisesRegex(ValueError, 'Source changed during reading'):
+            self.read()
+        self.assertEqual(self.service.list('one')['total'], 0)
 
     def test_typed_filters_ids_and_field_continuation(self):
         key = self.read()['dataset_id']

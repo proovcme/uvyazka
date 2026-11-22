@@ -208,7 +208,7 @@ def rvt_data(workspace, project, doc_id, request_id):
 
 
 def rvt_rows(workspace, project, results):
-    from .construction.rvt_data import selected_classes
+    from .construction.rvt_data import decode_native_record, selected_classes
     from .core import connection
     for result in results:
         profile = result['profile']
@@ -217,7 +217,7 @@ def rvt_rows(workspace, project, results):
         type_classes = set(selected_classes('types', {c['name']: c for c in inventory['classes']}))
         with connection(workspace.db_path(project), readonly=True) as db:
             for entry in db.execute('select record_id,element_id,kind,class_name,name,status,payload from rvt_native_records where extraction_id=? order by record_id', (eid,)):
-                record = json.loads(entry['payload'])
+                record = decode_native_record(entry['payload'])
                 section = {'schedule': 'schedules', 'view': 'views', 'placement': 'views'}.get(entry['kind'], 'elements')
                 cls = entry['class_name']
                 if cls in ('RbsHvacSystem', 'RbsPipingSystem', 'RbsElectricalSystem'):

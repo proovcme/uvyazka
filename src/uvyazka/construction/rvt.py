@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import uuid
 
+from ..core import file_revision
 from .importer import IMPORTER_VERSION, import_model, write_json
 from .rvt_runtime import OLE_SIGNATURE, RVT_MAX_BYTES, UPSTREAM_REVISION, binary_path, converter_status as runtime_status
 
@@ -112,13 +113,18 @@ def normalize_rvt_ifc(path):
     return changes
 
 
-def import_source(source_path, output_path, source_name=None):
+def import_source(source_path, output_path, source_name=None, *, expected_identity=None):
     source, output = Path(source_path), Path(output_path)
     name = source_name or source.name
     suffix = validate_input(source, name)
     if suffix == ".ifc":
         return import_model(str(source), str(output), name)
+    stat = source.stat()
+    revision = file_revision(stat)
+    source_hash = file_hash(source)
     identity = import_identity(source, name)
+    if (expected_identity is not None and identity != expected_identity) or file_revision(source.stat()) != revision:
+        raise ValueError('Исходный RVT изменился перед чтением. Повторите импорт.')
     output.mkdir(parents=True, exist_ok=True)
     write_json(output / "progress.json", {"status": "running", "message": "RVT → IFC · чтение элементов и сохранённых сеток", "processed": 0, "total": 0})
     binary = converter_path()
@@ -173,13 +179,15 @@ def import_source(source_path, output_path, source_name=None):
         "skipped": diagnostics.get("skipped", []), "diagnostics_file": "conversion-diagnostics.json",
         "quantity_policy": "Only decoded non-box bodies supply geometric work quantities; missing/box/unknown bodies use explicit piece assumptions. No Revit fidelity guarantee."}
     manifest["model_id"] = identity
-    manifest["source"].update({"filename": name, "format": "rvt", "sha256": file_hash(source),
-        "size_bytes": source.stat().st_size, "conversion": conversion})
+    manifest["source"].update({"filename": name, "format": "rvt", "sha256": source_hash,
+        "size_bytes": stat.st_size, "conversion": conversion})
     for row in manifest["elements"]:
         row["source"]["original_file_sha256"] = manifest["source"]["sha256"]
         row["source"]["conversion_engine"] = "rvt-rs"
     from .revit_metadata import read_revit_metadata
     manifest['revit'] = read_revit_metadata(source, output, manifest)
+    if file_hash(source) != source_hash or file_revision(source.stat()) != revision:
+        raise ValueError('Исходный RVT изменился во время чтения. Модель не опубликована.')
     manifest["diagnostics"].append({"element_id": "model", "kind": "conversion",
         "message": "Экспериментальная конверсия RVT → IFC. Неполнота и упрощения перечислены в диагностике; габаритные блоки не используются как объёмы работ."})
     (package / "geometry.bin").replace(output / "geometry.bin")

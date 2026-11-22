@@ -6,12 +6,14 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from http.server import ThreadingHTTPServer
 from urllib.request import Request,urlopen
 from urllib.error import HTTPError
 from uvyazka.core import Workspace
 from uvyazka.demo import create_demo
 from uvyazka.dashboard import make_handler
+from uvyazka.desktop_http import backup
 from uvyazka.construction.coordination_store import CoordinationStore
 from test_clashes import fixture,rule
 
@@ -74,6 +76,16 @@ class ReviewHttpTests(unittest.TestCase):
         self.assertTrue((Path(copied['path'])/'registry.sqlite3').is_file())
         with self.assertRaises(HTTPError) as ex:self.post('/api/review3d/save?project_id=demo-a',{})
         self.assertEqual(ex.exception.code,503)
+
+    def test_insufficient_space_keeps_the_latest_complete_backup(self):
+        first = Path(backup(self.ws)['path'])
+        with patch('uvyazka.desktop_http.shutil.disk_usage') as usage:
+            usage.return_value.free = 0
+            with self.assertRaisesRegex(ValueError, 'Недостаточно свободного места'):
+                backup(self.ws)
+        self.assertEqual(list(first.parent.iterdir()), [first])
+        latest = Path(backup(self.ws)['path'])
+        self.assertEqual(list(first.parent.iterdir()), [latest])
 
 
 if __name__=='__main__':unittest.main()

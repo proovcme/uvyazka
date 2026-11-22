@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import base64
+from contextlib import ExitStack
 import hashlib
 import json
 from pathlib import Path
 import re
 import sqlite3
+from tempfile import TemporaryDirectory
 import uuid
 
+from ..core import file_revision
 from .drawings import SUPPORTED, MAX_BYTES, source_info, inspect_source, render_source
 from .ifc_authoring import COMPILER_VERSION, compile_ifc
 from .importer import import_model, write_json
@@ -283,28 +286,27 @@ class DrawingProjects:
     def import_rvt(self, filename, path=None, content_base64=None):
         if (path is None) == (content_base64 is None) or Path(filename).suffix.lower() != '.rvt':
             raise ValueError('Передайте RVT через path или content_base64')
-        staging = self.root / 'imports' / uuid.uuid4().hex
-        staging.mkdir(parents=True)
-        source = staging / 'source.rvt'
-        if path is not None:
-            candidate = Path(path).resolve()
-            if not any(candidate.is_relative_to(root) for root in self.read_roots):
-                raise ValueError('RVT вне разрешённых корней чтения')
-            validate_input(candidate, filename)
-            # Stream a private working copy; never change the user's RVT.
-            import shutil
-            shutil.copyfile(candidate, source)
-        else:
-            if not isinstance(content_base64, str) or len(content_base64) > RVT_MAX_BYTES * 4 // 3 + 8:
-                raise ValueError('RVT превышает 512 МБ; используйте локальный path')
-            source.write_bytes(base64.b64decode(content_base64, validate=True))
+        with ExitStack() as temporary:
+            if path is not None:
+                source = Path(path).resolve()
+                if not any(source.is_relative_to(root) for root in self.read_roots):
+                    raise ValueError('RVT вне разрешённых корней чтения')
+            else:
+                if not isinstance(content_base64, str) or len(content_base64) > RVT_MAX_BYTES * 4 // 3 + 8:
+                    raise ValueError('RVT превышает 512 МБ; используйте локальный path')
+                directory = temporary.enter_context(TemporaryDirectory(prefix='rvt-import-', dir=self.root))
+                source = Path(directory) / 'source.rvt'
+                source.write_bytes(base64.b64decode(content_base64, validate=True))
             validate_input(source, filename)
-        identity = import_identity(source, filename)
-        target = self.cache / 'models' / identity
-        target.mkdir(parents=True, exist_ok=True)
-        manifest = target / 'manifest.json'
-        if not manifest.exists() or not (target / 'geometry.bin').is_file():
-            import_source(str(source), str(target), Path(filename.replace('\\', '/')).name)
+            revision = file_revision(source.stat())
+            identity = import_identity(source, filename)
+            if file_revision(source.stat()) != revision:
+                raise ValueError('Исходный RVT изменился перед чтением. Повторите импорт.')
+            target = self.cache / 'models' / identity
+            target.mkdir(parents=True, exist_ok=True)
+            manifest = target / 'manifest.json'
+            if not manifest.exists() or not (target / 'geometry.bin').is_file():
+                import_source(str(source), str(target), Path(filename.replace('\\', '/')).name, expected_identity=identity)
         model, _ = self.model(identity)
         return {'model_id': identity, 'statistics': model['statistics'], 'source': model['source'],
             'revit': model.get('revit'),

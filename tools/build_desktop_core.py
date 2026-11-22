@@ -4,7 +4,6 @@ Run after building the local viewer, CAD app and browser runtimes, and staging
 the intended source changes. Output is ignored. No secret is required here.
 """
 from pathlib import Path
-import argparse
 import json
 import os
 import shutil
@@ -12,6 +11,7 @@ import subprocess
 import sys
 import hashlib
 import tarfile
+from tempfile import TemporaryDirectory
 import zipfile
 from importlib import metadata
 
@@ -21,10 +21,12 @@ ROOT=Path(__file__).resolve().parents[1]
 def build():
     output=ROOT/'.uvyazka-build/desktop'
     output.mkdir(parents=True,exist_ok=True)
-    source=output/'source'
-    if source.exists():
-        if not source.resolve().is_relative_to(output.resolve()):raise ValueError('Unexpected snapshot path')
-        shutil.rmtree(source)
+    with TemporaryDirectory(prefix='freeze-',dir=output) as directory:
+        freeze(Path(directory),output)
+
+
+def freeze(work,output):
+    source=work/'source'
     source.mkdir()
     subprocess.run(['git','checkout-index','--all','--prefix='+source.as_posix()+'/'],cwd=ROOT,check=True)
     subprocess.run([sys.executable,str(ROOT/'tools/check_public_content.py')],cwd=ROOT,check=True)
@@ -42,7 +44,7 @@ def build():
         if path.is_file() and path.suffix!='.py':datas.append((str(path),str(Path('uvyazka')/path.parent.relative_to(source/'src/uvyazka'))))
     datas += [(str(cad),'uvyazka/viewer/cad'),(str(runtime),'uvyazka/viewer/runtime'),(str(source/'skills'),'share/uvyazka/skills')]
     for name in ('LICENSE','NOTICE'):datas.append((str(source/name),'uvyazka-runtime/licenses'))
-    licenses=output/'licenses';licenses.mkdir(exist_ok=True)
+    licenses=work/'licenses';licenses.mkdir()
     for dist in metadata.distributions():
         name=dist.metadata['Name']
         if name.lower()=='uvyazka':continue
@@ -66,14 +68,14 @@ def build():
     shutil.copyfile(source/'desktop/sources.lock.json',licenses/'sources.lock.json')
     python_license=Path(sys.base_prefix)/'LICENSE.txt'
     if python_license.is_file():shutil.copyfile(python_license,licenses/'PYTHON-LICENSE.txt')
-    own_source=output/'uvyazka-source.zip'
+    own_source=work/'uvyazka-source.zip'
     with zipfile.ZipFile(own_source,'w',zipfile.ZIP_DEFLATED) as archive:
         for path in source.rglob('*'):
             if path.is_file():archive.write(path,path.relative_to(source).as_posix())
     datas += [(str(licenses),'uvyazka-runtime/licenses'),(str(own_source),'uvyazka-runtime/sources')]
     binaries=[(str(native/name),'uvyazka-runtime/rvt') for name in rvt_binaries]
     binaries.append((str(navis),'uvyazka-runtime/navis'))
-    spec=output/'uvyazka-core.spec'
+    spec=work/'uvyazka-core.spec'
     spec.write_text('''from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, copy_metadata
 datas = '''+repr(datas)+'''
@@ -91,16 +93,19 @@ pyz = PYZ(a.pure)
 exe = EXE(pyz,a.scripts,[],exclude_binaries=True,name='uvyazka-core',console=True)
 coll = COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='uvyazka-core')
 ''',encoding='utf-8')
-    subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','--distpath',str(output/'dist'),'--workpath',str(output/'work'),str(spec)],cwd=ROOT,check=True)
-    frozen=output/'dist/uvyazka-core'
+    subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','--distpath',str(work/'dist'),'--workpath',str(work/'pyinstaller'),str(spec)],cwd=ROOT,check=True)
+    frozen=work/'dist/uvyazka-core'
     target=ROOT/'desktop/src-tauri/binaries';target.mkdir(exist_ok=True)
     internal=target/'_internal'
     if internal.exists():
         if not internal.resolve().is_relative_to(target.resolve()):raise ValueError('Unexpected binary path')
         shutil.rmtree(internal)
-    shutil.copytree(frozen/'_internal',internal)
-    shutil.copyfile(frozen/'uvyazka-core.exe',target/'uvyazka-core-x86_64-pc-windows-msvc.exe')
-    print(json.dumps({'desktop_core':str(frozen),'source_snapshot':'git index','native_rvt':True}))
+    if not frozen.resolve().is_relative_to(work.resolve()):raise ValueError('Unexpected frozen core path')
+    os.replace(frozen/'_internal',internal)
+    core=target/'uvyazka-core-x86_64-pc-windows-msvc.exe'
+    os.replace(frozen/'uvyazka-core.exe',core)
+    os.replace(own_source,output/'uvyazka-source.zip')
+    print(json.dumps({'desktop_core':str(core),'source_snapshot':'git index','native_rvt':True}))
 
 
 if __name__=='__main__':build()
